@@ -1,0 +1,58 @@
+# version: "3.8"
+
+services:
+  # Relational core for structured analytics & tenant data
+  postgres:
+    image: postgres:16-alpine
+    container_name: omnipulse-postgres
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: secretpassword
+      POSTGRES_DB: omnipulse_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Mount migrations directory so scripts are accessible inside the container
+      - ./infra/postgres/migrations:/migrations
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d omnipulse_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Speed layer for global rate limits and 24h interaction tracking
+  redis:
+    image: redis:7-alpine
+    container_name: omnipulse-redis
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # High-throughput distributed message broker with JetStream persistence enabled
+  nats:
+    image: nats:2.10-alpine
+    container_name: omnipulse-nats
+    command: "-js" # Explicitly enables JetStream streaming capabilities
+    ports:
+      - "4222:4222" # Client communication port
+      - "8222:8222" # HTTP Management/Monitoring dashboard
+    volumes:
+      - nats_data:/data
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "4222"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:
+  nats_data:

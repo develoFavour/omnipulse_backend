@@ -1,0 +1,8 @@
+
+DROP TABLE IF EXISTS campaign_dispatches CASCADE;
+DROP TABLE IF EXISTS campaigns CASCADE;
+DROP TABLE IF EXISTS contacts CASCADE;
+
+DROP TYPE IF EXISTS dispatch_status;
+DROP TYPE IF EXISTS campaign_status;
+DROP TYPE IF EXISTS platform_type;
