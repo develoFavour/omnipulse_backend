@@ -1,0 +1,35 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment and secrets
+.env
+.env.*
+*.local
+
+# Go build artifacts
+/bin/
+/obj/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+coverage.out
+coverage.html
+
+# IDE/editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker/local runtime artifacts
+*.log
+tmp/
+tmp/**
+dist/
+
+# PostgreSQL local data
+postgres-data/
