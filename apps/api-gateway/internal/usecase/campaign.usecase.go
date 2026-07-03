@@ -100,3 +100,14 @@ func (u *CampaignUseCase) emitTask(ctx context.Context, cmp *domain.Campaign, co
 	// Fire and forget down onto the high-speed message bus stream
 	_ = u.publisher.PublishDispatchTask(ctx, &task)
 }
+
+func (u *CampaignUseCase) GetStats(ctx context.Context, campaignID string) (map[string]int, error) {
+	// 1. Verify the campaign exists before running aggregations
+	_, err := u.campaignRepo.GetByID(ctx, campaignID)
+	if err != nil {
+		return nil, err // Bubbles up ErrCampaignNotFound cleanly
+	}
+
+	// 2. Fetch aggregated counting lines from the database
+	return u.campaignRepo.GetCampaignStats(ctx, campaignID)
+}

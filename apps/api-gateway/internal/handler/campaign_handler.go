@@ -42,3 +42,24 @@ func (h *CampaignHandler) DispatchCampaign(w http.ResponseWriter, r *http.Reques
 		"campaign_id": campaignID,
 	})
 }
+
+func (h *CampaignHandler) GetCampaignStats(w http.ResponseWriter, r *http.Request) {
+	campaignID := r.PathValue("id")
+	if campaignID == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Missing explicit campaign mapping ID parameter")
+		return
+	}
+
+	stats, err := h.useCase.GetStats(r.Context(), campaignID)
+	if err != nil {
+		if errors.Is(err, repository.ErrCampaignNotFound) {
+			utils.WriteError(w, http.StatusNotFound, "Target analytical campaign context missing")
+			return
+		}
+		utils.WriteError(w, http.StatusInternalServerError, "Failed to compile live dashboard telemetry data")
+		return
+	}
+
+	// Return standard enclosed success metrics payload wrapper matrix
+	utils.WriteJSON(w, http.StatusOK, stats)
+}

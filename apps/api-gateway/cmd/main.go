@@ -87,6 +87,7 @@ func main() {
 
 	// Campaign Execution Subsystem Endpoints
 	mux.HandleFunc("POST /api/v1/campaigns/{id}/dispatch", campaignHandler.DispatchCampaign)
+	mux.HandleFunc("GET /api/v1/campaigns/{id}/stats", campaignHandler.GetCampaignStats)
 
 	// 5. Configure Network Server Parameters
 	srv := &http.Server{
