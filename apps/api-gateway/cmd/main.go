@@ -5,17 +5,22 @@ import (
 	"database/sql"
 	"log"
 	"net/http"
-	"omnipulse/apps/api-gateway/internals/config"
-	"omnipulse/apps/api-gateway/internals/utils"
+	"omnipulse/apps/api-gateway/internal/config"
+	handler "omnipulse/apps/api-gateway/internal/handlers"
+	"omnipulse/apps/api-gateway/internal/repository"
+	"omnipulse/apps/api-gateway/internal/usecase"
+	"omnipulse/apps/api-gateway/internal/utils"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
 
 func main() {
+	godotenv.Load("../../.env")
 	logger := log.New(os.Stdout, "[API-GATEWAY] ", log.LstdFlags|log.Lshortfile)
 
 	// 1. Instantly ingest secure environment configuration configurations
@@ -37,6 +42,9 @@ func main() {
 	}
 	logger.Printf("Successfully attached to PostgreSQL database pool [Mode: %s].\n", cfg.Environment)
 
+	contactRepo := repository.NewPostgresContactRepository(db)
+	contactUseCase := usecase.NewContactUseCase(contactRepo)
+	contactHandler := handler.NewContactHandler(contactUseCase)
 	// 3. Modern Native HTTP Routing Multiplexer
 	mux := http.NewServeMux()
 
@@ -49,6 +57,9 @@ func main() {
 		}
 		utils.WriteJSON(w, http.StatusOK, healthStatus)
 	})
+	mux.HandleFunc("GET /api/v1/contacts/{id}", contactHandler.GetContact)
+	mux.HandleFunc("GET /api/v1/contacts", contactHandler.ListContacts)
+	mux.HandleFunc("POST /api/v1/contacts", contactHandler.CreateContact)
 
 	// 4. Configure Network Server Parameters using configuration properties
 	srv := &http.Server{

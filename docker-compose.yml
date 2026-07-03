@@ -10,7 +10,7 @@ services:
       POSTGRES_PASSWORD: secretpassword
       POSTGRES_DB: omnipulse_dev
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       # Mount migrations directory so scripts are accessible inside the container

@@ -14,6 +14,14 @@ down:
 ps:
 	docker compose ps
 
+# Run the API Gateway locally with Air hot reloading
+dev-api:
+	cd apps/api-gateway && air
+
+# Run database migrations to construct the schema
+db-migrate:
+	docker exec -i omnipulse-postgres psql -U admin -d omnipulse_dev < ./infra/postgres/migrations/000001_init_schema.up.sql
+
 # Manual trigger to execute seed data against the local PG instance
 db-seed:
 	docker exec -i omnipulse-postgres psql -U admin -d omnipulse_dev < ./infra/postgres/seeds/000001_dev_contacts.sql

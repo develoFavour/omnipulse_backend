@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"omnipulse/apps/api-gateway/internals/domain"
+	"omnipulse/apps/api-gateway/internal/domain"
 )
 
 // PostgresContactRepository implements domain.ContactRepository using a SQL connection pool
