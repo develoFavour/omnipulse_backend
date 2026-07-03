@@ -17,8 +17,14 @@ ps:
 # Run the API Gateway locally with Air hot reloading
 dev-api:
 	cd apps/api-gateway && air
-compliance-engine:
+
+# Run the Compliance Engine locally with Air hot reloading
+dev-compliance:
 	cd apps/compliance-engine && air
+
+# Run the Broadcast Worker locally with Air hot reloading
+dev-broadcast:
+	cd apps/broadcast-worker && air
 
 # Run database migrations to construct the schema
 db-migrate:

@@ -92,7 +92,7 @@ func main() {
 	// 5. Configure Network Server Parameters
 	srv := &http.Server{
 		Addr:         cfg.Port,
-		Handler:      mux,
+		Handler:      handler.AuthMiddleware(mux),
 		IdleTimeout:  time.Minute,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
