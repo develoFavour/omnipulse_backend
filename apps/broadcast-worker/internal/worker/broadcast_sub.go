@@ -18,7 +18,14 @@ type ApprovedDispatchTask struct {
 	MessageBody    string  `json:"message_body"`
 	MediaURL       *string `json:"media_url,omitempty"`
 }
-
+type TargetDeliveryResult struct {
+	CampaignID   string  `json:"campaign_id"`
+	ContactID    string  `json:"contact_id"`
+	Platform     string  `json:"platform"`
+	RoutingValue string  `json:"routing_value"`
+	Status       string  `json:"status"`
+	ErrorMessage *string `json:"error_message,omitempty"`
+}
 type BroadcastConsumer struct {
 	nc  *nats.Conn
 	js  nats.JetStreamContext
@@ -40,7 +47,7 @@ func NewBroadcastConsumer(natsURL string) (*BroadcastConsumer, error) {
 	// Double check stream configuration to ensure campaign.approved topic is tracked
 	_, err = js.AddStream(&nats.StreamConfig{
 		Name:     "CAMPAIGNS",
-		Subjects: []string{"campaign.dispatched", "campaign.approved"},
+		Subjects: []string{"campaign.dispatched", "campaign.approved", "dispatch.result"},
 		Storage:  nats.FileStorage,
 	})
 	if err != nil {
@@ -85,19 +92,41 @@ func (c *BroadcastConsumer) executeDelivery(msg *nats.Msg) {
 		return
 	}
 
-	// Simulate network latency of hitting external HTTP API servers (Twilio/Telegram)
-	time.Sleep(150 * time.Millisecond)
+	time.Sleep(150 * time.Millisecond) // Simulate latency
 
-	// Route based on targeted platform network channels
-	switch task.TargetPlatform {
-	case "whatsapp":
-		log.Printf("[📲 TELECOM API -> WHATSAPP] Successfully transmitted to %s via Twilio Network Gateway. MsgID: wa_fallback_%d\n", task.RoutingValue, time.Now().UnixNano())
-	case "telegram":
-		log.Printf("[🤖 TELEGRAM BOT ENGINE] Sent text packet block successfully to ChatID: %s\n", task.RoutingValue)
-	case "x":
-		log.Printf("[🐦 X DM ROUTER] Published standard messaging payload token straight to handle: @%s\n", task.RoutingValue)
-	default:
-		log.Printf("[⚠️ UNKNOWN ROUTE] Bypassing unrecognized destination platform handler: %s\n", task.TargetPlatform)
+	// Default state status values
+	status := "delivered"
+	var errMsg *string
+
+	// For testing purposes, let's randomly simulate a failure if the name is "Charlie"
+	// so we can witness our error metrics dashboard capturing faults realistically!
+	if task.FirstName == "Charlie" {
+		status = "failed"
+		reason := "Telegram Network Timeout Protocol Code 503"
+		errMsg = &reason
+		log.Printf("[❌ TELECOM API -> ERROR] Failed delivery to %s on %s: %s\n", task.FirstName, task.TargetPlatform, reason)
+	} else {
+		log.Printf("[📲 TELECOM API] Dispatched cleanly to %s (%s) on channel %s\n", task.FirstName, task.RoutingValue, task.TargetPlatform)
+	}
+
+	// Pack the return receipt
+	result := TargetDeliveryResult{
+		CampaignID:   task.CampaignID,
+		ContactID:    task.ContactID,
+		Platform:     task.TargetPlatform,
+		RoutingValue: task.RoutingValue,
+		Status:       status,
+		ErrorMessage: errMsg,
+	}
+
+	payload, _ := json.Marshal(result)
+
+	// 🆕 Publish the return receipt right back onto the message bus stream!
+	_, err := c.js.Publish("dispatch.result", payload)
+	if err != nil {
+		log.Printf("[WORKER-ERROR] Failed to publish return receipt: %v\n", err)
+		_ = msg.Nak()
+		return
 	}
 
 	_ = msg.Ack()
