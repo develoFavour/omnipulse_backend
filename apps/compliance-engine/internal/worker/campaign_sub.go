@@ -118,8 +118,16 @@ func (c *CampaignConsumer) processMessage(ctx context.Context, msg *nats.Msg) {
 	log.Printf("[✅ COMPLIANCE PASSED] Verified user %s (%s) for channel %s. Routing task forward...\n",
 		task.FirstName, task.RoutingValue, task.TargetPlatform)
 
-	// TODO: In the next phase, this line will publish the approved task onto a "campaign.approved" stream
-	// where our platform delivery workers (WhatsApp/Telegram outbound nodes) are listening.
+	// If the user is clean and opted in, we approve it for delivery!
+	log.Printf("[✅ COMPLIANCE PASSED] Verified user %s (%s) for channel %s. Routing task forward...\n",
+		task.FirstName, task.RoutingValue, task.TargetPlatform)
+
+	_, err = c.js.Publish("campaign.approved", msg.Data)
+	if err != nil {
+		log.Printf("[WORKER-ERROR] Failed to push approved item forward onto NATS: %v. Re-queueing.\n", err)
+		_ = msg.Nak()
+		return
+	}
 
 	_ = msg.Ack() // Complete the processing lifecycle loop
 }
