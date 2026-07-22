@@ -18,50 +18,43 @@ func NewContactUseCase(repo domain.ContactRepository) domain.ContactUseCase {
 }
 
 // FetchContact orchestrates the retrieval of an audience profile
-func (u *ContactUseCase) FetchContact(ctx context.Context, id string) (*domain.Contact, error) {
+func (u *ContactUseCase) FetchContact(ctx context.Context, tenantID, id string) (*domain.Contact, error) {
 	if strings.TrimSpace(id) == "" {
 		return nil, fmt.Errorf("%w: contact ID cannot be blank", domain.ErrInvalidContact)
 	}
 
 	// Delegate directly to the persistence adapter layer
-	return u.repo.GetByID(ctx, id)
+	return u.repo.GetByID(ctx, tenantID, id)
 }
 
 // RegisterContact enforces data validation invariants before saving a user profile
 func (u *ContactUseCase) RegisterContact(ctx context.Context, c *domain.Contact) error {
-	// 1. Structural Sanity Validations (Domain Invariants)
 	c.FirstName = strings.TrimSpace(c.FirstName)
 	if c.FirstName == "" {
 		return fmt.Errorf("%w: first name is a mandatory field", domain.ErrInvalidContact)
 	}
 
-	// 2. Multi-Platform Identity Invariant Rule:
-	// A unified contact MUST possess at least one reachable platform communication key.
-	hasWhatsApp := c.WhatsAppPhone != nil && strings.TrimSpace(*c.WhatsAppPhone) != ""
-	hasTelegram := c.TelegramChatID != nil && *c.TelegramChatID != 0
-	hasX := c.XUsername != nil && strings.TrimSpace(*c.XUsername) != ""
-
-	if !hasWhatsApp && !hasTelegram && !hasX {
-		return fmt.Errorf("%w: contact must provide at least one platform key (WhatsApp, Telegram, or X)", domain.ErrInvalidContact)
+	c.Channel = strings.TrimSpace(strings.ToLower(c.Channel))
+	if c.Channel != "whatsapp" && c.Channel != "telegram" && c.Channel != "instagram" && c.Channel != "x" {
+		return fmt.Errorf("%w: channel must be whatsapp, telegram, instagram, or x", domain.ErrInvalidContact)
 	}
 
-	// Sanitize string inputs if they exist to prevent whitespace database pollution
-	if hasWhatsApp {
-		cleaned := strings.TrimSpace(*c.WhatsAppPhone)
-		c.WhatsAppPhone = &cleaned
-	}
-	if hasX {
-		cleaned := strings.TrimSpace(*c.XUsername)
-		c.XUsername = &cleaned
+	c.RoutingValue = strings.TrimSpace(c.RoutingValue)
+	if c.RoutingValue == "" {
+		return fmt.Errorf("%w: routing value cannot be empty", domain.ErrInvalidContact)
 	}
 
-	// 3. Commit pure sanitized domain model downstream to the database layer
+	if c.Source == "" {
+		c.Source = "manual"
+	}
+	c.Status = "active"
+
+	// Commit pure sanitized domain model downstream to the database layer
 	return u.repo.Create(ctx, c)
 }
 
 // GetAllContacts computes the pagination boundaries for mass reads
-func (u *ContactUseCase) GetAllContacts(ctx context.Context, page, pageSize int) ([]*domain.Contact, error) {
-	// Defend against malicious or invalid pagination payloads from the web
+func (u *ContactUseCase) GetAllContacts(ctx context.Context, tenantID, channelFilter string, page, pageSize int) ([]*domain.Contact, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -69,9 +62,8 @@ func (u *ContactUseCase) GetAllContacts(ctx context.Context, page, pageSize int)
 		pageSize = 20 // Enforce a safe maximum default block size
 	}
 
-	// Math Formula: Translate user-friendly page numbers into low-level SQL database parameters
 	limit := pageSize
 	offset := (page - 1) * pageSize
 
-	return u.repo.List(ctx, limit, offset)
+	return u.repo.ListByTenant(ctx, tenantID, channelFilter, limit, offset)
 }
