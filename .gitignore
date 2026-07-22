@@ -18,6 +18,7 @@ Thumbs.db
 *.test
 coverage.out
 coverage.html
+.gocache/
 
 # IDE/editor files
 .vscode/
@@ -33,3 +34,7 @@ dist/
 
 # PostgreSQL local data
 postgres-data/
+
+# Ignore markdown files and scratch analysis
+*.md
+analysis_results_omnipulse

@@ -1,6 +1,6 @@
 # Root automation engine
 
-.PHONY: up down db-migrate db-seed ps
+.PHONY: up down db-migrate db-seed db-reset ps
 
 # Spin up all background docker infrastructure
 up:
@@ -29,6 +29,16 @@ dev-broadcast:
 # Run database migrations to construct the schema
 db-migrate:
 	docker exec -i omnipulse-postgres psql -U admin -d omnipulse_dev < ./infra/postgres/migrations/000001_init_schema.up.sql
+	docker exec -i omnipulse-postgres psql -U admin -d omnipulse_dev < ./infra/postgres/migrations/000002_add_delivery_audit.up.sql
+	docker exec -i omnipulse-postgres psql -U admin -d omnipulse_dev < ./infra/postgres/migrations/000003_create_identity_and_channels.up.sql
+	docker exec -i omnipulse-postgres psql -U admin -d omnipulse_dev < ./infra/postgres/migrations/000004_add_telegram_destinations.up.sql
+
+# Reset database completely
+db-reset: down up
+	@echo "Waiting for postgres to start..."
+	@powershell -Command "Start-Sleep -s 5"
+	$(MAKE) db-migrate
+	$(MAKE) db-seed
 
 # Manual trigger to execute seed data against the local PG instance
 db-seed:
