@@ -7,6 +7,7 @@ import (
 	"log"
 
 	"omnipulse/apps/api-gateway/internal/domain"
+	"omnipulse/shared/contracts"
 
 	"github.com/nats-io/nats.go"
 )
@@ -33,22 +34,69 @@ func NewJetStreamPublisher(natsURL string) (domain.EventPublisher, error) {
 	}
 
 	// 3. Declaratively provision the Stream if it does not already exist.
-	// This acts exactly like a database schema migration but for our message bus.
+	// This acts like a database migration for our message bus.
+	streamName := "CAMPAIGNS"
+	requiredSubjects := []string{"campaign.dispatched", "campaign.approved", "dispatch.result"}
 	_, err = js.AddStream(&nats.StreamConfig{
-		Name:     "CAMPAIGNS",
-		Subjects: []string{"campaign.dispatched"},
+		Name:     streamName,
+		Subjects: requiredSubjects,
 		Storage:  nats.FileStorage, // Guarantees message durability even if NATS crashes or restarts
 	})
 	if err != nil {
-		// If the stream already exists, this command safely skips provisioning
-		log.Printf("[NATS-STREAM] Stream metadata validation resolved: %v\n", err)
+		if err == nats.ErrStreamNameAlreadyInUse {
+			streamInfo, infoErr := js.StreamInfo(streamName)
+			if infoErr != nil {
+				log.Printf("[NATS-STREAM] Failed to inspect existing stream: %v\n", infoErr)
+			} else {
+				mergedSubjects := mergeSubjects(streamInfo.Config.Subjects, requiredSubjects)
+				if !subjectsEqual(mergedSubjects, streamInfo.Config.Subjects) {
+					streamInfo.Config.Subjects = mergedSubjects
+					if _, updateErr := js.UpdateStream(&streamInfo.Config); updateErr != nil {
+						log.Printf("[NATS-STREAM] Failed to update existing stream subjects: %v\n", updateErr)
+					}
+				}
+			}
+		} else {
+			log.Printf("[NATS-STREAM] Stream metadata validation resolved: %v\n", err)
+		}
 	}
 
 	return &JetStreamPublisher{nc: nc, js: js}, nil
 }
 
+func mergeSubjects(existing, required []string) []string {
+	subjectSet := make(map[string]struct{}, len(existing)+len(required))
+	for _, subject := range existing {
+		subjectSet[subject] = struct{}{}
+	}
+	for _, subject := range required {
+		subjectSet[subject] = struct{}{}
+	}
+	merged := make([]string, 0, len(subjectSet))
+	for subject := range subjectSet {
+		merged = append(merged, subject)
+	}
+	return merged
+}
+
+func subjectsEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	subjectSet := make(map[string]struct{}, len(a))
+	for _, subject := range a {
+		subjectSet[subject] = struct{}{}
+	}
+	for _, subject := range b {
+		if _, found := subjectSet[subject]; !found {
+			return false
+		}
+	}
+	return true
+}
+
 // PublishDispatchTask serializes and drops a single execution instruction onto the message bus
-func (p *JetStreamPublisher) PublishDispatchTask(ctx context.Context, task *domain.TargetDispatchTask) error {
+func (p *JetStreamPublisher) PublishDispatchTask(ctx context.Context, task *contracts.TargetDispatchTask) error {
 	// Transmit raw bytes over the network wire
 	payload, err := json.Marshal(task)
 	if err != nil {

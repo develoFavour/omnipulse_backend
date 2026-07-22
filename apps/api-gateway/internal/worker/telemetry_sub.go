@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"omnipulse/apps/api-gateway/internal/domain"
+	"omnipulse/shared/contracts"
 
 	"github.com/nats-io/nats.go"
 )
@@ -74,7 +75,7 @@ func (c *TelemetryConsumer) processReceipt(ctx context.Context, msg *nats.Msg) {
 	dbCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	var result domain.TargetDeliveryResult
+	var result contracts.TargetDeliveryResult
 	if err := json.Unmarshal(msg.Data, &result); err != nil {
 		log.Printf("[TELEMETRY-ERROR] Corrupted return receipt payload: %v\n", err)
 		_ = msg.Term()

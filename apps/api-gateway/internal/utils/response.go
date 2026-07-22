@@ -2,6 +2,7 @@ package utils
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 )
 
@@ -30,6 +31,7 @@ func WriteJSON(w http.ResponseWriter, status int, data interface{}) {
 
 // WriteError intercepts application failures and formats them uniformly
 func WriteError(w http.ResponseWriter, status int, message string) {
+	log.Printf("[HTTP ERROR] %d - %s\n", status, message)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 
