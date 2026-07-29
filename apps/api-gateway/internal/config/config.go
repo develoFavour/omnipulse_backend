@@ -14,6 +14,11 @@ type Config struct {
 	NatsURL          string
 	ClerkSecretKey   string
 	PublicAPIBaseURL string
+
+	// Meta WhatsApp Embedded Signup Configuration
+	MetaAppID        string
+	MetaAppSecret    string
+	MetaWABAConfigID string
 }
 
 // Load reads values from the OS environment variables or supplies secure defaults
@@ -26,6 +31,9 @@ func Load() *Config {
 		NatsURL:          getEnv("NATS_URL", "nats://localhost:4222"),
 		ClerkSecretKey:   getEnv("CLERK_SECRET_KEY", "sk_test_placeholder"),
 		PublicAPIBaseURL: getEnv("PUBLIC_API_BASE_URL", ""),
+		MetaAppID:        getEnv("META_APP_ID", ""),
+		MetaAppSecret:    getEnv("META_APP_SECRET", ""),
+		MetaWABAConfigID: getEnv("META_WABA_CONFIG_ID", ""),
 	}
 }
 

@@ -69,7 +69,11 @@ func main() {
 	contactHandler := handler.NewContactHandler(contactUseCase)
 	campaignHandler := handler.NewCampaignHandler(campaignUseCase)
 	identityHandler := handler.NewIdentityHandler(identityUseCase)
-	channelHandler := handler.NewChannelHandler(channelRepo, cfg.PublicAPIBaseURL)
+	channelHandler := handler.NewChannelHandler(channelRepo, cfg.PublicAPIBaseURL, handler.MetaAppConfig{
+		AppID:        cfg.MetaAppID,
+		AppSecret:    cfg.MetaAppSecret,
+		WABAConfigID: cfg.MetaWABAConfigID,
+	})
 	webhookHandler := handler.NewWebhookHandler(contactUseCase, channelRepo, destinationRepo)
 	dashboardHandler := handler.NewDashboardHandler(dashboardUseCase)
 	destinationHandler := handler.NewTelegramDestinationHandler(destinationRepo)
@@ -103,6 +107,11 @@ func main() {
 	// Channel Subsystem Endpoints
 	mux.HandleFunc("POST /api/v1/channels", channelHandler.CreateChannel)
 	mux.HandleFunc("GET /api/v1/channels", channelHandler.ListChannels)
+	mux.HandleFunc("DELETE /api/v1/channels/{platform}", channelHandler.HandleDisconnectChannel)
+
+	// WhatsApp Embedded Signup (1-Click OAuth) Endpoints
+	mux.HandleFunc("GET /api/v1/channels/whatsapp/oauth/config", channelHandler.HandleWhatsAppOAuthConfig)
+	mux.HandleFunc("POST /api/v1/channels/whatsapp/oauth/callback", channelHandler.HandleWhatsAppOAuthCallback)
 
 	// Telegram Destination Endpoints
 	mux.HandleFunc("GET /api/v1/telegram/destinations", destinationHandler.ListDestinations)
@@ -124,6 +133,8 @@ func main() {
 
 	// Webhook Subsystem Endpoints (Inbound Event Flywheel)
 	mux.HandleFunc("POST /api/v1/webhooks/telegram/{tenant_id}", webhookHandler.HandleTelegram)
+	mux.HandleFunc("GET /api/v1/webhooks/whatsapp/{tenant_id}", webhookHandler.VerifyWhatsApp)
+	mux.HandleFunc("POST /api/v1/webhooks/whatsapp/{tenant_id}", webhookHandler.HandleWhatsApp)
 
 	// CORS Setup
 	c := cors.New(cors.Options{
