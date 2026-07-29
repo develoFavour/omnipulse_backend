@@ -52,4 +52,5 @@ type ChannelRepository interface {
 	ListByTenant(ctx context.Context, tenantID string) ([]TenantChannel, error)
 	CountActiveByTenant(ctx context.Context, tenantID string) (int, error)
 	FindActiveByPlatform(ctx context.Context, tenantID, platform string) (*TenantChannel, error)
+	DeleteByPlatform(ctx context.Context, tenantID, platform string) error
 }

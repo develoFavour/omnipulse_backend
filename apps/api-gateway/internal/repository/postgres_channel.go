@@ -102,3 +102,25 @@ func (r *PostgresChannelRepository) FindActiveByPlatform(ctx context.Context, te
 	}
 	return &c, nil
 }
+
+func (r *PostgresChannelRepository) DeleteByPlatform(ctx context.Context, tenantID, platform string) error {
+	query := `
+		DELETE FROM tenant_channels
+		WHERE tenant_id = $1 AND platform_name = $2;
+	`
+	result, err := r.db.ExecContext(ctx, query, tenantID, platform)
+	if err != nil {
+		return fmt.Errorf("failed to delete %s channel: %w", platform, err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to check rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("no active %s channel found to disconnect", platform)
+	}
+
+	return nil
+}

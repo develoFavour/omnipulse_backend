@@ -90,7 +90,6 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 
 	log.Printf("[WORKER] Processing delivery to %s (%s) on channel %s\n", task.FirstName, task.RoutingValue, task.TargetPlatform)
 
-	// Fetch token from DB if target is Telegram
 	if task.TargetPlatform == "telegram" {
 		var tokenData []byte
 		err := c.db.QueryRowContext(ctx, "SELECT encrypted_credentials FROM tenant_channels WHERE tenant_id = $1 AND platform_name = 'telegram' AND status = 'active' LIMIT 1", task.TenantID).Scan(&tokenData)
@@ -101,20 +100,16 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 			errMsg = &reason
 			log.Printf("[❌ TELEGRAM API -> ERROR] %s\n", reason)
 		} else {
-			// Extract token string
 			var creds struct {
 				BotToken string `json:"bot_token"`
 			}
-			if err := json.Unmarshal(tokenData, &creds); err != nil {
+			if err := json.Unmarshal(tokenData, &creds); err != nil || creds.BotToken == "" {
 				status = "failed"
 				reason := "failed to parse telegram token credentials"
 				errMsg = &reason
 				log.Printf("[❌ TELEGRAM API -> ERROR] %s\n", reason)
 			} else {
-				// Send to Telegram
-				// Format message with personalization
 				personalizedMsg := strings.ReplaceAll(task.MessageBody, "{first_name}", task.FirstName)
-
 				tgPayload := map[string]interface{}{
 					"chat_id": task.RoutingValue,
 					"text":    personalizedMsg,
@@ -142,10 +137,73 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 				}
 			}
 		}
+	} else if task.TargetPlatform == "whatsapp" {
+		var tokenData []byte
+		err := c.db.QueryRowContext(ctx, "SELECT encrypted_credentials FROM tenant_channels WHERE tenant_id = $1 AND platform_name = 'whatsapp' AND status = 'active' LIMIT 1", task.TenantID).Scan(&tokenData)
+
+		if err != nil {
+			status = "failed"
+			reason := fmt.Sprintf("no active WhatsApp channel configured for tenant: %v", err)
+			errMsg = &reason
+			log.Printf("[❌ WHATSAPP API -> ERROR] %s\n", reason)
+		} else {
+			var creds struct {
+				PhoneNumberID string `json:"phone_number_id"`
+				AccessToken   string `json:"access_token"`
+			}
+			_ = json.Unmarshal(tokenData, &creds)
+
+			if creds.PhoneNumberID == "" || creds.AccessToken == "" {
+				status = "failed"
+				reason := "WhatsApp channel credentials are incomplete (missing phone_number_id or access_token)"
+				errMsg = &reason
+				log.Printf("[❌ WHATSAPP API -> ERROR] %s\n", reason)
+			} else {
+				personalizedMsg := strings.ReplaceAll(task.MessageBody, "{first_name}", task.FirstName)
+				waPayload := map[string]interface{}{
+					"messaging_product": "whatsapp",
+					"recipient_type":    "individual",
+					"to":                task.RoutingValue,
+					"type":              "text",
+					"text": map[string]interface{}{
+						"preview_url": false,
+						"body":        personalizedMsg,
+					},
+				}
+
+				payloadBytes, _ := json.Marshal(waPayload)
+				waURL := fmt.Sprintf("https://graph.facebook.com/v21.0/%s/messages", creds.PhoneNumberID)
+
+				req, _ := http.NewRequestWithContext(ctx, "POST", waURL, bytes.NewBuffer(payloadBytes))
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("Authorization", "Bearer "+creds.AccessToken)
+
+				client := &http.Client{Timeout: 10 * time.Second}
+				resp, err := client.Do(req)
+
+				if err != nil {
+					status = "failed"
+					reason := fmt.Sprintf("network error calling WhatsApp Cloud API: %v", err)
+					errMsg = &reason
+					log.Printf("[❌ WHATSAPP API -> ERROR] %s\n", reason)
+				} else {
+					defer resp.Body.Close()
+					if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+						status = "failed"
+						reason := fmt.Sprintf("WhatsApp API rejected message (status %d)", resp.StatusCode)
+						errMsg = &reason
+						log.Printf("[❌ WHATSAPP API -> ERROR] %s\n", reason)
+					} else {
+						log.Printf("[📲 WHATSAPP CLOUD API] Dispatched cleanly to %s (%s)\n", task.FirstName, task.RoutingValue)
+					}
+				}
+			}
+		}
 	} else {
-		// Not telegram, just mock success for now (like WhatsApp)
-		time.Sleep(150 * time.Millisecond)
-		log.Printf("[📲 %s API] Mock dispatched cleanly to %s (%s)\n", strings.ToUpper(task.TargetPlatform), task.FirstName, task.RoutingValue)
+		status = "failed"
+		reason := fmt.Sprintf("unsupported platform '%s' — no delivery adapter configured", task.TargetPlatform)
+		errMsg = &reason
+		log.Printf("[❌ WORKER -> ERROR] %s\n", reason)
 	}
 
 	// Pack the return receipt
@@ -161,7 +219,7 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 
 	resultBytes, _ := json.Marshal(result)
 
-	// Publish the return receipt right back onto the message bus stream!
+	// Publish return receipt onto NATS stream
 	_, err := c.js.Publish("dispatch.result", resultBytes)
 	if err != nil {
 		log.Printf("[WORKER-ERROR] Failed to publish return receipt: %v\n", err)
@@ -171,6 +229,7 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 
 	_ = msg.Ack()
 }
+
 func normalizedTargetType(targetType string) string {
 	if targetType == "telegram_destination" {
 		return targetType
