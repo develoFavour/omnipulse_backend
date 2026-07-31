@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -44,6 +45,22 @@ func main() {
 
 	if err := broadcastConsumer.Start(globalCtx); err != nil {
 		logger.Fatalf("Outbound subscription allocation failed: %v", err)
+	}
+
+	// Launch HTTP server for Render health checks if PORT is supplied
+	port := os.Getenv("PORT")
+	if port != "" {
+		if port[0] != ':' {
+			port = ":" + port
+		}
+		http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"healthy","service":"broadcast-worker"}`))
+		})
+		go func() {
+			logger.Printf("Health check listener active on %s\n", port)
+			_ = http.ListenAndServe(port, nil)
+		}()
 	}
 
 	quitSignals := make(chan os.Signal, 1)

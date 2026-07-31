@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -60,6 +61,22 @@ func main() {
 
 	if err := natsConsumer.Start(globalCtx); err != nil {
 		logger.Fatalf("NATS processing stream channel registration failed: %v", err)
+	}
+
+	// Launch HTTP server for Render health checks if PORT is supplied
+	port := os.Getenv("PORT")
+	if port != "" {
+		if port[0] != ':' {
+			port = ":" + port
+		}
+		http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"healthy","service":"compliance-engine"}`))
+		})
+		go func() {
+			logger.Printf("Health check listener active on %s\n", port)
+			_ = http.ListenAndServe(port, nil)
+		}()
 	}
 
 	// 5. Execute Graceful System Termination Interception

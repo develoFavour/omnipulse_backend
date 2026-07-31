@@ -1,6 +1,6 @@
 services:
-  # 1. High-Throughput JetStream Event Broker (Private Service)
-  - type: pserv
+  # 1. High-Throughput JetStream Event Broker
+  - type: web
     name: omnipulse-nats
     env: docker
     dockerfilePath: Dockerfile.nats
@@ -35,13 +35,15 @@ services:
       - key: ALLOWED_ORIGINS
         sync: false
 
-  # 3. Broadcast Engine Delivery Worker (Background Worker)
-  - type: worker
+  # 3. Broadcast Engine Delivery Worker
+  - type: web
     name: omnipulse-broadcast-worker
     env: docker
     dockerfilePath: apps/broadcast-worker/Dockerfile
     dockerContext: .
     envVars:
+      - key: PORT
+        value: 8081
       - key: APP_ENV
         value: production
       - key: DATABASE_URL
@@ -49,13 +51,15 @@ services:
       - key: NATS_URL
         value: nats://omnipulse-nats:4222
 
-  # 4. Compliance Engine Worker (Background Worker)
-  - type: worker
+  # 4. Compliance Engine Worker
+  - type: web
     name: omnipulse-compliance-engine
     env: docker
     dockerfilePath: apps/compliance-engine/Dockerfile
     dockerContext: .
     envVars:
+      - key: PORT
+        value: 8082
       - key: APP_ENV
         value: production
       - key: REDIS_URL
