@@ -7,6 +7,7 @@ import (
 // Config stores the system endpoints for our background worker
 type Config struct {
 	NatsURL     string
+	NatsCreds   string
 	RedisURL    string
 	Environment string
 }
@@ -15,6 +16,7 @@ type Config struct {
 func Load() *Config {
 	return &Config{
 		NatsURL:     getEnv("NATS_URL", "nats://localhost:4222"),
+		NatsCreds:   getEnv("NATS_CREDS", ""),
 		RedisURL:    getEnv("REDIS_URL", "redis://localhost:6379/0"),
 		Environment: getEnv("APP_ENV", "development"),
 	}

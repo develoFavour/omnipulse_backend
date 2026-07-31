@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"os"
+	"strings"
 	"time"
 
 	"omnipulse/apps/compliance-engine/internal/domain"
@@ -32,8 +34,9 @@ type CampaignConsumer struct {
 }
 
 // NewCampaignConsumer instantiates the streaming listener circuit
-func NewCampaignConsumer(natsURL string, repo domain.ComplianceRepository) (*CampaignConsumer, error) {
-	nc, err := nats.Connect(natsURL)
+func NewCampaignConsumer(natsURL string, natsCreds string, repo domain.ComplianceRepository) (*CampaignConsumer, error) {
+	opts := getNatsOptions(natsCreds)
+	nc, err := nats.Connect(natsURL, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -130,4 +133,22 @@ func (c *CampaignConsumer) processMessage(ctx context.Context, msg *nats.Msg) {
 	}
 
 	_ = msg.Ack() // Complete the processing lifecycle loop
+}
+
+func getNatsOptions(natsCreds string) []nats.Option {
+	var opts []nats.Option
+	trimmed := strings.TrimSpace(natsCreds)
+	if trimmed != "" {
+		if strings.Contains(trimmed, "-----BEGIN NATS USER JWT-----") {
+			tmpFile, err := os.CreateTemp("", "nats-*.creds")
+			if err == nil {
+				_, _ = tmpFile.WriteString(trimmed)
+				_ = tmpFile.Close()
+				opts = append(opts, nats.UserCredentials(tmpFile.Name()))
+			}
+		} else {
+			opts = append(opts, nats.UserCredentials(trimmed))
+		}
+	}
+	return opts
 }

@@ -50,7 +50,7 @@ func main() {
 	// 3. Dependency Injection Architecture Component Wiring
 	complianceRepo := repository.NewRedisComplianceRepository(rdb)
 
-	natsConsumer, err := worker.NewCampaignConsumer(cfg.NatsURL, complianceRepo)
+	natsConsumer, err := worker.NewCampaignConsumer(cfg.NatsURL, cfg.NatsCreds, complianceRepo)
 	if err != nil {
 		logger.Fatalf("Failed to initialize NATS streaming consumer engine node: %v", err)
 	}

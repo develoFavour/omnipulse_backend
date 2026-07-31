@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"os"
+	"strings"
 	"time"
 
 	"omnipulse/apps/api-gateway/internal/domain"
@@ -21,8 +23,9 @@ type TelemetryConsumer struct {
 }
 
 // NewTelemetryConsumer initializes the background database-writer event node
-func NewTelemetryConsumer(natsURL string, repo domain.CampaignRepository) (*TelemetryConsumer, error) {
-	nc, err := nats.Connect(natsURL)
+func NewTelemetryConsumer(natsURL string, natsCreds string, repo domain.CampaignRepository) (*TelemetryConsumer, error) {
+	opts := getNatsOptions(natsCreds)
+	nc, err := nats.Connect(natsURL, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -92,4 +95,22 @@ func (c *TelemetryConsumer) processReceipt(ctx context.Context, msg *nats.Msg) {
 
 	// Acknowledge receipt: Safe from the message queue queue loop!
 	_ = msg.Ack()
+}
+
+func getNatsOptions(natsCreds string) []nats.Option {
+	var opts []nats.Option
+	trimmed := strings.TrimSpace(natsCreds)
+	if trimmed != "" {
+		if strings.Contains(trimmed, "-----BEGIN NATS USER JWT-----") {
+			tmpFile, err := os.CreateTemp("", "nats-*.creds")
+			if err == nil {
+				_, _ = tmpFile.WriteString(trimmed)
+				_ = tmpFile.Close()
+				opts = append(opts, nats.UserCredentials(tmpFile.Name()))
+			}
+		} else {
+			opts = append(opts, nats.UserCredentials(trimmed))
+		}
+	}
+	return opts
 }

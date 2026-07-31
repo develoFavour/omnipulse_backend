@@ -83,7 +83,7 @@ func main() {
 	globalWorkerCtx, cancelWorkers := context.WithCancel(context.Background())
 	defer cancelWorkers()
 
-	telemetryWorker, err := worker.NewTelemetryConsumer(cfg.NatsURL, campaignRepo)
+	telemetryWorker, err := worker.NewTelemetryConsumer(cfg.NatsURL, cfg.NatsCreds, campaignRepo)
 	if err != nil {
 		logger.Printf("[NATS-WARN] Telemetry worker initialization deferred: %v\n", err)
 	} else {
