@@ -12,13 +12,17 @@ WORKDIR /workspace
 # Copy workspace-level dependency files first (layer caching)
 COPY go.work go.work.sum ./
 COPY shared/go.mod ./shared/
-COPY apps/compliance-engine/go.mod apps/compliance-engine/go.sum ./apps/compliance-engine/
+COPY apps/api-gateway/go.mod apps/api-gateway/go.sum* ./apps/api-gateway/
+COPY apps/broadcast-worker/go.mod apps/broadcast-worker/go.sum* ./apps/broadcast-worker/
+COPY apps/compliance-engine/go.mod apps/compliance-engine/go.sum* ./apps/compliance-engine/
 
 # Download dependencies
 RUN cd apps/compliance-engine && go mod download
 
 # Copy source code
 COPY shared/ ./shared/
+COPY apps/api-gateway/ ./apps/api-gateway/
+COPY apps/broadcast-worker/ ./apps/broadcast-worker/
 COPY apps/compliance-engine/ ./apps/compliance-engine/
 
 # Build static binary
