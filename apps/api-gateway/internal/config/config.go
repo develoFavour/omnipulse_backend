@@ -12,6 +12,7 @@ type Config struct {
 	Environment      string
 	DBMaxConns       int
 	NatsURL          string
+	NatsCreds        string
 	ClerkSecretKey   string
 	PublicAPIBaseURL string
 
@@ -37,6 +38,7 @@ func Load() *Config {
 		Environment:      getEnv("APP_ENV", "development"),
 		DBMaxConns:       getEnvAsInt("DB_MAX_OPEN_CONNS", 25),
 		NatsURL:          getEnv("NATS_URL", "nats://localhost:4222"),
+		NatsCreds:        getEnv("NATS_CREDS", ""),
 		ClerkSecretKey:   getEnv("CLERK_SECRET_KEY", "sk_test_placeholder"),
 		PublicAPIBaseURL: getEnv("PUBLIC_API_BASE_URL", ""),
 		MetaAppID:        getEnv("META_APP_ID", ""),

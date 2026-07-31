@@ -48,7 +48,7 @@ func main() {
 	logger.Printf("Attached to PostgreSQL database pool [Mode: %s].\n", cfg.Environment)
 
 	// 2. Initialize NATS JetStream Event Broker Adapter
-	natsPublisher, err := event.NewJetStreamPublisher(cfg.NatsURL)
+	natsPublisher, err := event.NewJetStreamPublisher(cfg.NatsURL, cfg.NatsCreds)
 	if err != nil {
 		logger.Fatalf("Failed to initialize NATS streaming fabric core: %v", err)
 	}

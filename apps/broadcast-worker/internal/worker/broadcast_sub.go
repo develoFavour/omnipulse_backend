@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -23,8 +24,9 @@ type BroadcastConsumer struct {
 	db  *sql.DB
 }
 
-func NewBroadcastConsumer(natsURL string, db *sql.DB) (*BroadcastConsumer, error) {
-	nc, err := nats.Connect(natsURL)
+func NewBroadcastConsumer(natsURL string, natsCreds string, db *sql.DB) (*BroadcastConsumer, error) {
+	opts := getNatsOptions(natsCreds)
+	nc, err := nats.Connect(natsURL, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -235,4 +237,22 @@ func normalizedTargetType(targetType string) string {
 		return targetType
 	}
 	return "contact"
+}
+
+func getNatsOptions(natsCreds string) []nats.Option {
+	var opts []nats.Option
+	trimmed := strings.TrimSpace(natsCreds)
+	if trimmed != "" {
+		if strings.Contains(trimmed, "-----BEGIN NATS USER JWT-----") {
+			tmpFile, err := os.CreateTemp("", "nats-*.creds")
+			if err == nil {
+				_, _ = tmpFile.WriteString(trimmed)
+				_ = tmpFile.Close()
+				opts = append(opts, nats.UserCredentials(tmpFile.Name()))
+			}
+		} else {
+			opts = append(opts, nats.UserCredentials(trimmed))
+		}
+	}
+	return opts
 }

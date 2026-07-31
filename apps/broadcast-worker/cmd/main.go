@@ -35,7 +35,7 @@ func main() {
 	}
 	logger.Println("Database connection established successfully")
 
-	broadcastConsumer, err := worker.NewBroadcastConsumer(cfg.NatsURL, db)
+	broadcastConsumer, err := worker.NewBroadcastConsumer(cfg.NatsURL, cfg.NatsCreds, db)
 	if err != nil {
 		logger.Fatalf("Failed to establish NATS streaming consumer link: %v", err)
 	}

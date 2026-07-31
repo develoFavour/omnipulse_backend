@@ -6,6 +6,7 @@ import (
 
 type Config struct {
 	NatsURL     string
+	NatsCreds   string
 	Environment string
 	DatabaseURL string
 }
@@ -13,6 +14,7 @@ type Config struct {
 func Load() *Config {
 	return &Config{
 		NatsURL:     getEnv("NATS_URL", "nats://localhost:4222"),
+		NatsCreds:   getEnv("NATS_CREDS", ""),
 		Environment: getEnv("APP_ENV", "development"),
 		DatabaseURL: getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/omnipulse?sslmode=disable"),
 	}

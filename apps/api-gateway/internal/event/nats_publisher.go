@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"strings"
 
 	"omnipulse/apps/api-gateway/internal/domain"
 	"omnipulse/shared/contracts"
@@ -27,9 +29,10 @@ func (p *InMemoryPublisher) PublishDispatchTask(ctx context.Context, task *contr
 }
 
 // NewJetStreamPublisher sets up the connection and provisions the streaming topic boundary.
-// If NATS connection fails, it safely returns an InMemoryPublisher fallback rather than crashing.
-func NewJetStreamPublisher(natsURL string) (domain.EventPublisher, error) {
-	nc, err := nats.Connect(natsURL)
+// Supports Synadia Cloud credentials via natsCreds parameter.
+func NewJetStreamPublisher(natsURL string, natsCreds string) (domain.EventPublisher, error) {
+	opts := getNatsOptions(natsCreds)
+	nc, err := nats.Connect(natsURL, opts...)
 	if err != nil {
 		log.Printf("[NATS-WARN] Connection failed (%v). Operating with resilient event publisher fallback.\n", err)
 		return &InMemoryPublisher{}, nil
@@ -69,6 +72,24 @@ func NewJetStreamPublisher(natsURL string) (domain.EventPublisher, error) {
 	}
 
 	return &JetStreamPublisher{nc: nc, js: js}, nil
+}
+
+func getNatsOptions(natsCreds string) []nats.Option {
+	var opts []nats.Option
+	trimmed := strings.TrimSpace(natsCreds)
+	if trimmed != "" {
+		if strings.Contains(trimmed, "-----BEGIN NATS USER JWT-----") {
+			tmpFile, err := os.CreateTemp("", "nats-*.creds")
+			if err == nil {
+				_, _ = tmpFile.WriteString(trimmed)
+				_ = tmpFile.Close()
+				opts = append(opts, nats.UserCredentials(tmpFile.Name()))
+			}
+		} else {
+			opts = append(opts, nats.UserCredentials(trimmed))
+		}
+	}
+	return opts
 }
 
 func mergeSubjects(existing, required []string) []string {
