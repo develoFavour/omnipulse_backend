@@ -22,23 +22,32 @@ type TelemetryConsumer struct {
 	repo domain.CampaignRepository
 }
 
-// NewTelemetryConsumer initializes the background database-writer event node
-func NewTelemetryConsumer(natsURL string, natsCreds string, repo domain.CampaignRepository) (*TelemetryConsumer, error) {
+// NewTelemetryConsumer initializes the background database-writer event node.
+// Reuses existing nc and js connections if provided to avoid exceeding NATS connection quotas.
+func NewTelemetryConsumer(natsURL string, natsCreds string, nc *nats.Conn, js nats.JetStreamContext, repo domain.CampaignRepository) (*TelemetryConsumer, error) {
+	if nc != nil && js != nil {
+		return &TelemetryConsumer{
+			nc:   nc,
+			js:   js,
+			repo: repo,
+		}, nil
+	}
+
 	opts := getNatsOptions(natsCreds)
-	nc, err := nats.Connect(natsURL, opts...)
+	conn, err := nats.Connect(natsURL, opts...)
 	if err != nil {
 		return nil, err
 	}
 
-	js, err := nc.JetStream()
+	streamCtx, err := conn.JetStream()
 	if err != nil {
-		nc.Close()
+		conn.Close()
 		return nil, err
 	}
 
 	return &TelemetryConsumer{
-		nc:   nc,
-		js:   js,
+		nc:   conn,
+		js:   streamCtx,
 		repo: repo,
 	}, nil
 }

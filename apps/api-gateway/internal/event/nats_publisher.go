@@ -75,6 +75,10 @@ func NewJetStreamPublisher(natsURL string, natsCreds string) (domain.EventPublis
 	return &JetStreamPublisher{nc: nc, js: js}, nil
 }
 
+func (p *JetStreamPublisher) GetConn() (*nats.Conn, nats.JetStreamContext) {
+	return p.nc, p.js
+}
+
 func getNatsOptions(natsCreds string) []nats.Option {
 	var opts []nats.Option
 	trimmed := strings.TrimSpace(natsCreds)

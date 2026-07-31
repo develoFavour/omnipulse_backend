@@ -24,6 +24,7 @@ import (
 	"github.com/clerk/clerk-sdk-go/v2"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
+	"github.com/nats-io/nats.go"
 	"github.com/rs/cors"
 )
 
@@ -81,9 +82,13 @@ func main() {
 
 	// Initialize the background Telemetry Audit Listener Component
 	globalWorkerCtx, cancelWorkers := context.WithCancel(context.Background())
-	defer cancelWorkers()
+	var natsConn *nats.Conn
+	var natsJS nats.JetStreamContext
+	if jp, ok := natsPublisher.(*event.JetStreamPublisher); ok {
+		natsConn, natsJS = jp.GetConn()
+	}
 
-	telemetryWorker, err := worker.NewTelemetryConsumer(cfg.NatsURL, cfg.NatsCreds, campaignRepo)
+	telemetryWorker, err := worker.NewTelemetryConsumer(cfg.NatsURL, cfg.NatsCreds, natsConn, natsJS, campaignRepo)
 	if err != nil {
 		logger.Printf("[NATS-WARN] Telemetry worker initialization deferred: %v\n", err)
 	} else {
