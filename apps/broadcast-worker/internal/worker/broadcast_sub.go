@@ -242,6 +242,7 @@ func normalizedTargetType(targetType string) string {
 func getNatsOptions(natsCreds string) []nats.Option {
 	var opts []nats.Option
 	trimmed := strings.TrimSpace(natsCreds)
+	trimmed = strings.ReplaceAll(trimmed, "\\n", "\n")
 	if trimmed != "" {
 		if strings.Contains(trimmed, "-----BEGIN NATS USER JWT-----") {
 			tmpFile, err := os.CreateTemp("", "nats-*.creds")
