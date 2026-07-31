@@ -1,0 +1,64 @@
+services:
+  # 1. High-Throughput JetStream Event Broker (Private Service)
+  - type: pserv
+    name: omnipulse-nats
+    env: docker
+    dockerfilePath: Dockerfile.nats
+    envVars:
+      - key: PORT
+        value: 4222
+
+  # 2. Omnipulse API Gateway (Public Web Service)
+  - type: web
+    name: omnipulse-api-gateway
+    env: docker
+    dockerfilePath: apps/api-gateway/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 8080
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: NATS_URL
+        value: nats://omnipulse-nats:4222
+      - key: CLERK_SECRET_KEY
+        sync: false
+      - key: META_APP_ID
+        sync: false
+      - key: META_APP_SECRET
+        sync: false
+      - key: META_WABA_CONFIG_ID
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+
+  # 3. Broadcast Engine Delivery Worker (Background Worker)
+  - type: worker
+    name: omnipulse-broadcast-worker
+    env: docker
+    dockerfilePath: apps/broadcast-worker/Dockerfile
+    dockerContext: .
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: NATS_URL
+        value: nats://omnipulse-nats:4222
+
+  # 4. Compliance Engine Worker (Background Worker)
+  - type: worker
+    name: omnipulse-compliance-engine
+    env: docker
+    dockerfilePath: apps/compliance-engine/Dockerfile
+    dockerContext: .
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: REDIS_URL
+        sync: false
+      - key: NATS_URL
+        value: nats://omnipulse-nats:4222
