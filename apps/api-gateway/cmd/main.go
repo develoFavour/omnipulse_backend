@@ -80,17 +80,18 @@ func main() {
 	destinationHandler := handler.NewTelegramDestinationHandler(destinationRepo)
 
 	// Initialize the background Telemetry Audit Listener Component
-	telemetryWorker, err := worker.NewTelemetryConsumer(cfg.NatsURL, campaignRepo)
-	if err != nil {
-		logger.Fatalf("Failed to initialize telemetry worker node: %v", err)
-	}
-
-	// Launch the worker loop asynchronously inside a dedicated thread context
 	globalWorkerCtx, cancelWorkers := context.WithCancel(context.Background())
 	defer cancelWorkers()
 
-	if err := telemetryWorker.Start(globalWorkerCtx); err != nil {
-		logger.Fatalf("Telemetry stream subscription failed: %v", err)
+	telemetryWorker, err := worker.NewTelemetryConsumer(cfg.NatsURL, campaignRepo)
+	if err != nil {
+		logger.Printf("[NATS-WARN] Telemetry worker initialization deferred: %v\n", err)
+	} else {
+		if err := telemetryWorker.Start(globalWorkerCtx); err != nil {
+			logger.Printf("[NATS-WARN] Telemetry stream subscription deferred: %v\n", err)
+		} else {
+			defer telemetryWorker.Stop()
+		}
 	}
 
 	// 4. Modern Native HTTP Routing Multiplexer
@@ -176,7 +177,9 @@ func main() {
 	logger.Printf("Termination signal received (%s). Commencing graceful cleanup drain loop...\n", sig.String())
 
 	cancelWorkers()
-	telemetryWorker.Stop()
+	if telemetryWorker != nil {
+		telemetryWorker.Stop()
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
