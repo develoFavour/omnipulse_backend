@@ -67,8 +67,8 @@ func RequestLoggerMiddleware(logger *log.Logger) func(http.Handler) http.Handler
 func AuthMiddleware(identityUC *usecase.IdentityUseCase) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Bypass health check and external webhooks
-			if r.URL.Path == "/health" || strings.HasPrefix(r.URL.Path, "/api/v1/webhooks/") {
+			// Bypass health check, root path, and external webhooks
+			if r.URL.Path == "/" || r.URL.Path == "/health" || strings.HasPrefix(r.URL.Path, "/api/v1/webhooks/") {
 				next.ServeHTTP(w, r)
 				return
 			}

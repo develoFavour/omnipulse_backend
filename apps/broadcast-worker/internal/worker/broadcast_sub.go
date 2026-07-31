@@ -42,6 +42,7 @@ func NewBroadcastConsumer(natsURL string, natsCreds string, db *sql.DB) (*Broadc
 		Name:     "CAMPAIGNS",
 		Subjects: []string{"campaign.dispatched", "campaign.approved", "dispatch.result"},
 		Storage:  nats.FileStorage,
+		MaxBytes: 10 * 1024 * 1024,
 	})
 	if err != nil {
 		// Safely ignores if already updated

@@ -51,6 +51,7 @@ func NewJetStreamPublisher(natsURL string, natsCreds string) (domain.EventPublis
 		Name:     streamName,
 		Subjects: requiredSubjects,
 		Storage:  nats.FileStorage,
+		MaxBytes: 10 * 1024 * 1024, // 10MB quota limit required by Synadia NGS
 	})
 	if err != nil {
 		if err == nats.ErrStreamNameAlreadyInUse {
