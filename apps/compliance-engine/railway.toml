@@ -1,0 +1,5 @@
+[build]
+dockerfilePath = "apps/compliance-engine/Dockerfile"
+
+[deploy]
+restartPolicyType = "ON_FAILURE"

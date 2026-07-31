@@ -19,12 +19,20 @@ type Config struct {
 	MetaAppID        string
 	MetaAppSecret    string
 	MetaWABAConfigID string
+
+	// CORS — comma-separated allowed origins (e.g. "https://app.omnipulse.ng,http://localhost:3000")
+	AllowedOrigins string
 }
 
 // Load reads values from the OS environment variables or supplies secure defaults
 func Load() *Config {
+	port := getEnv("PORT", "8080")
+	if len(port) > 0 && port[0] != ':' {
+		port = ":" + port
+	}
+
 	return &Config{
-		Port:             getEnv("PORT", ":8080"),
+		Port:             port,
 		DatabaseURL:      getEnv("DATABASE_URL", "postgres://admin:secretpassword@localhost:5432/omnipulse_dev?sslmode=disable"),
 		Environment:      getEnv("APP_ENV", "development"),
 		DBMaxConns:       getEnvAsInt("DB_MAX_OPEN_CONNS", 25),
@@ -34,6 +42,7 @@ func Load() *Config {
 		MetaAppID:        getEnv("META_APP_ID", ""),
 		MetaAppSecret:    getEnv("META_APP_SECRET", ""),
 		MetaWABAConfigID: getEnv("META_WABA_CONFIG_ID", ""),
+		AllowedOrigins:   getEnv("ALLOWED_ORIGINS", "http://localhost:3000"),
 	}
 }
 

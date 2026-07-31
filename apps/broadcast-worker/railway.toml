@@ -1,0 +1,5 @@
+[build]
+dockerfilePath = "apps/broadcast-worker/Dockerfile"
+
+[deploy]
+restartPolicyType = "ON_FAILURE"
