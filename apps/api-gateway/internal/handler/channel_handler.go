@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"omnipulse/apps/api-gateway/internal/domain"
@@ -344,7 +345,7 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 		} else {
 			exchangeURL = fmt.Sprintf(
 				"https://graph.facebook.com/v21.0/oauth/access_token?client_id=%s&client_secret=%s&code=%s&redirect_uri=%s",
-				h.metaConfig.AppID, h.metaConfig.AppSecret, req.Code, uri,
+				h.metaConfig.AppID, h.metaConfig.AppSecret, req.Code, url.QueryEscape(uri),
 			)
 		}
 
