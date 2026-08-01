@@ -137,11 +137,12 @@ type MetaAppConfig struct {
 type ChannelHandler struct {
 	repo             domain.ChannelRepository
 	publicAPIBaseURL string
+	publicAppBaseURL string
 	metaConfig       MetaAppConfig
 }
 
-func NewChannelHandler(repo domain.ChannelRepository, publicAPIBaseURL string, metaConfig MetaAppConfig) *ChannelHandler {
-	return &ChannelHandler{repo: repo, publicAPIBaseURL: publicAPIBaseURL, metaConfig: metaConfig}
+func NewChannelHandler(repo domain.ChannelRepository, publicAPIBaseURL, publicAppBaseURL string, metaConfig MetaAppConfig) *ChannelHandler {
+	return &ChannelHandler{repo: repo, publicAPIBaseURL: publicAPIBaseURL, publicAppBaseURL: publicAppBaseURL, metaConfig: metaConfig}
 }
 
 func (h *ChannelHandler) CreateChannel(w http.ResponseWriter, r *http.Request) {
@@ -282,7 +283,7 @@ func (h *ChannelHandler) HandleWhatsAppOAuthConfig(w http.ResponseWriter, r *htt
 	utils.WriteJSON(w, http.StatusOK, map[string]string{
 		"app_id":       h.metaConfig.AppID,
 		"config_id":    h.metaConfig.WABAConfigID,
-		"redirect_uri": fmt.Sprintf("%s/api/v1/channels/whatsapp/oauth/callback", strings.TrimRight(h.publicAPIBaseURL, "/")),
+		"redirect_uri": strings.TrimRight(h.publicAppBaseURL, "/") + "/",
 	})
 }
 
@@ -318,7 +319,7 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 	// Step 1: Exchange auth code for a long-lived access token via Meta's OAuth token endpoint.
 	// For JS SDK Embedded Signup, Meta requires either no redirect_uri, the exact public callback URI,
 	// or empty redirect_uri depending on app configuration settings. We attempt candidates in sequence.
-	publicCallback := fmt.Sprintf("%s/api/v1/channels/whatsapp/oauth/callback", strings.TrimRight(h.publicAPIBaseURL, "/"))
+	publicCallback := strings.TrimRight(h.publicAppBaseURL, "/") + "/"
 	candidateURIs := []string{
 		"",
 		publicCallback,

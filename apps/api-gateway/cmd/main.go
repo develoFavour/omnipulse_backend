@@ -71,7 +71,7 @@ func main() {
 	contactHandler := handler.NewContactHandler(contactUseCase)
 	campaignHandler := handler.NewCampaignHandler(campaignUseCase)
 	identityHandler := handler.NewIdentityHandler(identityUseCase)
-	channelHandler := handler.NewChannelHandler(channelRepo, cfg.PublicAPIBaseURL, handler.MetaAppConfig{
+	channelHandler := handler.NewChannelHandler(channelRepo, cfg.PublicAPIBaseURL, cfg.PublicAppBaseURL, handler.MetaAppConfig{
 		AppID:        cfg.MetaAppID,
 		AppSecret:    cfg.MetaAppSecret,
 		WABAConfigID: cfg.MetaWABAConfigID,
