@@ -321,6 +321,7 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 	// or empty redirect_uri depending on app configuration settings. We attempt candidates in sequence.
 	publicCallback := strings.TrimRight(h.publicAppBaseURL, "/")
 	candidateURIs := []string{publicCallback}
+	log.Printf("[WhatsApp-OAuth-Debug] Token exchange redirect_uri: %q; code_length: %d\\n", publicCallback, len(req.Code))
 
 	var tokenResult struct {
 		AccessToken string `json:"access_token"`
