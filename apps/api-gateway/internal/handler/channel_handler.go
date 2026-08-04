@@ -320,11 +320,7 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 	// For JS SDK Embedded Signup, Meta requires either no redirect_uri, the exact public callback URI,
 	// or empty redirect_uri depending on app configuration settings. We attempt candidates in sequence.
 	publicCallback := strings.TrimRight(h.publicAppBaseURL, "/") + "/"
-	candidateURIs := []string{
-		"",
-		publicCallback,
-		"https://www.facebook.com/connect/login_success.html",
-	}
+	candidateURIs := []string{publicCallback}
 
 	var tokenResult struct {
 		AccessToken string `json:"access_token"`
