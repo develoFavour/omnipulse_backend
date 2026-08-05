@@ -317,15 +317,18 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 		return
 	}
 
-	// Step 1: Exchange auth code for a long-lived access token via Meta's OAuth token endpoint.
-	// For Meta Embedded Signup via JS SDK (FB.login), Meta Graph API requires an HTTP POST request
-	// with form-encoded body parameters (client_id, client_secret, code).
+	redirectURI := req.RedirectURI
+	if redirectURI == "" {
+		redirectURI = strings.TrimRight(h.publicAppBaseURL, "/")
+	}
+
 	formData := url.Values{}
 	formData.Set("client_id", h.metaConfig.AppID)
 	formData.Set("client_secret", h.metaConfig.AppSecret)
 	formData.Set("code", req.Code)
+	formData.Set("redirect_uri", redirectURI)
 
-	log.Printf("[WhatsApp-OAuth-Exchange] Exchanging code (len %d) via HTTP POST with Meta Graph API (AppID: %s)...\n", len(req.Code), h.metaConfig.AppID)
+	log.Printf("[WhatsApp-OAuth-Exchange] Exchanging code (len %d) via HTTP POST with Meta Graph API (AppID: %s, redirect_uri: %s)...\n", len(req.Code), h.metaConfig.AppID, redirectURI)
 	resp, err := http.PostForm("https://graph.facebook.com/v21.0/oauth/access_token", formData)
 	if err != nil {
 		utils.WriteError(w, http.StatusBadGateway, fmt.Sprintf("Failed to connect to Meta Graph API: %v", err))
