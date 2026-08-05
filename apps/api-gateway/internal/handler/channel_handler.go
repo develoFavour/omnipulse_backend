@@ -317,32 +317,8 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 		return
 	}
 
-	// Build candidate list for redirect_uri parameter:
-	// 1. req.RedirectURI (e.g. "https://omnipulseng.vercel.app/connections")
-	// 2. base domain with trailing slash ("https://omnipulseng.vercel.app/")
-	// 3. base domain without trailing slash ("https://omnipulseng.vercel.app")
-	// 4. empty string ("")
-	rawCandidates := []string{}
-	if req.RedirectURI != "" {
-		rawCandidates = append(rawCandidates, req.RedirectURI)
-	}
-	rawCandidates = append(rawCandidates,
-		"https://omnipulseng.vercel.app/connections",
-		"https://omnipulseng.vercel.app/",
-		"https://omnipulseng.vercel.app",
-		"https://www.facebook.com/connect/login_success.html",
-		"",
-	)
-
-	// Deduplicate candidates while preserving order
-	seen := make(map[string]bool)
-	var candidateURIs []string
-	for _, c := range rawCandidates {
-		if !seen[c] {
-			seen[c] = true
-			candidateURIs = append(candidateURIs, c)
-		}
-	}
+	// Embedded Signup codes from the JavaScript SDK must be exchanged once without a redirect_uri.
+	var candidateURIs = []string{""}
 
 	var tokenResult struct {
 		AccessToken string `json:"access_token"`
