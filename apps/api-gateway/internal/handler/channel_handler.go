@@ -327,8 +327,10 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 		rawCandidates = append(rawCandidates, req.RedirectURI)
 	}
 	rawCandidates = append(rawCandidates,
+		"https://omnipulseng.vercel.app/connections",
 		"https://omnipulseng.vercel.app/",
 		"https://omnipulseng.vercel.app",
+		"https://www.facebook.com/connect/login_success.html",
 		"",
 	)
 
