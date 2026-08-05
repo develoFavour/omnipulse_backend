@@ -55,7 +55,6 @@ func main() {
 	}
 	logger.Println("Successfully connected to NATS JetStream fabric.")
 
-	// 3. Dependency Injection Architecture Wiring
 	contactRepo := repository.NewPostgresContactRepository(db)
 	campaignRepo := repository.NewPostgresCampaignRepository(db)
 	identityRepo := repository.NewPostgresIdentityRepository(db)
@@ -80,7 +79,6 @@ func main() {
 	dashboardHandler := handler.NewDashboardHandler(dashboardUseCase)
 	destinationHandler := handler.NewTelegramDestinationHandler(destinationRepo)
 
-	// Initialize the background Telemetry Audit Listener Component
 	globalWorkerCtx, cancelWorkers := context.WithCancel(context.Background())
 	var natsConn *nats.Conn
 	var natsJS nats.JetStreamContext

@@ -317,24 +317,30 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 		return
 	}
 
-	redirectURI := req.RedirectURI
-	if redirectURI == "" {
-		redirectURI = strings.TrimRight(h.publicAppBaseURL, "/")
+	// Build candidate list for redirect_uri parameter:
+	// 1. req.RedirectURI (e.g. "https://omnipulseng.vercel.app/connections")
+	// 2. base domain with trailing slash ("https://omnipulseng.vercel.app/")
+	// 3. base domain without trailing slash ("https://omnipulseng.vercel.app")
+	// 4. empty string ("")
+	rawCandidates := []string{}
+	if req.RedirectURI != "" {
+		rawCandidates = append(rawCandidates, req.RedirectURI)
 	}
+	rawCandidates = append(rawCandidates,
+		"https://omnipulseng.vercel.app/",
+		"https://omnipulseng.vercel.app",
+		"",
+	)
 
-	formData := url.Values{}
-	formData.Set("client_id", h.metaConfig.AppID)
-	formData.Set("client_secret", h.metaConfig.AppSecret)
-	formData.Set("code", req.Code)
-	formData.Set("redirect_uri", redirectURI)
-
-	log.Printf("[WhatsApp-OAuth-Exchange] Exchanging code (len %d) via HTTP POST with Meta Graph API (AppID: %s, redirect_uri: %s)...\n", len(req.Code), h.metaConfig.AppID, redirectURI)
-	resp, err := http.PostForm("https://graph.facebook.com/v21.0/oauth/access_token", formData)
-	if err != nil {
-		utils.WriteError(w, http.StatusBadGateway, fmt.Sprintf("Failed to connect to Meta Graph API: %v", err))
-		return
+	// Deduplicate candidates while preserving order
+	seen := make(map[string]bool)
+	var candidateURIs []string
+	for _, c := range rawCandidates {
+		if !seen[c] {
+			seen[c] = true
+			candidateURIs = append(candidateURIs, c)
+		}
 	}
-	defer resp.Body.Close()
 
 	var tokenResult struct {
 		AccessToken string `json:"access_token"`
@@ -346,9 +352,46 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 			ErrorSubcode int    `json:"error_subcode"`
 		} `json:"error"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResult); err != nil {
-		utils.WriteError(w, http.StatusBadGateway, fmt.Sprintf("Failed to decode Meta Graph API response: %v", err))
-		return
+
+	for _, rURI := range candidateURIs {
+		formData := url.Values{}
+		formData.Set("client_id", h.metaConfig.AppID)
+		formData.Set("client_secret", h.metaConfig.AppSecret)
+		formData.Set("code", req.Code)
+		if rURI != "" {
+			formData.Set("redirect_uri", rURI)
+		}
+
+		log.Printf("[WhatsApp-OAuth-Exchange] Trying code exchange with Meta (AppID: %s, redirect_uri: %q)...\n", h.metaConfig.AppID, rURI)
+		resp, err := http.PostForm("https://graph.facebook.com/v21.0/oauth/access_token", formData)
+		if err != nil {
+			log.Printf("[WhatsApp-OAuth-Exchange-Error] Network error connecting to Meta with redirect_uri %q: %v\n", rURI, err)
+			continue
+		}
+
+		var attempt struct {
+			AccessToken string `json:"access_token"`
+			TokenType   string `json:"token_type"`
+			ExpiresIn   int    `json:"expires_in"`
+			Error       *struct {
+				Message      string `json:"message"`
+				Code         int    `json:"code"`
+				ErrorSubcode int    `json:"error_subcode"`
+			} `json:"error"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&attempt)
+		resp.Body.Close()
+
+		if attempt.AccessToken != "" {
+			tokenResult = attempt
+			log.Printf("[WhatsApp-OAuth-Exchange-Success] Successfully acquired access token using redirect_uri: %q\n", rURI)
+			break
+		}
+
+		if attempt.Error != nil {
+			tokenResult = attempt
+			log.Printf("[WhatsApp-OAuth-Exchange-Attempt] redirect_uri %q failed: Meta Error %d (subcode %d): %s\n", rURI, attempt.Error.Code, attempt.Error.ErrorSubcode, attempt.Error.Message)
+		}
 	}
 
 	if tokenResult.Error != nil {

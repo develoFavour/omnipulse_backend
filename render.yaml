@@ -32,6 +32,8 @@ services:
         sync: false
       - key: META_WABA_CONFIG_ID
         sync: false
+      - key: PUBLIC_APP_BASE_URL
+        sync: false
       - key: ALLOWED_ORIGINS
         sync: false
 

@@ -11,7 +11,6 @@ CREATE TYPE dispatch_status AS ENUM ('queued', 'in_flight', 'rate_limited', 'del
 CREATE TYPE campaign_delivery_type AS ENUM ('direct_message', 'public_post');
 CREATE TYPE delivery_status_enum AS ENUM ('sent', 'delivered', 'failed');
 
--- 2. TENANTS (Multi-tenant Workspaces)
 CREATE TABLE IF NOT EXISTS tenants (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     company_name VARCHAR(255) NOT NULL,
@@ -20,17 +19,17 @@ CREATE TABLE IF NOT EXISTS tenants (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- 3. USERS (Clerk Auth Integration)
+
 CREATE TABLE IF NOT EXISTS users (
-    id VARCHAR(255) PRIMARY KEY, -- Clerk User ID (e.g. 'user_2NizX9...')
+    id VARCHAR(255) PRIMARY KEY, 
     tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     email VARCHAR(255) NOT NULL UNIQUE,
-    role VARCHAR(50) NOT NULL DEFAULT 'member', -- 'admin', 'member'
+    role VARCHAR(50) NOT NULL DEFAULT 'member', 
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- 4. TENANT CHANNELS (Connected Platforms & Credentials)
+
 CREATE TABLE IF NOT EXISTS tenant_channels (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
@@ -44,7 +43,7 @@ CREATE TABLE IF NOT EXISTS tenant_channels (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tenant_platform_unique ON tenant_channels(tenant_id, platform_name);
 
--- 5. CONTACTS (Audience Directory)
+
 CREATE TABLE IF NOT EXISTS contacts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
