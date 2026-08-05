@@ -318,11 +318,12 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 	}
 
 	// Step 1: Exchange auth code for a long-lived access token via Meta's OAuth token endpoint.
-	// For Meta Embedded Signup via JS SDK (FB.login), no redirect_uri is passed because the code
-	// was granted interactively in-dialog via JS postMessage.
+	// For Meta Embedded Signup via JS SDK (FB.login), no redirect_uri parameter is sent to Meta Graph API.
 	exchangeURL := fmt.Sprintf(
 		"https://graph.facebook.com/v21.0/oauth/access_token?client_id=%s&client_secret=%s&code=%s",
-		h.metaConfig.AppID, h.metaConfig.AppSecret, req.Code,
+		url.QueryEscape(h.metaConfig.AppID),
+		url.QueryEscape(h.metaConfig.AppSecret),
+		url.QueryEscape(req.Code),
 	)
 
 	log.Printf("[WhatsApp-OAuth-Exchange] Exchanging code (len %d) with Meta Graph API (AppID: %s)...\n", len(req.Code), h.metaConfig.AppID)
@@ -331,6 +332,7 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 		utils.WriteError(w, http.StatusBadGateway, fmt.Sprintf("Failed to connect to Meta Graph API: %v", err))
 		return
 	}
+	defer resp.Body.Close()
 
 	var tokenResult struct {
 		AccessToken string `json:"access_token"`
@@ -342,33 +344,9 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 			ErrorSubcode int    `json:"error_subcode"`
 		} `json:"error"`
 	}
-	_ = json.NewDecoder(resp.Body).Decode(&tokenResult)
-	resp.Body.Close()
-
-	// If no-redirect exchange returned an error, attempt fallback with publicAppBaseURL
-	if tokenResult.Error != nil && tokenResult.AccessToken == "" {
-		log.Printf("[WhatsApp-OAuth-Exchange] Primary no-redirect exchange returned Meta error %d (%s). Trying fallback redirect_uri...\n", tokenResult.Error.Code, tokenResult.Error.Message)
-		fallbackURL := fmt.Sprintf(
-			"https://graph.facebook.com/v21.0/oauth/access_token?client_id=%s&client_secret=%s&code=%s&redirect_uri=%s",
-			h.metaConfig.AppID, h.metaConfig.AppSecret, req.Code, url.QueryEscape(strings.TrimRight(h.publicAppBaseURL, "/")),
-		)
-		fbResp, fbErr := http.Get(fallbackURL)
-		if fbErr == nil {
-			var fbResult struct {
-				AccessToken string `json:"access_token"`
-				TokenType   string `json:"token_type"`
-				ExpiresIn   int    `json:"expires_in"`
-				Error       *struct {
-					Message      string `json:"message"`
-					Code         int    `json:"code"`
-					ErrorSubcode int    `json:"error_subcode"`
-				} `json:"error"`
-			}
-			if json.NewDecoder(fbResp.Body).Decode(&fbResult) == nil && fbResult.AccessToken != "" {
-				tokenResult = fbResult
-			}
-			fbResp.Body.Close()
-		}
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResult); err != nil {
+		utils.WriteError(w, http.StatusBadGateway, fmt.Sprintf("Failed to decode Meta Graph API response: %v", err))
+		return
 	}
 
 	if tokenResult.Error != nil {
