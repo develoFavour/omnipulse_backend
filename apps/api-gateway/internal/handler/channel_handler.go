@@ -306,6 +306,7 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 		Code          string `json:"code"`
 		WABAID        string `json:"waba_id,omitempty"`
 		PhoneNumberID string `json:"phone_number_id,omitempty"`
+		RedirectURI   string `json:"redirect_uri,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		utils.WriteError(w, http.StatusBadRequest, "Invalid request body. Expected { \"code\": \"...\" }")
@@ -317,11 +318,20 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 	}
 
 	// Step 1: Exchange auth code for a long-lived access token via Meta's OAuth token endpoint.
-	// For JS SDK Embedded Signup, Meta requires either no redirect_uri, the exact public callback URI,
-	// or empty redirect_uri depending on app configuration settings. We attempt candidates in sequence.
-	publicCallback := strings.TrimRight(h.publicAppBaseURL, "/")
-	candidateURIs := []string{publicCallback}
-	log.Printf("[WhatsApp-OAuth-Debug] Token exchange redirect_uri: %q; code_length: %d\\n", publicCallback, len(req.Code))
+	// Meta's JS SDK FB.login can expect empty redirect_uri (""), exact page URL, or callback URI.
+	publicBase := strings.TrimRight(h.publicAppBaseURL, "/")
+	candidateURIs := []string{}
+	if req.RedirectURI != "" {
+		candidateURIs = append(candidateURIs, req.RedirectURI)
+	}
+	candidateURIs = append(candidateURIs,
+		"", // Primary Meta recommendation for JS SDK Embedded Signup
+		publicBase+"/connections",
+		publicBase,
+		publicBase+"/oauth/facebook/callback",
+		"https://www.facebook.com/connect/login_success.html",
+	)
+	log.Printf("[WhatsApp-OAuth-Debug] Exchanging code (len %d) across %d candidate redirect_uris (primary req: %q)\n", len(req.Code), len(candidateURIs), req.RedirectURI)
 
 	var tokenResult struct {
 		AccessToken string `json:"access_token"`
