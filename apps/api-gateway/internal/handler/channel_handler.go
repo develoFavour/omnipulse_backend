@@ -317,20 +317,27 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 		return
 	}
 
-	// Step 1: Exchange auth code for a long-lived access token via Meta's OAuth token endpoint.
-	// Meta's JS SDK FB.login can expect empty redirect_uri (""), exact page URL, or callback URI.
 	publicBase := strings.TrimRight(h.publicAppBaseURL, "/")
-	candidateURIs := []string{}
+	rawCandidates := []string{}
 	if req.RedirectURI != "" {
-		candidateURIs = append(candidateURIs, req.RedirectURI)
+		rawCandidates = append(rawCandidates, req.RedirectURI)
 	}
-	candidateURIs = append(candidateURIs,
+	rawCandidates = append(rawCandidates,
 		"", // Primary Meta recommendation for JS SDK Embedded Signup
 		publicBase+"/connections",
 		publicBase,
 		publicBase+"/oauth/facebook/callback",
-		"https://www.facebook.com/connect/login_success.html",
 	)
+
+	// Deduplicate candidates while preserving order
+	seen := make(map[string]bool)
+	candidateURIs := []string{}
+	for _, c := range rawCandidates {
+		if !seen[c] {
+			seen[c] = true
+			candidateURIs = append(candidateURIs, c)
+		}
+	}
 	log.Printf("[WhatsApp-OAuth-Debug] Exchanging code (len %d) across %d candidate redirect_uris (primary req: %q)\n", len(req.Code), len(candidateURIs), req.RedirectURI)
 
 	var tokenResult struct {
