@@ -317,8 +317,13 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 		return
 	}
 
-	// Embedded Signup codes from the JavaScript SDK must be exchanged once without a redirect_uri.
-	var candidateURIs = []string{""}
+	// Try the configured PublicAppBaseURL first, then fall back to empty string.
+	// The redirect_uri MUST match what Meta's OAuth dialog used during the Embedded Signup flow.
+	var candidateURIs []string
+	if h.publicAppBaseURL != "" {
+		candidateURIs = append(candidateURIs, strings.TrimRight(h.publicAppBaseURL, "/"))
+	}
+	candidateURIs = append(candidateURIs, "")
 
 	var tokenResult struct {
 		AccessToken string `json:"access_token"`
