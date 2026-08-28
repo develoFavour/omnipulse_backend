@@ -317,13 +317,13 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 		return
 	}
 
-	// Try the configured PublicAppBaseURL first, then fall back to empty string.
-	// The redirect_uri MUST match what Meta's OAuth dialog used during the Embedded Signup flow.
-	var candidateURIs []string
-	if h.publicAppBaseURL != "" {
-		candidateURIs = append(candidateURIs, strings.TrimRight(h.publicAppBaseURL, "/"))
+	// The direct OAuth dialog and this exchange use the same configured URI.
+	redirectURI := strings.TrimRight(h.publicAppBaseURL, "/")
+	log.Printf("[WhatsApp-OAuth] stage=received_code app_id=%s code_length=%d configured_redirect_uri=%q waba_id_present=%t phone_id_present=%t\\n", h.metaConfig.AppID, len(req.Code), redirectURI, req.WABAID != "", req.PhoneNumberID != "")
+	if redirectURI == "" {
+		utils.WriteError(w, http.StatusPreconditionFailed, "PUBLIC_APP_BASE_URL is required for Meta OAuth")
+		return
 	}
-	candidateURIs = append(candidateURIs, "")
 
 	var tokenResult struct {
 		AccessToken string `json:"access_token"`
@@ -333,10 +333,11 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 			Message      string `json:"message"`
 			Code         int    `json:"code"`
 			ErrorSubcode int    `json:"error_subcode"`
+			FBTraceID    string `json:"fbtrace_id"`
 		} `json:"error"`
 	}
 
-	for _, rURI := range candidateURIs {
+	for _, rURI := range []string{redirectURI} {
 		formData := url.Values{}
 		formData.Set("client_id", h.metaConfig.AppID)
 		formData.Set("client_secret", h.metaConfig.AppSecret)
@@ -351,6 +352,7 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 			log.Printf("[WhatsApp-OAuth-Exchange-Error] Network error connecting to Meta with redirect_uri %q: %v\n", rURI, err)
 			continue
 		}
+		log.Printf("[WhatsApp-OAuth] stage=meta_token_response http_status=%s redirect_uri=%q", resp.Status, rURI)
 
 		var attempt struct {
 			AccessToken string `json:"access_token"`
@@ -360,6 +362,7 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 				Message      string `json:"message"`
 				Code         int    `json:"code"`
 				ErrorSubcode int    `json:"error_subcode"`
+				FBTraceID    string `json:"fbtrace_id"`
 			} `json:"error"`
 		}
 		_ = json.NewDecoder(resp.Body).Decode(&attempt)
@@ -378,7 +381,8 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 	}
 
 	if tokenResult.Error != nil {
-		utils.WriteError(w, http.StatusBadGateway, fmt.Sprintf("Meta OAuth error (%d): %s", tokenResult.Error.Code, tokenResult.Error.Message))
+		log.Printf("[WhatsApp-OAuth] stage=failed error_code=%d error_subcode=%d fbtrace_id=%s message=%q\\n", tokenResult.Error.Code, tokenResult.Error.ErrorSubcode, tokenResult.Error.FBTraceID, tokenResult.Error.Message)
+		utils.WriteError(w, http.StatusBadGateway, fmt.Sprintf("Meta OAuth error (%d): %s (trace: %s)", tokenResult.Error.Code, tokenResult.Error.Message, tokenResult.Error.FBTraceID))
 		return
 	}
 
@@ -386,6 +390,8 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 		utils.WriteError(w, http.StatusBadGateway, "Meta returned an empty access token")
 		return
 	}
+
+	log.Printf("[WhatsApp-OAuth] stage=token_received token_present=true\\n")
 
 	longLivedToken := tokenResult.AccessToken
 	client := &http.Client{}
