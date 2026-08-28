@@ -452,46 +452,77 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 			return
 		}
 
-		wabaSearchURL := fmt.Sprintf("https://graph.facebook.com/v21.0/%s/whatsapp_business_accounts?fields=id,name,verified_name,display_phone_number", meResult.ID)
-		wabaReq, _ := http.NewRequest("GET", wabaSearchURL, nil)
-		wabaReq.Header.Set("Authorization", "Bearer "+longLivedToken)
-
-		wabaResp, err := client.Do(wabaReq)
+		// A user object does not expose a whatsapp_business_accounts edge.
+		// Discover the user's business portfolios first, then query each
+		// portfolio's owned/client WABA edges.
+		businessURL := "https://graph.facebook.com/v21.0/me/businesses?fields=id,name"
+		businessReq, _ := http.NewRequest("GET", businessURL, nil)
+		businessReq.Header.Set("Authorization", "Bearer "+longLivedToken)
+		businessResp, err := client.Do(businessReq)
 		if err != nil {
-			utils.WriteError(w, http.StatusBadGateway, fmt.Sprintf("Failed to fetch WhatsApp Business Accounts: %v", err))
+			utils.WriteError(w, http.StatusBadGateway, fmt.Sprintf("Failed to fetch Meta businesses: %v", err))
 			return
 		}
 
-		var wabaResult struct {
+		var businessResult struct {
 			Data []struct {
-				ID                 string `json:"id"`
-				Name               string `json:"name"`
-				VerifiedName       string `json:"verified_name"`
-				DisplayPhoneNumber string `json:"display_phone_number"`
+				ID string `json:"id"`
 			} `json:"data"`
 			Error *struct {
 				Message string `json:"message"`
 			} `json:"error"`
 		}
-		json.NewDecoder(wabaResp.Body).Decode(&wabaResult)
-		wabaResp.Body.Close()
-
-		if wabaResult.Error != nil {
-			utils.WriteError(w, http.StatusBadGateway, fmt.Sprintf("Failed to fetch WABA: %s", wabaResult.Error.Message))
+		_ = json.NewDecoder(businessResp.Body).Decode(&businessResult)
+		businessResp.Body.Close()
+		if businessResult.Error != nil {
+			utils.WriteError(w, http.StatusBadGateway, fmt.Sprintf("Failed to fetch Meta businesses: %s", businessResult.Error.Message))
 			return
 		}
 
-		if len(wabaResult.Data) == 0 {
-			utils.WriteError(w, http.StatusNotFound, "No WhatsApp Business Account found. Create one in Meta Business Manager first.")
-			return
+		for _, business := range businessResult.Data {
+			for _, edge := range []string{"owned_whatsapp_business_accounts", "client_whatsapp_business_accounts"} {
+				wabaSearchURL := fmt.Sprintf("https://graph.facebook.com/v21.0/%s/%s?fields=id,name", business.ID, edge)
+				wabaReq, _ := http.NewRequest("GET", wabaSearchURL, nil)
+				wabaReq.Header.Set("Authorization", "Bearer "+longLivedToken)
+
+				wabaResp, requestErr := client.Do(wabaReq)
+				if requestErr != nil {
+					log.Printf("[WhatsApp-OAuth-WABA] business=%s edge=%s network_error=%v", business.ID, edge, requestErr)
+					continue
+				}
+
+				var wabaResult struct {
+					Data []struct {
+						ID   string `json:"id"`
+						Name string `json:"name"`
+					} `json:"data"`
+					Error *struct {
+						Message string `json:"message"`
+					} `json:"error"`
+				}
+				_ = json.NewDecoder(wabaResp.Body).Decode(&wabaResult)
+				wabaResp.Body.Close()
+
+				if wabaResult.Error != nil {
+					log.Printf("[WhatsApp-OAuth-WABA] business=%s edge=%s meta_error=%q", business.ID, edge, wabaResult.Error.Message)
+					continue
+				}
+				if len(wabaResult.Data) > 0 {
+					wabaID = wabaResult.Data[0].ID
+					if wabaResult.Data[0].Name != "" {
+						verifiedName = wabaResult.Data[0].Name
+					}
+					break
+				}
+			}
+			if wabaID != "" {
+				break
+			}
 		}
 
-		wabaID = wabaResult.Data[0].ID
-		if wabaResult.Data[0].VerifiedName != "" {
-			verifiedName = wabaResult.Data[0].VerifiedName
-		}
-		if wabaResult.Data[0].DisplayPhoneNumber != "" {
-			displayPhone = wabaResult.Data[0].DisplayPhoneNumber
+		if wabaID == "" {
+			utils.WriteError(w, http.StatusNotFound, "No WhatsApp Business Account found for the connected Meta business. Ensure the Embedded Signup completed and the app has WhatsApp Business Management permission.")
+			return
 		}
 	}
 
