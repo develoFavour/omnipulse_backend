@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"omnipulse/apps/api-gateway/internal/domain"
+	"sync"
 )
 
 type IdentityUseCase struct {
-	repo     domain.IdentityRepository
-	chanRepo domain.ChannelRepository
+	repo        domain.IdentityRepository
+	chanRepo    domain.ChannelRepository
+	provisionMu sync.Mutex
 }
 
 func NewIdentityUseCase(repo domain.IdentityRepository, chanRepo domain.ChannelRepository) *IdentityUseCase {
@@ -22,6 +24,12 @@ type SyncResult struct {
 }
 
 func (u *IdentityUseCase) SyncUser(ctx context.Context, clerkUserID, email string) (*SyncResult, error) {
+	// Several page requests can arrive simultaneously on a fresh session.
+	// Serialize JIT provisioning so only one request creates the tenant/user;
+	// following requests then find the user normally.
+	u.provisionMu.Lock()
+	defer u.provisionMu.Unlock()
+
 	user, err := u.repo.FindUserByClerkID(ctx, clerkUserID)
 	if err != nil {
 		return nil, err
@@ -32,6 +40,9 @@ func (u *IdentityUseCase) SyncUser(ctx context.Context, clerkUserID, email strin
 		tenant, err := u.repo.FindTenantByID(ctx, user.TenantID)
 		if err != nil {
 			return nil, err
+		}
+		if tenant == nil {
+			return nil, fmt.Errorf("tenant %q referenced by user %q was not found", user.TenantID, clerkUserID)
 		}
 		return &SyncResult{
 			Tenant:              tenant,

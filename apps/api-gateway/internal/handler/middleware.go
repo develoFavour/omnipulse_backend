@@ -102,6 +102,12 @@ func AuthMiddleware(identityUC *usecase.IdentityUseCase) func(http.Handler) http
 			clerkUserID := claims.Subject
 			syncRes, err := identityUC.SyncUser(r.Context(), clerkUserID, clerkUserID+"@placeholder.com")
 			if err != nil {
+				log.Printf("[AuthMiddleware] tenant resolution failed clerk_user_id=%s error=%v", clerkUserID, err)
+				utils.WriteError(w, http.StatusInternalServerError, "Failed to resolve tenant workspace context")
+				return
+			}
+			if syncRes == nil || syncRes.Tenant == nil || syncRes.User == nil {
+				log.Printf("[AuthMiddleware] tenant resolution returned incomplete result clerk_user_id=%s", clerkUserID)
 				utils.WriteError(w, http.StatusInternalServerError, "Failed to resolve tenant workspace context")
 				return
 			}
