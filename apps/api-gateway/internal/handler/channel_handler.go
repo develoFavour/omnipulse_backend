@@ -475,6 +475,7 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 		_ = json.NewDecoder(businessResp.Body).Decode(&businessResult)
 		businessResp.Body.Close()
 		if businessResult.Error != nil {
+			log.Printf("[WhatsApp-OAuth-WABA] business discovery denied error=%q", businessResult.Error.Message)
 			utils.WriteError(w, http.StatusBadGateway, fmt.Sprintf("Failed to fetch Meta businesses: %s", businessResult.Error.Message))
 			return
 		}
