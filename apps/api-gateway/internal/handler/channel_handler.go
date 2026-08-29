@@ -280,10 +280,16 @@ func (h *ChannelHandler) HandleWhatsAppOAuthConfig(w http.ResponseWriter, r *htt
 		return
 	}
 
+	base := strings.TrimRight(h.publicAppBaseURL, "/")
+	redirectURI := base + "/connections"
+	if base == "" {
+		redirectURI = ""
+	}
+
 	utils.WriteJSON(w, http.StatusOK, map[string]string{
 		"app_id":       h.metaConfig.AppID,
 		"config_id":    h.metaConfig.WABAConfigID,
-		"redirect_uri": strings.TrimRight(h.publicAppBaseURL, "/"),
+		"redirect_uri": redirectURI,
 	})
 }
 
@@ -317,13 +323,27 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 		return
 	}
 
-	// The direct OAuth dialog and this exchange use the same configured URI.
-	redirectURI := strings.TrimRight(h.publicAppBaseURL, "/")
-	log.Printf("[WhatsApp-OAuth] stage=received_code app_id=%s code_length=%d configured_redirect_uri=%q waba_id_present=%t phone_id_present=%t\\n", h.metaConfig.AppID, len(req.Code), redirectURI, req.WABAID != "", req.PhoneNumberID != "")
-	if redirectURI == "" {
-		utils.WriteError(w, http.StatusPreconditionFailed, "PUBLIC_APP_BASE_URL is required for Meta OAuth")
-		return
+	base := strings.TrimRight(h.publicAppBaseURL, "/")
+	rawCandidates := []string{}
+	if req.RedirectURI != "" {
+		rawCandidates = append(rawCandidates, req.RedirectURI)
 	}
+	if base != "" {
+		rawCandidates = append(rawCandidates, base+"/connections", base, base+"/")
+	}
+	rawCandidates = append(rawCandidates, "")
+
+	// Deduplicate candidates preserving priority order
+	seen := make(map[string]bool)
+	var candidateURIs []string
+	for _, c := range rawCandidates {
+		if !seen[c] {
+			seen[c] = true
+			candidateURIs = append(candidateURIs, c)
+		}
+	}
+
+	log.Printf("[WhatsApp-OAuth] stage=received_code app_id=%s code_length=%d candidates=%v waba_id_present=%t phone_id_present=%t\n", h.metaConfig.AppID, len(req.Code), candidateURIs, req.WABAID != "", req.PhoneNumberID != "")
 
 	var tokenResult struct {
 		AccessToken string `json:"access_token"`
@@ -337,7 +357,7 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 		} `json:"error"`
 	}
 
-	for _, rURI := range []string{redirectURI} {
+	for _, rURI := range candidateURIs {
 		formData := url.Values{}
 		formData.Set("client_id", h.metaConfig.AppID)
 		formData.Set("client_secret", h.metaConfig.AppSecret)
