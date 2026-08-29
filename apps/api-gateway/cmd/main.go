@@ -49,8 +49,11 @@ func main() {
 	logger.Printf("Attached to PostgreSQL database pool [Mode: %s].\n", cfg.Environment)
 
 	// Idempotent schema migrations: ensure users.id supports Clerk string IDs
+	_, _ = db.Exec(`ALTER TABLE users ALTER COLUMN id DROP DEFAULT;`)
 	if _, err := db.Exec(`ALTER TABLE users ALTER COLUMN id TYPE VARCHAR(255) USING id::text;`); err != nil {
 		logger.Printf("[DB-WARN] users table migration notice: %v\n", err)
+	} else {
+		logger.Println("Successfully verified/updated users.id column to VARCHAR(255).")
 	}
 
 	// 2. Initialize NATS JetStream Event Broker Adapter
