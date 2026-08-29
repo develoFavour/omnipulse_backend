@@ -18,9 +18,11 @@ type Config struct {
 	PublicAppBaseURL string
 
 	// Meta WhatsApp Embedded Signup Configuration
-	MetaAppID        string
-	MetaAppSecret    string
-	MetaWABAConfigID string
+	MetaAppID         string
+	MetaAppSecret     string
+	MetaWABAConfigID  string
+	MetaWABAID        string
+	MetaPhoneNumberID string
 
 	// CORS — comma-separated allowed origins (e.g. "https://app.omnipulse.ng,http://localhost:3000")
 	AllowedOrigins string
@@ -34,19 +36,21 @@ func Load() *Config {
 	}
 
 	return &Config{
-		Port:             port,
-		DatabaseURL:      getEnv("DATABASE_URL", "postgres://admin:secretpassword@localhost:5432/omnipulse_dev?sslmode=disable"),
-		Environment:      getEnv("APP_ENV", "development"),
-		DBMaxConns:       getEnvAsInt("DB_MAX_OPEN_CONNS", 25),
-		NatsURL:          getEnv("NATS_URL", "nats://localhost:4222"),
-		NatsCreds:        getEnv("NATS_CREDS", ""),
-		ClerkSecretKey:   getEnv("CLERK_SECRET_KEY", "sk_test_placeholder"),
-		PublicAPIBaseURL: getEnv("PUBLIC_API_BASE_URL", ""),
-		PublicAppBaseURL: getEnv("PUBLIC_APP_BASE_URL", ""),
-		MetaAppID:        getEnv("META_APP_ID", ""),
-		MetaAppSecret:    getEnv("META_APP_SECRET", ""),
-		MetaWABAConfigID: getEnv("META_WABA_CONFIG_ID", ""),
-		AllowedOrigins:   getEnv("ALLOWED_ORIGINS", "http://localhost:3000"),
+		Port:              port,
+		DatabaseURL:       getEnv("DATABASE_URL", "postgres://admin:secretpassword@localhost:5432/omnipulse_dev?sslmode=disable"),
+		Environment:       getEnv("APP_ENV", "development"),
+		DBMaxConns:        getEnvAsInt("DB_MAX_OPEN_CONNS", 25),
+		NatsURL:           getEnv("NATS_URL", "nats://localhost:4222"),
+		NatsCreds:         getEnv("NATS_CREDS", ""),
+		ClerkSecretKey:    getEnv("CLERK_SECRET_KEY", "sk_test_placeholder"),
+		PublicAPIBaseURL:  getEnv("PUBLIC_API_BASE_URL", ""),
+		PublicAppBaseURL:  getEnv("PUBLIC_APP_BASE_URL", ""),
+		MetaAppID:         getEnv("META_APP_ID", ""),
+		MetaAppSecret:     getEnv("META_APP_SECRET", ""),
+		MetaWABAConfigID:  getEnv("META_WABA_CONFIG_ID", ""),
+		MetaWABAID:        getEnv("WHATSAPP_BUSINESS_ACCOUNT_ID", getEnv("META_WABA_ID", "")),
+		MetaPhoneNumberID: getEnv("PHONE_NUMBER_ID", getEnv("META_PHONE_NUMBER_ID", "")),
+		AllowedOrigins:    getEnv("ALLOWED_ORIGINS", "http://localhost:3000"),
 	}
 }
 

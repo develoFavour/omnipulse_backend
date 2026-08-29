@@ -129,9 +129,11 @@ func verifyWhatsAppCredentials(phoneNumberID, accessToken string) (string, strin
 }
 
 type MetaAppConfig struct {
-	AppID        string
-	AppSecret    string
-	WABAConfigID string
+	AppID         string
+	AppSecret     string
+	WABAConfigID  string
+	WABAID        string
+	PhoneNumberID string
 }
 
 type ChannelHandler struct {
@@ -541,6 +543,11 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 			businessResp.Body.Close()
 		}
 
+		if wabaID == "" && h.metaConfig.WABAID != "" {
+			wabaID = h.metaConfig.WABAID
+			log.Printf("[WhatsApp-OAuth] Using configured default WABA ID: %s\n", wabaID)
+		}
+
 		if wabaID == "" {
 			utils.WriteError(w, http.StatusNotFound, "No WhatsApp Business Account found for the connected Meta account. Ensure the Embedded Signup completed and a WhatsApp Business profile was selected.")
 			return
@@ -549,6 +556,10 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 
 	// Step 3: Get or verify the Phone Number ID
 	phoneNumberID := req.PhoneNumberID
+	if phoneNumberID == "" && h.metaConfig.PhoneNumberID != "" {
+		phoneNumberID = h.metaConfig.PhoneNumberID
+		log.Printf("[WhatsApp-OAuth] Using configured default Phone Number ID: %s\n", phoneNumberID)
+	}
 
 	if phoneNumberID != "" {
 		phoneInfoURL := fmt.Sprintf("https://graph.facebook.com/v21.0/%s?fields=id,verified_name,display_phone_number", phoneNumberID)

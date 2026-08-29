@@ -18,9 +18,9 @@ func NewPostgresIdentityRepository(db *sql.DB) domain.IdentityRepository {
 
 func (r *PostgresIdentityRepository) FindUserByClerkID(ctx context.Context, clerkID string) (*domain.User, error) {
 	query := `
-		SELECT id, tenant_id, email, role, created_at, updated_at
+		SELECT id::text, tenant_id, email, role, created_at, updated_at
 		FROM users
-		WHERE id = $1;
+		WHERE id::text = $1;
 	`
 	var u domain.User
 	err := r.db.QueryRowContext(ctx, query, clerkID).Scan(
