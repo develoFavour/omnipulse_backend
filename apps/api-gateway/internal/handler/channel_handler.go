@@ -271,6 +271,14 @@ func (h *ChannelHandler) HandleDisconnectChannel(w http.ResponseWriter, r *http.
 	})
 }
 
+func cleanBaseURL(raw string) string {
+	b := strings.TrimSpace(raw)
+	b = strings.TrimRight(b, "/")
+	b = strings.TrimSuffix(b, "/connections")
+	b = strings.TrimRight(b, "/")
+	return b
+}
+
 // HandleWhatsAppOAuthConfig returns the Meta App ID and Config ID needed by the frontend
 // to initialize the Facebook SDK Embedded Signup flow.
 // GET /api/v1/channels/whatsapp/oauth/config
@@ -280,10 +288,10 @@ func (h *ChannelHandler) HandleWhatsAppOAuthConfig(w http.ResponseWriter, r *htt
 		return
 	}
 
-	base := strings.TrimRight(h.publicAppBaseURL, "/")
-	redirectURI := base + "/connections"
-	if base == "" {
-		redirectURI = ""
+	base := cleanBaseURL(h.publicAppBaseURL)
+	redirectURI := ""
+	if base != "" {
+		redirectURI = base + "/connections"
 	}
 
 	utils.WriteJSON(w, http.StatusOK, map[string]string{
@@ -323,13 +331,17 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 		return
 	}
 
-	base := strings.TrimRight(h.publicAppBaseURL, "/")
+	base := cleanBaseURL(h.publicAppBaseURL)
 	rawCandidates := []string{}
-	if req.RedirectURI != "" {
-		rawCandidates = append(rawCandidates, req.RedirectURI)
-	}
 	if base != "" {
 		rawCandidates = append(rawCandidates, base+"/connections", base, base+"/")
+	}
+	if req.RedirectURI != "" {
+		cleaned := strings.TrimRight(req.RedirectURI, "/")
+		if strings.HasSuffix(cleaned, "/connections/connections") {
+			cleaned = strings.TrimSuffix(cleaned, "/connections")
+		}
+		rawCandidates = append(rawCandidates, cleaned)
 	}
 	rawCandidates = append(rawCandidates, "")
 
