@@ -331,15 +331,7 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 		return
 	}
 
-	// For JS SDK FB.login Embedded Signup (response_type: "code", override_default_response_type: true),
-	// no redirect_uri is passed to FB.login(), so Meta requires redirect_uri to be omitted
-	// in the server-to-server /oauth/access_token exchange.
-	// Therefore, "" (no redirect_uri) is prioritized as candidate #1.
-	rawCandidates := []string{""}
-	base := cleanBaseURL(h.publicAppBaseURL)
-	if base != "" {
-		rawCandidates = append(rawCandidates, base+"/connections", base, base+"/")
-	}
+	rawCandidates := []string{}
 	if req.RedirectURI != "" {
 		cleaned := strings.TrimRight(req.RedirectURI, "/")
 		if strings.HasSuffix(cleaned, "/connections/connections") {
@@ -349,6 +341,11 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 			rawCandidates = append(rawCandidates, cleaned)
 		}
 	}
+	base := cleanBaseURL(h.publicAppBaseURL)
+	if base != "" {
+		rawCandidates = append(rawCandidates, base+"/connections", base, base+"/")
+	}
+	rawCandidates = append(rawCandidates, "")
 
 	// Deduplicate candidates preserving priority order
 	seen := make(map[string]bool)
