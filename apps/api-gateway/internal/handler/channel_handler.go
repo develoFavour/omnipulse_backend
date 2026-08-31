@@ -323,6 +323,7 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 		WABAID        string `json:"waba_id,omitempty"`
 		PhoneNumberID string `json:"phone_number_id,omitempty"`
 		RedirectURI   string `json:"redirect_uri,omitempty"`
+		Source        string `json:"source,omitempty"` // "embedded_signup" or "direct_dialog"
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		utils.WriteError(w, http.StatusBadRequest, "Invalid request body. Expected { \"code\": \"...\" }")
@@ -333,32 +334,7 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 		return
 	}
 
-	rawCandidates := []string{}
-	if req.RedirectURI != "" {
-		cleaned := strings.TrimRight(req.RedirectURI, "/")
-		if strings.HasSuffix(cleaned, "/connections/connections") {
-			cleaned = strings.TrimSuffix(cleaned, "/connections")
-		}
-		if cleaned != "" {
-			rawCandidates = append(rawCandidates, cleaned)
-		}
-	}
-	base := cleanBaseURL(h.publicAppBaseURL)
-	if base != "" {
-		rawCandidates = append(rawCandidates, base+"/connections")
-	}
-
-	// Deduplicate candidates preserving priority order
-	seen := make(map[string]bool)
-	var candidateURIs []string
-	for _, c := range rawCandidates {
-		if !seen[c] {
-			seen[c] = true
-			candidateURIs = append(candidateURIs, c)
-		}
-	}
-
-	log.Printf("[WhatsApp-OAuth] stage=received_code app_id=%s code_length=%d candidates=%v waba_id_present=%t phone_id_present=%t\n", h.metaConfig.AppID, len(req.Code), candidateURIs, req.WABAID != "", req.PhoneNumberID != "")
+	log.Printf("[WhatsApp-OAuth] stage=received_code app_id=%s code_length=%d source=%q waba_id_present=%t phone_id_present=%t\n", h.metaConfig.AppID, len(req.Code), req.Source, req.WABAID != "", req.PhoneNumberID != "")
 
 	var tokenResult struct {
 		AccessToken string `json:"access_token"`
@@ -372,46 +348,96 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 		} `json:"error"`
 	}
 
-	for _, rURI := range candidateURIs {
-		formData := url.Values{}
-		formData.Set("client_id", h.metaConfig.AppID)
-		formData.Set("client_secret", h.metaConfig.AppSecret)
-		formData.Set("code", req.Code)
-		if rURI != "" {
-			formData.Set("redirect_uri", rURI)
-		}
+	if req.Source == "embedded_signup" {
+		// FB.login popup codes must be exchanged via GET without redirect_uri
+		// per Meta's Embedded Signup documentation
+		exchangeURL := fmt.Sprintf(
+			"https://graph.facebook.com/v21.0/oauth/access_token?client_id=%s&client_secret=%s&code=%s",
+			url.QueryEscape(h.metaConfig.AppID),
+			url.QueryEscape(h.metaConfig.AppSecret),
+			url.QueryEscape(req.Code),
+		)
+		log.Printf("[WhatsApp-OAuth-Exchange] Exchanging FB.login code via GET (no redirect_uri)...\n")
 
-		log.Printf("[WhatsApp-OAuth-Exchange] Trying code exchange with Meta (AppID: %s, redirect_uri: %q)...\n", h.metaConfig.AppID, rURI)
-		resp, err := http.PostForm("https://graph.facebook.com/v21.0/oauth/access_token", formData)
+		resp, err := http.Get(exchangeURL)
 		if err != nil {
-			log.Printf("[WhatsApp-OAuth-Exchange-Error] Network error connecting to Meta with redirect_uri %q: %v\n", rURI, err)
-			continue
+			log.Printf("[WhatsApp-OAuth-Exchange-Error] Network error: %v\n", err)
+			utils.WriteError(w, http.StatusBadGateway, "Failed to connect to Meta for token exchange")
+			return
 		}
-		log.Printf("[WhatsApp-OAuth] stage=meta_token_response http_status=%s redirect_uri=%q", resp.Status, rURI)
-
-		var attempt struct {
-			AccessToken string `json:"access_token"`
-			TokenType   string `json:"token_type"`
-			ExpiresIn   int    `json:"expires_in"`
-			Error       *struct {
-				Message      string `json:"message"`
-				Code         int    `json:"code"`
-				ErrorSubcode int    `json:"error_subcode"`
-				FBTraceID    string `json:"fbtrace_id"`
-			} `json:"error"`
-		}
-		_ = json.NewDecoder(resp.Body).Decode(&attempt)
+		_ = json.NewDecoder(resp.Body).Decode(&tokenResult)
 		resp.Body.Close()
-
-		if attempt.AccessToken != "" {
-			tokenResult = attempt
-			log.Printf("[WhatsApp-OAuth-Exchange-Success] Successfully acquired access token using redirect_uri: %q\n", rURI)
-			break
+		log.Printf("[WhatsApp-OAuth] stage=meta_token_response http_status=%s source=embedded_signup\n", resp.Status)
+	} else {
+		// Direct dialog codes: try redirect_uri candidates via POST
+		rawCandidates := []string{}
+		if req.RedirectURI != "" {
+			cleaned := strings.TrimRight(req.RedirectURI, "/")
+			if strings.HasSuffix(cleaned, "/connections/connections") {
+				cleaned = strings.TrimSuffix(cleaned, "/connections")
+			}
+			if cleaned != "" {
+				rawCandidates = append(rawCandidates, cleaned)
+			}
+		}
+		base := cleanBaseURL(h.publicAppBaseURL)
+		if base != "" {
+			rawCandidates = append(rawCandidates, base+"/connections")
 		}
 
-		if attempt.Error != nil {
-			tokenResult = attempt
-			log.Printf("[WhatsApp-OAuth-Exchange-Attempt] redirect_uri %q failed: Meta Error %d (subcode %d): %s\n", rURI, attempt.Error.Code, attempt.Error.ErrorSubcode, attempt.Error.Message)
+		// Deduplicate candidates preserving priority order
+		seen := make(map[string]bool)
+		var candidateURIs []string
+		for _, c := range rawCandidates {
+			if !seen[c] {
+				seen[c] = true
+				candidateURIs = append(candidateURIs, c)
+			}
+		}
+
+		log.Printf("[WhatsApp-OAuth] candidates=%v\n", candidateURIs)
+
+		for _, rURI := range candidateURIs {
+			formData := url.Values{}
+			formData.Set("client_id", h.metaConfig.AppID)
+			formData.Set("client_secret", h.metaConfig.AppSecret)
+			formData.Set("code", req.Code)
+			if rURI != "" {
+				formData.Set("redirect_uri", rURI)
+			}
+
+			log.Printf("[WhatsApp-OAuth-Exchange] Trying code exchange with Meta (redirect_uri: %q)...\n", rURI)
+			resp, err := http.PostForm("https://graph.facebook.com/v21.0/oauth/access_token", formData)
+			if err != nil {
+				log.Printf("[WhatsApp-OAuth-Exchange-Error] Network error with redirect_uri %q: %v\n", rURI, err)
+				continue
+			}
+			log.Printf("[WhatsApp-OAuth] stage=meta_token_response http_status=%s redirect_uri=%q\n", resp.Status, rURI)
+
+			var attempt struct {
+				AccessToken string `json:"access_token"`
+				TokenType   string `json:"token_type"`
+				ExpiresIn   int    `json:"expires_in"`
+				Error       *struct {
+					Message      string `json:"message"`
+					Code         int    `json:"code"`
+					ErrorSubcode int    `json:"error_subcode"`
+					FBTraceID    string `json:"fbtrace_id"`
+				} `json:"error"`
+			}
+			_ = json.NewDecoder(resp.Body).Decode(&attempt)
+			resp.Body.Close()
+
+			if attempt.AccessToken != "" {
+				tokenResult = attempt
+				log.Printf("[WhatsApp-OAuth-Exchange-Success] Token acquired via redirect_uri: %q\n", rURI)
+				break
+			}
+
+			if attempt.Error != nil {
+				tokenResult = attempt
+				log.Printf("[WhatsApp-OAuth-Exchange-Attempt] redirect_uri %q failed: Meta Error %d (subcode %d): %s\n", rURI, attempt.Error.Code, attempt.Error.ErrorSubcode, attempt.Error.Message)
+			}
 		}
 	}
 
