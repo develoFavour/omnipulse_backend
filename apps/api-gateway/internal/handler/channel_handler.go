@@ -357,6 +357,7 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 		formData.Set("client_id", h.metaConfig.AppID)
 		formData.Set("client_secret", h.metaConfig.AppSecret)
 		formData.Set("code", req.Code)
+		formData.Set("grant_type", "authorization_code")
 		if redirectURI != "" {
 			formData.Set("redirect_uri", redirectURI)
 		}
@@ -404,6 +405,7 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 			formData.Set("client_id", h.metaConfig.AppID)
 			formData.Set("client_secret", h.metaConfig.AppSecret)
 			formData.Set("code", req.Code)
+			formData.Set("grant_type", "authorization_code")
 			if rURI != "" {
 				formData.Set("redirect_uri", rURI)
 			}
