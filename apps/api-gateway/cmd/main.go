@@ -49,23 +49,11 @@ func main() {
 	logger.Printf("Attached to PostgreSQL database pool [Mode: %s].\n", cfg.Environment)
 
 	// Idempotent schema migrations: ensure users.id supports Clerk string IDs
-	migrationSQL := `
-		DO $$
-		BEGIN
-			ALTER TABLE users DROP CONSTRAINT IF EXISTS users_pkey CASCADE;
-			ALTER TABLE users ALTER COLUMN id DROP DEFAULT;
-			ALTER TABLE users ALTER COLUMN id TYPE VARCHAR(255) USING id::text;
-			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'users_pkey') THEN
-				ALTER TABLE users ADD CONSTRAINT users_pkey PRIMARY KEY (id);
-			END IF;
-		EXCEPTION WHEN OTHERS THEN
-			NULL;
-		END $$;
-	`
-	if _, err := db.Exec(migrationSQL); err != nil {
-		logger.Printf("[DB-WARN] users table migration notice: %v\n", err)
+	_, _ = db.Exec(`ALTER TABLE users ALTER COLUMN id DROP DEFAULT;`)
+	if _, err := db.Exec(`ALTER TABLE users ALTER COLUMN id TYPE VARCHAR(255) USING id::varchar(255);`); err != nil {
+		logger.Printf("[DB-MIGRATE] Alter users.id column type: %v\n", err)
 	} else {
-		logger.Println("Successfully verified/updated users.id column to VARCHAR(255).")
+		logger.Println("[DB-MIGRATE] Successfully ensured users.id is VARCHAR(255).")
 	}
 
 	// 2. Initialize NATS JetStream Event Broker Adapter

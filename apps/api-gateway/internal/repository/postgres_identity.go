@@ -20,7 +20,7 @@ func (r *PostgresIdentityRepository) FindUserByClerkID(ctx context.Context, cler
 	query := `
 		SELECT id::text, tenant_id, email, role, created_at, updated_at
 		FROM users
-		WHERE id::text = $1;
+		WHERE id::text = $1::text;
 	`
 	var u domain.User
 	err := r.db.QueryRowContext(ctx, query, clerkID).Scan(
