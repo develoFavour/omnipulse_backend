@@ -342,6 +342,9 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 		if cleaned != "" {
 			rawCandidates = append(rawCandidates, cleaned)
 		}
+	} else {
+		// FB.login JS SDK popup generates code without redirect_uri; try empty string first
+		rawCandidates = append(rawCandidates, "")
 	}
 	base := cleanBaseURL(h.publicAppBaseURL)
 	if base != "" {
@@ -417,7 +420,7 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 	}
 
 	if tokenResult.Error != nil {
-		log.Printf("[WhatsApp-OAuth] stage=failed error_code=%d error_subcode=%d fbtrace_id=%s message=%q\\n", tokenResult.Error.Code, tokenResult.Error.ErrorSubcode, tokenResult.Error.FBTraceID, tokenResult.Error.Message)
+		log.Printf("[WhatsApp-OAuth] stage=failed error_code=%d error_subcode=%d fbtrace_id=%s message=%q\n", tokenResult.Error.Code, tokenResult.Error.ErrorSubcode, tokenResult.Error.FBTraceID, tokenResult.Error.Message)
 		utils.WriteError(w, http.StatusBadGateway, fmt.Sprintf("Meta OAuth error (%d): %s (trace: %s)", tokenResult.Error.Code, tokenResult.Error.Message, tokenResult.Error.FBTraceID))
 		return
 	}
@@ -427,7 +430,7 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 		return
 	}
 
-	log.Printf("[WhatsApp-OAuth] stage=token_received token_present=true\\n")
+	log.Printf("[WhatsApp-OAuth] stage=token_received token_present=true\n")
 
 	longLivedToken := tokenResult.AccessToken
 	client := &http.Client{}
@@ -543,11 +546,6 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 			businessResp.Body.Close()
 		}
 
-		if wabaID == "" && h.metaConfig.WABAID != "" {
-			wabaID = h.metaConfig.WABAID
-			log.Printf("[WhatsApp-OAuth] Using configured default WABA ID: %s\n", wabaID)
-		}
-
 		if wabaID == "" {
 			utils.WriteError(w, http.StatusNotFound, "No WhatsApp Business Account found for the connected Meta account. Ensure the Embedded Signup completed and a WhatsApp Business profile was selected.")
 			return
@@ -556,10 +554,6 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 
 	// Step 3: Get or verify the Phone Number ID
 	phoneNumberID := req.PhoneNumberID
-	if phoneNumberID == "" && h.metaConfig.PhoneNumberID != "" {
-		phoneNumberID = h.metaConfig.PhoneNumberID
-		log.Printf("[WhatsApp-OAuth] Using configured default Phone Number ID: %s\n", phoneNumberID)
-	}
 
 	if phoneNumberID != "" {
 		phoneInfoURL := fmt.Sprintf("https://graph.facebook.com/v21.0/%s?fields=id,verified_name,display_phone_number", phoneNumberID)
