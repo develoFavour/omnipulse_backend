@@ -342,15 +342,11 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 		if cleaned != "" {
 			rawCandidates = append(rawCandidates, cleaned)
 		}
-	} else {
-		// FB.login JS SDK popup generates code without redirect_uri; try empty string first
-		rawCandidates = append(rawCandidates, "")
 	}
 	base := cleanBaseURL(h.publicAppBaseURL)
 	if base != "" {
-		rawCandidates = append(rawCandidates, base+"/connections", base, base+"/")
+		rawCandidates = append(rawCandidates, base+"/connections")
 	}
-	rawCandidates = append(rawCandidates, "")
 
 	// Deduplicate candidates preserving priority order
 	seen := make(map[string]bool)
