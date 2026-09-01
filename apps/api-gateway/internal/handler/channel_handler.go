@@ -349,20 +349,14 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 	}
 
 	if req.Source == "embedded_signup" {
-		redirectURI := req.RedirectURI
-		if redirectURI == "" && h.publicAppBaseURL != "" {
-			redirectURI = cleanBaseURL(h.publicAppBaseURL) + "/connections"
-		}
-		formData := url.Values{}
-		formData.Set("client_id", h.metaConfig.AppID)
-		formData.Set("client_secret", h.metaConfig.AppSecret)
-		formData.Set("code", req.Code)
-		formData.Set("grant_type", "authorization_code")
-		if redirectURI != "" {
-			formData.Set("redirect_uri", redirectURI)
-		}
-		log.Printf("[WhatsApp-OAuth-Exchange] Exchanging FB.login code with Meta (redirect_uri: %q)...\n", redirectURI)
-		resp, err := http.PostForm("https://graph.facebook.com/v21.0/oauth/access_token", formData)
+		exchangeURL := fmt.Sprintf(
+			"https://graph.facebook.com/v21.0/oauth/access_token?client_id=%s&client_secret=%s&code=%s",
+			url.QueryEscape(h.metaConfig.AppID),
+			url.QueryEscape(h.metaConfig.AppSecret),
+			url.QueryEscape(req.Code),
+		)
+		log.Printf("[WhatsApp-OAuth-Exchange] Exchanging FB.login Embedded Signup code via GET (AppID: %s)...\n", h.metaConfig.AppID)
+		resp, err := http.Get(exchangeURL)
 		if err != nil {
 			log.Printf("[WhatsApp-OAuth-Exchange-Error] Network error: %v\n", err)
 			utils.WriteError(w, http.StatusBadGateway, "Failed to connect to Meta for token exchange")
