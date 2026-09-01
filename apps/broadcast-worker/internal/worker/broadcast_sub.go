@@ -16,6 +16,7 @@ import (
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 	waLog "go.mau.fi/whatsmeow/util/log"
@@ -58,6 +59,7 @@ func NewBroadcastConsumer(natsURL string, natsCreds string, db *sql.DB) (*Broadc
 
 	var waContainer *sqlstore.Container
 	if db != nil {
+		store.SetOSInfo("Chrome (Windows)", [3]uint32{128, 0, 0})
 		waContainer = sqlstore.NewWithDB(db, "postgres", waLog.Stdout("WA-Worker", "WARN", true))
 		_ = waContainer.Upgrade(context.Background())
 	}

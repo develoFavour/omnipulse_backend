@@ -11,6 +11,7 @@ import (
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -36,6 +37,9 @@ type tenantSession struct {
 }
 
 func NewWhatsAppManager(db *sql.DB) (*WhatsAppManager, error) {
+	// Set official companion OS properties for WhatsApp Web protocol
+	store.SetOSInfo("Chrome (Windows)", [3]uint32{128, 0, 0})
+
 	logger := waLog.Stdout("WA-Database", "WARN", true)
 	container := sqlstore.NewWithDB(db, "postgres", logger)
 	err := container.Upgrade(context.Background())
@@ -99,7 +103,7 @@ func (m *WhatsAppManager) GetQR(ctx context.Context, tenantID string) (qrCode st
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Check if active session already connected
+	// Check if active session exists
 	if val, ok := m.clients.Load(tenantID); ok {
 		sess := val.(*tenantSession)
 		sess.mu.RLock()
@@ -107,13 +111,17 @@ func (m *WhatsAppManager) GetQR(ctx context.Context, tenantID string) (qrCode st
 			sess.mu.RUnlock()
 			return "", "connected", sess.phone, sess.name, nil
 		}
-		// If recent QR is still valid (< 20s old), return cached
-		if sess.qrCode != "" && time.Since(sess.lastQRTime) < 20*time.Second {
+		// If client is already connected and actively waiting for scan, return current QR
+		if sess.client.IsConnected() && sess.qrCode != "" {
 			qr := sess.qrCode
 			sess.mu.RUnlock()
 			return qr, "waiting_scan", "", "", nil
 		}
 		sess.mu.RUnlock()
+
+		// Disconnect previous stale client before creating a new one
+		sess.client.Disconnect()
+		m.clients.Delete(tenantID)
 	}
 
 	// Create a new device store for pairing
