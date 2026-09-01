@@ -136,7 +136,8 @@ func (m *WhatsAppManager) GetQR(ctx context.Context, tenantID string) (qrCode st
 
 	m.setupEventHandler(sess, tenantID)
 
-	qrChan, err := client.GetQRChannel(ctx)
+	// Use persistent context so pairing channel and socket stay alive after the HTTP request finishes
+	qrChan, err := client.GetQRChannel(context.Background())
 	if err != nil {
 		return "", "error", "", "", fmt.Errorf("failed to get QR channel: %w", err)
 	}
