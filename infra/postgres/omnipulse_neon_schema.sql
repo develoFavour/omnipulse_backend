@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS contacts (
     last_name VARCHAR(100),
     channel VARCHAR(50) NOT NULL CHECK (channel IN ('whatsapp', 'telegram', 'instagram', 'x')),
     routing_value VARCHAR(255) NOT NULL,
-    source VARCHAR(50) NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'csv_import', 'inbound_webhook')),
+    source VARCHAR(50) NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'csv_import', 'inbound_webhook', 'whatsapp_sync', 'whatsapp_inbound', 'whatsapp_group_sync')),
     status VARCHAR(50) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'opted_out')),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
