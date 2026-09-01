@@ -248,29 +248,56 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 				log.Printf("[WhatsAppManager] Error persisting paired channel to DB: %v\n", err)
 			}
 
+		case *events.HistorySync:
+			log.Printf("[WhatsAppManager] 🔄 Received HistorySync (%v) for tenant %s\n", evt.Data.GetSyncType(), tenantID)
+			count := 0
+			// 1. Process Conversations
+			for _, conv := range evt.Data.GetConversations() {
+				chatID := conv.GetID()
+				if chatID == "" {
+					continue
+				}
+				jid, err := types.ParseJID(chatID)
+				if err != nil || jid.Server != types.DefaultUserServer || jid.User == "" {
+					continue
+				}
+				name := conv.GetName()
+				m.saveContact(tenantID, jid.User, name, "whatsapp_sync")
+				count++
+			}
+			// 2. Process Pushnames
+			for _, pn := range evt.Data.GetPushnames() {
+				jidStr := pn.GetID()
+				if jidStr == "" {
+					continue
+				}
+				jid, err := types.ParseJID(jidStr)
+				if err != nil || jid.Server != types.DefaultUserServer || jid.User == "" {
+					continue
+				}
+				m.saveContact(tenantID, jid.User, pn.GetPushname(), "whatsapp_sync")
+				count++
+			}
+			log.Printf("[WhatsAppManager] 📥 Auto-imported %d contacts from HistorySync for tenant %s\n", count, tenantID)
+
+		case *events.PushName:
+			if evt.JID.Server == types.DefaultUserServer && evt.JID.User != "" && evt.NewPushName != "" {
+				m.saveContact(tenantID, evt.JID.User, evt.NewPushName, "whatsapp_sync")
+			}
+
+		case *events.Contact:
+			if evt.JID.Server == types.DefaultUserServer && evt.JID.User != "" && evt.Action != nil {
+				name := evt.Action.GetFullName()
+				if name == "" {
+					name = evt.Action.GetFirstName()
+				}
+				m.saveContact(tenantID, evt.JID.User, name, "whatsapp_sync")
+			}
+
 		case *events.Message:
 			senderJID := evt.Info.Sender
-			// Only capture 1-on-1 private messages (ignore groups/broadcasts)
 			if !evt.Info.IsFromMe && senderJID.Server == types.DefaultUserServer && senderJID.User != "" {
-				phone := "+" + strings.TrimPrefix(senderJID.User, "+")
-				name := evt.Info.PushName
-				if name == "" {
-					name = "WhatsApp User"
-				}
-				parts := strings.SplitN(name, " ", 2)
-				fn := parts[0]
-				ln := ""
-				if len(parts) > 1 {
-					ln = parts[1]
-				}
-				_, err := m.db.Exec(`
-					INSERT INTO contacts (tenant_id, first_name, last_name, channel, routing_value, source, status, created_at, updated_at)
-					VALUES ($1, $2, $3, 'whatsapp', $4, 'whatsapp_inbound', 'active', NOW(), NOW())
-					ON CONFLICT (tenant_id, channel, routing_value) DO UPDATE SET updated_at = NOW()
-				`, tenantID, fn, ln, phone)
-				if err == nil {
-					log.Printf("[WhatsAppManager] ⚡ Inbound flywheel captured contact %s (%s) for tenant %s\n", name, phone, tenantID)
-				}
+				m.saveContact(tenantID, senderJID.User, evt.Info.PushName, "whatsapp_inbound")
 			}
 
 		case *events.LoggedOut:
@@ -287,6 +314,38 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 			`, tenantID)
 		}
 	})
+}
+
+func (m *WhatsAppManager) saveContact(tenantID, rawPhone, name, source string) {
+	phone := strings.TrimPrefix(strings.TrimSpace(rawPhone), "+")
+	if len(phone) < 7 {
+		return
+	}
+	routingValue := "+" + phone
+
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "WhatsApp User"
+	}
+	parts := strings.SplitN(name, " ", 2)
+	fn := parts[0]
+	ln := ""
+	if len(parts) > 1 {
+		ln = parts[1]
+	}
+
+	_, err := m.db.Exec(`
+		INSERT INTO contacts (tenant_id, first_name, last_name, channel, routing_value, source, status, created_at, updated_at)
+		VALUES ($1, $2, $3, 'whatsapp', $4, $5, 'active', NOW(), NOW())
+		ON CONFLICT (tenant_id, channel, routing_value)
+		DO UPDATE SET
+			first_name = CASE WHEN contacts.first_name IN ('WhatsApp User', 'WhatsApp Contact') AND EXCLUDED.first_name NOT IN ('WhatsApp User', 'WhatsApp Contact') THEN EXCLUDED.first_name ELSE contacts.first_name END,
+			last_name = CASE WHEN contacts.last_name = '' AND EXCLUDED.last_name != '' THEN EXCLUDED.last_name ELSE contacts.last_name END,
+			updated_at = NOW()
+	`, tenantID, fn, ln, routingValue, source)
+	if err != nil {
+		log.Printf("[WhatsAppManager] Warning: failed to save contact %s (%s): %v\n", name, routingValue, err)
+	}
 }
 
 func (m *WhatsAppManager) GetStatus(ctx context.Context, tenantID string) (status string, phone string, name string, err error) {
@@ -361,7 +420,7 @@ func (m *WhatsAppManager) SendMessage(ctx context.Context, tenantID string, reci
 	return err
 }
 
-// SyncContacts reads all saved contacts from the linked WhatsApp account and inserts them into the tenant's Audience directory
+// SyncContacts reads all saved contacts from the linked WhatsApp account, groups, and local store
 func (m *WhatsAppManager) SyncContacts(ctx context.Context, tenantID string, contactRepo domain.ContactRepository) (int, error) {
 	val, ok := m.clients.Load(tenantID)
 	if !ok {
@@ -372,62 +431,48 @@ func (m *WhatsAppManager) SyncContacts(ctx context.Context, tenantID string, con
 		return 0, fmt.Errorf("WhatsApp is not connected for tenant %s", tenantID)
 	}
 
-	contactsMap, err := sess.client.Store.Contacts.GetAllContacts(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("failed to read contacts from WhatsApp store: %w", err)
-	}
-
 	syncedCount := 0
-	for jid, info := range contactsMap {
-		// Only sync user contacts (ignore groups @g.us, broadcasts, server JIDs)
-		if jid.Server != types.DefaultUserServer || jid.User == "" {
-			continue
-		}
 
-		phone := strings.TrimPrefix(jid.User, "+")
-		if len(phone) < 7 {
-			continue
-		}
-		routingValue := "+" + phone
-
-		// Determine best available name
-		firstName := info.FirstName
-		lastName := ""
-		if firstName == "" {
-			if info.FullName != "" {
-				parts := strings.SplitN(info.FullName, " ", 2)
-				firstName = parts[0]
-				if len(parts) > 1 {
-					lastName = parts[1]
-				}
-			} else if info.PushName != "" {
-				parts := strings.SplitN(info.PushName, " ", 2)
-				firstName = parts[0]
-				if len(parts) > 1 {
-					lastName = parts[1]
-				}
-			} else if info.BusinessName != "" {
-				firstName = info.BusinessName
-			} else {
-				firstName = "WhatsApp Contact"
+	// 1. Sync from local store
+	if contactsMap, err := sess.client.Store.Contacts.GetAllContacts(ctx); err == nil && len(contactsMap) > 0 {
+		for jid, info := range contactsMap {
+			if jid.Server != types.DefaultUserServer || jid.User == "" {
+				continue
 			}
-		}
-
-		contact := &domain.Contact{
-			TenantID:     tenantID,
-			FirstName:    firstName,
-			LastName:     lastName,
-			Channel:      "whatsapp",
-			RoutingValue: routingValue,
-			Source:       "whatsapp_sync",
-			Status:       "active",
-		}
-
-		if err := contactRepo.Create(ctx, contact); err == nil {
+			name := info.FirstName
+			if name == "" {
+				name = info.FullName
+			}
+			if name == "" {
+				name = info.PushName
+			}
+			if name == "" {
+				name = info.BusinessName
+			}
+			m.saveContact(tenantID, jid.User, name, "whatsapp_sync")
 			syncedCount++
 		}
 	}
 
-	log.Printf("[WhatsAppManager] 📥 Synced %d contacts from WhatsApp for tenant %s\n", syncedCount, tenantID)
+	// 2. Sync from joined group participants (if any)
+	if groups, err := sess.client.GetJoinedGroups(ctx); err == nil && len(groups) > 0 {
+		for _, group := range groups {
+			for _, participant := range group.Participants {
+				if participant.JID.Server == types.DefaultUserServer && participant.JID.User != "" {
+					m.saveContact(tenantID, participant.JID.User, "WhatsApp Contact", "whatsapp_group_sync")
+					syncedCount++
+				}
+			}
+		}
+	}
+
+	// 3. Query total count from DB for feedback
+	var totalInDB int
+	_ = m.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM contacts WHERE tenant_id = $1 AND channel = 'whatsapp'`, tenantID).Scan(&totalInDB)
+	if totalInDB > syncedCount {
+		syncedCount = totalInDB
+	}
+
+	log.Printf("[WhatsAppManager] 📥 Synced %d WhatsApp contacts for tenant %s (Total in directory: %d)\n", syncedCount, tenantID, totalInDB)
 	return syncedCount, nil
 }
