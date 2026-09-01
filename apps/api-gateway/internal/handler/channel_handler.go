@@ -349,13 +349,18 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 	}
 
 	if req.Source == "embedded_signup" {
+		redirectURI := req.RedirectURI
+		if redirectURI == "" && h.publicAppBaseURL != "" {
+			redirectURI = cleanBaseURL(h.publicAppBaseURL) + "/connections"
+		}
 		exchangeURL := fmt.Sprintf(
-			"https://graph.facebook.com/v21.0/oauth/access_token?client_id=%s&client_secret=%s&code=%s",
+			"https://graph.facebook.com/v21.0/oauth/access_token?client_id=%s&client_secret=%s&code=%s&redirect_uri=%s",
 			url.QueryEscape(h.metaConfig.AppID),
 			url.QueryEscape(h.metaConfig.AppSecret),
 			url.QueryEscape(req.Code),
+			url.QueryEscape(redirectURI),
 		)
-		log.Printf("[WhatsApp-OAuth-Exchange] Exchanging FB.login Embedded Signup code via GET (AppID: %s)...\n", h.metaConfig.AppID)
+		log.Printf("[WhatsApp-OAuth-Exchange] Exchanging FB.login Embedded Signup code via GET (AppID: %s, redirect_uri: %q)...\n", h.metaConfig.AppID, redirectURI)
 		resp, err := http.Get(exchangeURL)
 		if err != nil {
 			log.Printf("[WhatsApp-OAuth-Exchange-Error] Network error: %v\n", err)
