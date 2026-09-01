@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"omnipulse/apps/api-gateway/internal/domain"
+	"omnipulse/apps/api-gateway/internal/service"
 	"omnipulse/apps/api-gateway/internal/utils"
 )
 
@@ -141,10 +142,17 @@ type ChannelHandler struct {
 	publicAPIBaseURL string
 	publicAppBaseURL string
 	metaConfig       MetaAppConfig
+	waManager        *service.WhatsAppManager
 }
 
-func NewChannelHandler(repo domain.ChannelRepository, publicAPIBaseURL, publicAppBaseURL string, metaConfig MetaAppConfig) *ChannelHandler {
-	return &ChannelHandler{repo: repo, publicAPIBaseURL: publicAPIBaseURL, publicAppBaseURL: publicAppBaseURL, metaConfig: metaConfig}
+func NewChannelHandler(repo domain.ChannelRepository, publicAPIBaseURL, publicAppBaseURL string, metaConfig MetaAppConfig, waManager *service.WhatsAppManager) *ChannelHandler {
+	return &ChannelHandler{
+		repo:             repo,
+		publicAPIBaseURL: publicAPIBaseURL,
+		publicAppBaseURL: publicAppBaseURL,
+		metaConfig:       metaConfig,
+		waManager:        waManager,
+	}
 }
 
 func (h *ChannelHandler) CreateChannel(w http.ResponseWriter, r *http.Request) {
@@ -682,5 +690,86 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 		"waba_id":         wabaID,
 		"phone_number_id": phoneNumberID,
 		"sender_identity": senderIdentity,
+	})
+}
+
+// HandleWhatsAppQR generates a dynamic QR code for WhatsApp Web multi-device linking
+// GET /api/v1/channels/whatsapp/qr
+func (h *ChannelHandler) HandleWhatsAppQR(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	if h.waManager == nil {
+		utils.WriteError(w, http.StatusServiceUnavailable, "WhatsApp Multi-Device service is not initialized")
+		return
+	}
+
+	qrCode, status, phone, name, err := h.waManager.GetQR(r.Context(), tenantID)
+	if err != nil {
+		log.Printf("[WhatsAppQR] Error generating QR for tenant %s: %v\n", tenantID, err)
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to generate QR code: %v", err))
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"qr_code": qrCode,
+		"status":  status,
+		"phone":   phone,
+		"name":    name,
+	})
+}
+
+// HandleWhatsAppStatus returns the current connection state of the tenant's WhatsApp session
+// GET /api/v1/channels/whatsapp/status
+func (h *ChannelHandler) HandleWhatsAppStatus(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	if h.waManager == nil {
+		utils.WriteError(w, http.StatusServiceUnavailable, "WhatsApp Multi-Device service is not initialized")
+		return
+	}
+
+	status, phone, name, err := h.waManager.GetStatus(r.Context(), tenantID)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "Failed to fetch status")
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"status": status,
+		"phone":  phone,
+		"name":   name,
+	})
+}
+
+// HandleWhatsAppDisconnect logs out and disconnects the tenant's WhatsApp device session
+// POST /api/v1/channels/whatsapp/disconnect
+func (h *ChannelHandler) HandleWhatsAppDisconnect(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	if h.waManager == nil {
+		utils.WriteError(w, http.StatusServiceUnavailable, "WhatsApp Multi-Device service is not initialized")
+		return
+	}
+
+	if err := h.waManager.Disconnect(r.Context(), tenantID); err != nil {
+		log.Printf("[WhatsAppDisconnect] Error disconnecting tenant %s: %v\n", tenantID, err)
+		utils.WriteError(w, http.StatusInternalServerError, "Failed to disconnect WhatsApp")
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"message": "WhatsApp session disconnected successfully",
 	})
 }

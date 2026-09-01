@@ -17,6 +17,7 @@ import (
 	"omnipulse/apps/api-gateway/internal/handler"
 
 	"omnipulse/apps/api-gateway/internal/repository"
+	"omnipulse/apps/api-gateway/internal/service"
 	"omnipulse/apps/api-gateway/internal/usecase"
 	"omnipulse/apps/api-gateway/internal/utils"
 	"omnipulse/apps/api-gateway/internal/worker"
@@ -78,13 +79,23 @@ func main() {
 	contactHandler := handler.NewContactHandler(contactUseCase)
 	campaignHandler := handler.NewCampaignHandler(campaignUseCase)
 	identityHandler := handler.NewIdentityHandler(identityUseCase)
+
+	var waManager *service.WhatsAppManager
+	var waErr error
+	waManager, waErr = service.NewWhatsAppManager(db)
+	if waErr != nil {
+		logger.Printf("[WA-WARN] WhatsApp Multi-Device manager initialization deferred: %v\n", waErr)
+	} else {
+		logger.Println("Successfully initialized WhatsApp Multi-Device session manager.")
+	}
+
 	channelHandler := handler.NewChannelHandler(channelRepo, cfg.PublicAPIBaseURL, cfg.PublicAppBaseURL, handler.MetaAppConfig{
 		AppID:         cfg.MetaAppID,
 		AppSecret:     cfg.MetaAppSecret,
 		WABAConfigID:  cfg.MetaWABAConfigID,
 		WABAID:        cfg.MetaWABAID,
 		PhoneNumberID: cfg.MetaPhoneNumberID,
-	})
+	}, waManager)
 	webhookHandler := handler.NewWebhookHandler(contactUseCase, channelRepo, destinationRepo)
 	dashboardHandler := handler.NewDashboardHandler(dashboardUseCase)
 	destinationHandler := handler.NewTelegramDestinationHandler(destinationRepo)
@@ -126,6 +137,11 @@ func main() {
 	mux.HandleFunc("POST /api/v1/channels", channelHandler.CreateChannel)
 	mux.HandleFunc("GET /api/v1/channels", channelHandler.ListChannels)
 	mux.HandleFunc("DELETE /api/v1/channels/{platform}", channelHandler.HandleDisconnectChannel)
+
+	// WhatsApp Multi-Device QR Endpoints
+	mux.HandleFunc("GET /api/v1/channels/whatsapp/qr", channelHandler.HandleWhatsAppQR)
+	mux.HandleFunc("GET /api/v1/channels/whatsapp/status", channelHandler.HandleWhatsAppStatus)
+	mux.HandleFunc("POST /api/v1/channels/whatsapp/disconnect", channelHandler.HandleWhatsAppDisconnect)
 
 	// WhatsApp Embedded Signup (1-Click OAuth) Endpoints
 	mux.HandleFunc("GET /api/v1/channels/whatsapp/oauth/config", channelHandler.HandleWhatsAppOAuthConfig)

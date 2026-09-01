@@ -10,7 +10,7 @@ type DashboardStats struct {
 	BroadcastsSent   int                         `json:"broadcasts_sent"`
 	DeliveryRate     float64                     `json:"delivery_rate"`
 	TotalDeliveries  int                         `json:"total_deliveries"`
-	FailedDeliveries int                         `json:"failed_deliveries"` // Included per user request
+	FailedDeliveries int                         `json:"failed_deliveries"`
 	ActiveChannels   int                         `json:"active_channels"`
 	ChannelData      []ChannelStat               `json:"channel_data"`
 	RecentDeliveries []DashboardDeliveryActivity `json:"recent_activities"`

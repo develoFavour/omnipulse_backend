@@ -14,14 +14,22 @@ import (
 
 	"omnipulse/shared/contracts"
 
+	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/store/sqlstore"
+	"go.mau.fi/whatsmeow/types"
+	waLog "go.mau.fi/whatsmeow/util/log"
+	"google.golang.org/protobuf/proto"
+
 	"github.com/nats-io/nats.go"
 )
 
 type BroadcastConsumer struct {
-	nc  *nats.Conn
-	js  nats.JetStreamContext
-	sub *nats.Subscription
-	db  *sql.DB
+	nc          *nats.Conn
+	js          nats.JetStreamContext
+	sub         *nats.Subscription
+	db          *sql.DB
+	waContainer *sqlstore.Container
 }
 
 func NewBroadcastConsumer(natsURL string, natsCreds string, db *sql.DB) (*BroadcastConsumer, error) {
@@ -48,7 +56,13 @@ func NewBroadcastConsumer(natsURL string, natsCreds string, db *sql.DB) (*Broadc
 		// Safely ignores if already updated
 	}
 
-	return &BroadcastConsumer{nc: nc, js: js, db: db}, nil
+	var waContainer *sqlstore.Container
+	if db != nil {
+		waContainer = sqlstore.NewWithDB(db, "postgres", waLog.Stdout("WA-Worker", "WARN", true))
+		_ = waContainer.Upgrade(context.Background())
+	}
+
+	return &BroadcastConsumer{nc: nc, js: js, db: db, waContainer: waContainer}, nil
 }
 
 func (c *BroadcastConsumer) Start(ctx context.Context) error {
@@ -148,56 +162,95 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 			status = "failed"
 			reason := fmt.Sprintf("no active WhatsApp channel configured for tenant: %v", err)
 			errMsg = &reason
-			log.Printf("[❌ WHATSAPP API -> ERROR] %s\n", reason)
+			log.Printf("[❌ WHATSAPP -> ERROR] %s\n", reason)
 		} else {
-			var creds struct {
-				PhoneNumberID string `json:"phone_number_id"`
-				AccessToken   string `json:"access_token"`
-			}
+			var creds map[string]interface{}
 			_ = json.Unmarshal(tokenData, &creds)
+			personalizedMsg := strings.ReplaceAll(task.MessageBody, "{first_name}", task.FirstName)
 
-			if creds.PhoneNumberID == "" || creds.AccessToken == "" {
-				status = "failed"
-				reason := "WhatsApp channel credentials are incomplete (missing phone_number_id or access_token)"
-				errMsg = &reason
-				log.Printf("[❌ WHATSAPP API -> ERROR] %s\n", reason)
-			} else {
-				personalizedMsg := strings.ReplaceAll(task.MessageBody, "{first_name}", task.FirstName)
-				waPayload := map[string]interface{}{
-					"messaging_product": "whatsapp",
-					"recipient_type":    "individual",
-					"to":                task.RoutingValue,
-					"type":              "text",
-					"text": map[string]interface{}{
-						"preview_url": false,
-						"body":        personalizedMsg,
-					},
-				}
-
-				payloadBytes, _ := json.Marshal(waPayload)
-				waURL := fmt.Sprintf("https://graph.facebook.com/v21.0/%s/messages", creds.PhoneNumberID)
-
-				req, _ := http.NewRequestWithContext(ctx, "POST", waURL, bytes.NewBuffer(payloadBytes))
-				req.Header.Set("Content-Type", "application/json")
-				req.Header.Set("Authorization", "Bearer "+creds.AccessToken)
-
-				client := &http.Client{Timeout: 10 * time.Second}
-				resp, err := client.Do(req)
-
-				if err != nil {
+			if jidStr, ok := creds["jid"].(string); ok && jidStr != "" && c.waContainer != nil {
+				// Send via Whatsmeow Multi-Device session
+				jid, parseErr := types.ParseJID(jidStr)
+				if parseErr != nil {
 					status = "failed"
-					reason := fmt.Sprintf("network error calling WhatsApp Cloud API: %v", err)
+					reason := fmt.Sprintf("invalid WhatsApp JID format: %v", parseErr)
+					errMsg = &reason
+					log.Printf("[❌ WHATSAPP MULTI-DEVICE -> ERROR] %s\n", reason)
+				} else {
+					dev, devErr := c.waContainer.GetDevice(ctx, jid)
+					if devErr != nil || dev == nil {
+						status = "failed"
+						reason := fmt.Sprintf("WhatsApp device session not found in database: %v", devErr)
+						errMsg = &reason
+						log.Printf("[❌ WHATSAPP MULTI-DEVICE -> ERROR] %s\n", reason)
+					} else {
+						client := whatsmeow.NewClient(dev, waLog.Stdout("WA-Worker", "WARN", true))
+						if !client.IsConnected() {
+							_ = client.Connect()
+						}
+						recipientPhone := strings.TrimPrefix(strings.TrimSpace(task.RoutingValue), "+")
+						recipientJID := types.NewJID(recipientPhone, types.DefaultUserServer)
+						msg := &waE2E.Message{
+							Conversation: proto.String(personalizedMsg),
+						}
+						_, sendErr := client.SendMessage(ctx, recipientJID, msg)
+						if sendErr != nil {
+							status = "failed"
+							reason := fmt.Sprintf("failed to send WhatsApp message via device session: %v", sendErr)
+							errMsg = &reason
+							log.Printf("[❌ WHATSAPP MULTI-DEVICE -> ERROR] %s\n", reason)
+						} else {
+							log.Printf("[📲 WHATSAPP MULTI-DEVICE] Dispatched cleanly to %s (%s)\n", task.FirstName, task.RoutingValue)
+						}
+					}
+				}
+			} else {
+				// Cloud API Fallback
+				phoneID, _ := creds["phone_number_id"].(string)
+				token, _ := creds["access_token"].(string)
+
+				if phoneID == "" || token == "" {
+					status = "failed"
+					reason := "WhatsApp channel credentials missing"
 					errMsg = &reason
 					log.Printf("[❌ WHATSAPP API -> ERROR] %s\n", reason)
 				} else {
-					defer resp.Body.Close()
-					if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+					waPayload := map[string]interface{}{
+						"messaging_product": "whatsapp",
+						"recipient_type":    "individual",
+						"to":                task.RoutingValue,
+						"type":              "text",
+						"text": map[string]interface{}{
+							"preview_url": false,
+							"body":        personalizedMsg,
+						},
+					}
+
+					payloadBytes, _ := json.Marshal(waPayload)
+					waURL := fmt.Sprintf("https://graph.facebook.com/v21.0/%s/messages", phoneID)
+
+					req, _ := http.NewRequestWithContext(ctx, "POST", waURL, bytes.NewBuffer(payloadBytes))
+					req.Header.Set("Content-Type", "application/json")
+					req.Header.Set("Authorization", "Bearer "+token)
+
+					client := &http.Client{Timeout: 10 * time.Second}
+					resp, err := client.Do(req)
+
+					if err != nil {
 						status = "failed"
-						reason := fmt.Sprintf("WhatsApp API rejected message (status %d)", resp.StatusCode)
+						reason := fmt.Sprintf("network error calling WhatsApp Cloud API: %v", err)
 						errMsg = &reason
 						log.Printf("[❌ WHATSAPP API -> ERROR] %s\n", reason)
 					} else {
-						log.Printf("[📲 WHATSAPP CLOUD API] Dispatched cleanly to %s (%s)\n", task.FirstName, task.RoutingValue)
+						defer resp.Body.Close()
+						if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+							status = "failed"
+							reason := fmt.Sprintf("WhatsApp API rejected message (status %d)", resp.StatusCode)
+							errMsg = &reason
+							log.Printf("[❌ WHATSAPP API -> ERROR] %s\n", reason)
+						} else {
+							log.Printf("[📲 WHATSAPP CLOUD API] Dispatched cleanly to %s (%s)\n", task.FirstName, task.RoutingValue)
+						}
 					}
 				}
 			}
