@@ -139,15 +139,17 @@ type MetaAppConfig struct {
 
 type ChannelHandler struct {
 	repo             domain.ChannelRepository
+	contactRepo      domain.ContactRepository
 	publicAPIBaseURL string
 	publicAppBaseURL string
 	metaConfig       MetaAppConfig
 	waManager        *service.WhatsAppManager
 }
 
-func NewChannelHandler(repo domain.ChannelRepository, publicAPIBaseURL, publicAppBaseURL string, metaConfig MetaAppConfig, waManager *service.WhatsAppManager) *ChannelHandler {
+func NewChannelHandler(repo domain.ChannelRepository, contactRepo domain.ContactRepository, publicAPIBaseURL, publicAppBaseURL string, metaConfig MetaAppConfig, waManager *service.WhatsAppManager) *ChannelHandler {
 	return &ChannelHandler{
 		repo:             repo,
+		contactRepo:      contactRepo,
 		publicAPIBaseURL: publicAPIBaseURL,
 		publicAppBaseURL: publicAppBaseURL,
 		metaConfig:       metaConfig,
@@ -771,5 +773,32 @@ func (h *ChannelHandler) HandleWhatsAppDisconnect(w http.ResponseWriter, r *http
 
 	utils.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"message": "WhatsApp session disconnected successfully",
+	})
+}
+
+// HandleWhatsAppSyncContacts extracts and imports all saved contacts from the linked WhatsApp account
+// POST /api/v1/channels/whatsapp/sync-contacts
+func (h *ChannelHandler) HandleWhatsAppSyncContacts(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	if h.waManager == nil {
+		utils.WriteError(w, http.StatusServiceUnavailable, "WhatsApp Multi-Device service is not initialized")
+		return
+	}
+
+	syncedCount, err := h.waManager.SyncContacts(r.Context(), tenantID, h.contactRepo)
+	if err != nil {
+		log.Printf("[WhatsAppSyncContacts] Error syncing contacts for tenant %s: %v\n", tenantID, err)
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to sync WhatsApp contacts: %v", err))
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"synced_count": syncedCount,
+		"message":      fmt.Sprintf("Successfully synced %d contacts from your WhatsApp", syncedCount),
 	})
 }

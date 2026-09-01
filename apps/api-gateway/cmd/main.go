@@ -89,7 +89,7 @@ func main() {
 		logger.Println("Successfully initialized WhatsApp Multi-Device session manager.")
 	}
 
-	channelHandler := handler.NewChannelHandler(channelRepo, cfg.PublicAPIBaseURL, cfg.PublicAppBaseURL, handler.MetaAppConfig{
+	channelHandler := handler.NewChannelHandler(channelRepo, contactRepo, cfg.PublicAPIBaseURL, cfg.PublicAppBaseURL, handler.MetaAppConfig{
 		AppID:         cfg.MetaAppID,
 		AppSecret:     cfg.MetaAppSecret,
 		WABAConfigID:  cfg.MetaWABAConfigID,
@@ -142,6 +142,7 @@ func main() {
 	mux.HandleFunc("GET /api/v1/channels/whatsapp/qr", channelHandler.HandleWhatsAppQR)
 	mux.HandleFunc("GET /api/v1/channels/whatsapp/status", channelHandler.HandleWhatsAppStatus)
 	mux.HandleFunc("POST /api/v1/channels/whatsapp/disconnect", channelHandler.HandleWhatsAppDisconnect)
+	mux.HandleFunc("POST /api/v1/channels/whatsapp/sync-contacts", channelHandler.HandleWhatsAppSyncContacts)
 
 	// WhatsApp Embedded Signup (1-Click OAuth) Endpoints
 	mux.HandleFunc("GET /api/v1/channels/whatsapp/oauth/config", channelHandler.HandleWhatsAppOAuthConfig)
