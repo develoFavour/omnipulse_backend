@@ -472,19 +472,16 @@ func (m *WhatsAppManager) SyncContacts(ctx context.Context, tenantID string, con
 			for _, participant := range group.Participants {
 				if participant.JID.Server == types.DefaultUserServer && participant.JID.User != "" {
 					m.saveContact(tenantID, participant.JID.User, "WhatsApp Contact", "whatsapp_group_sync")
-					syncedCount++
 				}
 			}
 		}
 	}
 
-	// 3. Query total count from DB for feedback
+	// 3. Query total count from DB for accurate feedback
 	var totalInDB int
 	_ = m.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM contacts WHERE tenant_id = $1 AND channel = 'whatsapp'`, tenantID).Scan(&totalInDB)
-	if totalInDB > syncedCount {
-		syncedCount = totalInDB
-	}
+	syncedCount = totalInDB
 
-	log.Printf("[WhatsAppManager] 📥 Synced %d WhatsApp contacts for tenant %s (Total in directory: %d)\n", syncedCount, tenantID, totalInDB)
+	log.Printf("[WhatsAppManager] 📥 Synced %d WhatsApp contacts for tenant %s\n", syncedCount, tenantID)
 	return syncedCount, nil
 }

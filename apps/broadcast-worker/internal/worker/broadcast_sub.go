@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"omnipulse/shared/contracts"
@@ -31,6 +32,7 @@ type BroadcastConsumer struct {
 	sub         *nats.Subscription
 	db          *sql.DB
 	waContainer *sqlstore.Container
+	waClients   sync.Map // map[string]*whatsmeow.Client (key: jid.String())
 }
 
 func NewBroadcastConsumer(natsURL string, natsCreds string, db *sql.DB) (*BroadcastConsumer, error) {
@@ -179,30 +181,26 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 					errMsg = &reason
 					log.Printf("[❌ WHATSAPP MULTI-DEVICE -> ERROR] %s\n", reason)
 				} else {
-					dev, devErr := c.waContainer.GetDevice(ctx, jid)
-					if devErr != nil || dev == nil {
+					client, clientErr := c.getOrCreateWhatsAppClient(ctx, jid)
+					if clientErr != nil {
 						status = "failed"
-						reason := fmt.Sprintf("WhatsApp device session not found in database: %v", devErr)
+						reason := fmt.Sprintf("WhatsApp client connection failed: %v", clientErr)
 						errMsg = &reason
 						log.Printf("[❌ WHATSAPP MULTI-DEVICE -> ERROR] %s\n", reason)
 					} else {
-						client := whatsmeow.NewClient(dev, waLog.Stdout("WA-Worker", "WARN", true))
-						if !client.IsConnected() {
-							_ = client.Connect()
-						}
 						recipientPhone := strings.TrimPrefix(strings.TrimSpace(task.RoutingValue), "+")
 						recipientJID := types.NewJID(recipientPhone, types.DefaultUserServer)
 						msg := &waE2E.Message{
 							Conversation: proto.String(personalizedMsg),
 						}
-						_, sendErr := client.SendMessage(ctx, recipientJID, msg)
+						resp, sendErr := client.SendMessage(ctx, recipientJID, msg)
 						if sendErr != nil {
 							status = "failed"
-							reason := fmt.Sprintf("failed to send WhatsApp message via device session: %v", sendErr)
+							reason := fmt.Sprintf("failed to send WhatsApp message: %v", sendErr)
 							errMsg = &reason
 							log.Printf("[❌ WHATSAPP MULTI-DEVICE -> ERROR] %s\n", reason)
 						} else {
-							log.Printf("[📲 WHATSAPP MULTI-DEVICE] Dispatched cleanly to %s (%s)\n", task.FirstName, task.RoutingValue)
+							log.Printf("[📲 WHATSAPP MULTI-DEVICE] Dispatched cleanly to %s (%s) [MsgID: %s]\n", task.FirstName, task.RoutingValue, resp.ID)
 						}
 					}
 				}
@@ -312,4 +310,37 @@ func getNatsOptions(natsCreds string) []nats.Option {
 		}
 	}
 	return opts
+}
+
+func (c *BroadcastConsumer) getOrCreateWhatsAppClient(ctx context.Context, jid types.JID) (*whatsmeow.Client, error) {
+	jidKey := jid.String()
+	if val, ok := c.waClients.Load(jidKey); ok {
+		client := val.(*whatsmeow.Client)
+		if client.IsConnected() && client.IsLoggedIn() {
+			return client, nil
+		}
+		if !client.IsConnected() {
+			_ = client.Connect()
+			if client.WaitForConnection(8 * time.Second) {
+				return client, nil
+			}
+		}
+	}
+
+	dev, devErr := c.waContainer.GetDevice(ctx, jid)
+	if devErr != nil || dev == nil {
+		return nil, fmt.Errorf("device session not found in database: %v", devErr)
+	}
+
+	client := whatsmeow.NewClient(dev, waLog.Stdout("WA-Worker", "WARN", true))
+	if err := client.Connect(); err != nil {
+		return nil, fmt.Errorf("failed to initiate connect: %w", err)
+	}
+
+	if !client.WaitForConnection(10 * time.Second) {
+		return nil, fmt.Errorf("timeout waiting for WhatsApp client connection")
+	}
+
+	c.waClients.Store(jidKey, client)
+	return client, nil
 }
