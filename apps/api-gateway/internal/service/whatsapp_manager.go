@@ -321,6 +321,18 @@ func (m *WhatsAppManager) saveContact(tenantID, rawPhone, name, source string) {
 	if len(phone) < 7 {
 		return
 	}
+
+	// Skip saving the tenant's own phone number as an audience contact
+	if val, ok := m.clients.Load(tenantID); ok {
+		sess := val.(*tenantSession)
+		sess.mu.RLock()
+		selfPhone := strings.TrimPrefix(strings.TrimSpace(sess.phone), "+")
+		sess.mu.RUnlock()
+		if selfPhone != "" && selfPhone == phone {
+			return
+		}
+	}
+
 	routingValue := "+" + phone
 
 	name = strings.TrimSpace(name)
