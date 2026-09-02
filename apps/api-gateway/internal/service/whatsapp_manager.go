@@ -423,12 +423,23 @@ func (m *WhatsAppManager) SendMessage(ctx context.Context, tenantID string, reci
 		return fmt.Errorf("WhatsApp client is not connected for tenant %s", tenantID)
 	}
 
-	recipientJID := types.NewJID(recipientPhone, types.DefaultUserServer)
+	phoneClean := strings.TrimPrefix(strings.TrimSpace(recipientPhone), "+")
+	targetJID := types.NewJID(phoneClean, types.DefaultUserServer)
+
+	if onWaResp, err := sess.client.IsOnWhatsApp(ctx, []string{phoneClean, recipientPhone}); err == nil && len(onWaResp) > 0 {
+		for _, r := range onWaResp {
+			if r.IsIn {
+				targetJID = r.JID
+				break
+			}
+		}
+	}
+
 	msg := &waE2E.Message{
 		Conversation: proto.String(text),
 	}
 
-	_, err := sess.client.SendMessage(ctx, recipientJID, msg)
+	_, err := sess.client.SendMessage(ctx, targetJID, msg)
 	return err
 }
 

@@ -189,18 +189,29 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 						log.Printf("[❌ WHATSAPP MULTI-DEVICE -> ERROR] %s\n", reason)
 					} else {
 						recipientPhone := strings.TrimPrefix(strings.TrimSpace(task.RoutingValue), "+")
-						recipientJID := types.NewJID(recipientPhone, types.DefaultUserServer)
+						targetJID := types.NewJID(recipientPhone, types.DefaultUserServer)
+
+						// Resolve true deliverable JID (handles modern WhatsApp LID encryption routing)
+						if onWaResp, onWaErr := client.IsOnWhatsApp(ctx, []string{recipientPhone, task.RoutingValue}); onWaErr == nil && len(onWaResp) > 0 {
+							for _, r := range onWaResp {
+								if r.IsIn {
+									targetJID = r.JID
+									break
+								}
+							}
+						}
+
 						msg := &waE2E.Message{
 							Conversation: proto.String(personalizedMsg),
 						}
-						resp, sendErr := client.SendMessage(ctx, recipientJID, msg)
+						resp, sendErr := client.SendMessage(ctx, targetJID, msg)
 						if sendErr != nil {
 							status = "failed"
 							reason := fmt.Sprintf("failed to send WhatsApp message: %v", sendErr)
 							errMsg = &reason
 							log.Printf("[❌ WHATSAPP MULTI-DEVICE -> ERROR] %s\n", reason)
 						} else {
-							log.Printf("[📲 WHATSAPP MULTI-DEVICE] Dispatched cleanly to %s (%s) [MsgID: %s]\n", task.FirstName, task.RoutingValue, resp.ID)
+							log.Printf("[📲 WHATSAPP MULTI-DEVICE] Dispatched cleanly to %s (%s -> %s) [MsgID: %s]\n", task.FirstName, task.RoutingValue, targetJID.String(), resp.ID)
 						}
 					}
 				}
