@@ -121,10 +121,6 @@ func (c *CampaignConsumer) processMessage(ctx context.Context, msg *nats.Msg) {
 	log.Printf("[✅ COMPLIANCE PASSED] Verified user %s (%s) for channel %s. Routing task forward...\n",
 		task.FirstName, task.RoutingValue, task.TargetPlatform)
 
-	// If the user is clean and opted in, we approve it for delivery!
-	log.Printf("[✅ COMPLIANCE PASSED] Verified user %s (%s) for channel %s. Routing task forward...\n",
-		task.FirstName, task.RoutingValue, task.TargetPlatform)
-
 	_, err = c.js.Publish("campaign.approved", msg.Data)
 	if err != nil {
 		log.Printf("[WORKER-ERROR] Failed to push approved item forward onto NATS: %v. Re-queueing.\n", err)

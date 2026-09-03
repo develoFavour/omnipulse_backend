@@ -155,6 +155,8 @@ func (m *WhatsAppManager) GetQR(ctx context.Context, tenantID string) (qrCode st
 	select {
 	case evt, ok := <-qrChan:
 		if !ok {
+			client.Disconnect()
+			m.clients.Delete(tenantID)
 			return "", "error", "", "", fmt.Errorf("QR channel closed unexpectedly")
 		}
 		if evt.Event == "code" {
@@ -174,9 +176,13 @@ func (m *WhatsAppManager) GetQR(ctx context.Context, tenantID string) (qrCode st
 			return "", "connected", sess.phone, sess.name, nil
 		}
 	case <-time.After(15 * time.Second):
+		client.Disconnect()
+		m.clients.Delete(tenantID)
 		return "", "timeout", "", "", fmt.Errorf("timeout waiting for initial QR code")
 	}
 
+	client.Disconnect()
+	m.clients.Delete(tenantID)
 	return "", "error", "", "", fmt.Errorf("no QR code generated")
 }
 
@@ -346,7 +352,10 @@ func (m *WhatsAppManager) saveContact(tenantID, rawPhone, name, source string) {
 		ln = parts[1]
 	}
 
-	_, err := m.db.Exec(`
+	execCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := m.db.ExecContext(execCtx, `
 		INSERT INTO contacts (tenant_id, first_name, last_name, channel, routing_value, source, status, created_at, updated_at)
 		VALUES ($1, $2, $3, 'whatsapp', $4, $5, 'active', NOW(), NOW())
 		ON CONFLICT (tenant_id, channel, routing_value)
@@ -360,21 +369,96 @@ func (m *WhatsAppManager) saveContact(tenantID, rawPhone, name, source string) {
 	}
 }
 
-func (m *WhatsAppManager) GetStatus(ctx context.Context, tenantID string) (status string, phone string, name string, err error) {
+// ensureSession guarantees an active, connected WhatsApp client session for the tenant,
+// automatically re-establishing connections from the database store on-demand if disconnected.
+func (m *WhatsAppManager) ensureSession(ctx context.Context, tenantID string) (*tenantSession, error) {
 	if val, ok := m.clients.Load(tenantID); ok {
 		sess := val.(*tenantSession)
 		sess.mu.RLock()
-		defer sess.mu.RUnlock()
-		if sess.client.IsConnected() && sess.client.IsLoggedIn() {
-			return "connected", sess.phone, sess.name, nil
+		connected := sess.client != nil && sess.client.IsConnected() && sess.client.IsLoggedIn()
+		sess.mu.RUnlock()
+		if connected {
+			return sess, nil
 		}
-		return sess.status, sess.phone, sess.name, nil
+		// If in memory but temporarily disconnected, attempt quick reconnect
+		if sess.client != nil && !sess.client.IsConnected() {
+			_ = sess.client.Connect()
+			if sess.client.WaitForConnection(5 * time.Second) {
+				sess.mu.Lock()
+				sess.status = "connected"
+				sess.mu.Unlock()
+				return sess, nil
+			}
+		}
+	}
+
+	// Look up tenant's paired device in PostgreSQL
+	var senderIdentity string
+	var credsJSON []byte
+	err := m.db.QueryRowContext(ctx, `
+		SELECT sender_identity, encrypted_credentials
+		FROM tenant_channels
+		WHERE tenant_id = $1 AND platform_name = 'whatsapp' AND status = 'active'
+		LIMIT 1
+	`, tenantID).Scan(&senderIdentity, &credsJSON)
+	if err != nil || len(credsJSON) == 0 {
+		return nil, fmt.Errorf("no active WhatsApp session for tenant %s. Please connect WhatsApp first", tenantID)
+	}
+
+	var creds map[string]interface{}
+	_ = json.Unmarshal(credsJSON, &creds)
+	jidStr, _ := creds["jid"].(string)
+	if jidStr == "" {
+		return nil, fmt.Errorf("no WhatsApp device JID configured for tenant %s", tenantID)
+	}
+
+	jid, err := types.ParseJID(jidStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid WhatsApp JID format in channel credentials: %w", err)
+	}
+
+	dev, devErr := m.container.GetDevice(ctx, jid)
+	if devErr != nil || dev == nil {
+		return nil, fmt.Errorf("WhatsApp device session for %s not found in store: %w", jidStr, devErr)
+	}
+
+	clientLog := waLog.Stdout(fmt.Sprintf("WA-%s", tenantID[:8]), "WARN", true)
+	client := whatsmeow.NewClient(dev, clientLog)
+	sess := &tenantSession{
+		client: client,
+		status: "connected",
+		phone:  dev.ID.User,
+		name:   senderIdentity,
+	}
+	m.setupEventHandler(sess, tenantID)
+
+	if err := client.Connect(); err != nil {
+		return nil, fmt.Errorf("failed to initiate WhatsApp connection: %w", err)
+	}
+
+	if !client.WaitForConnection(8 * time.Second) {
+		return nil, fmt.Errorf("timeout connecting to WhatsApp servers for tenant %s", tenantID)
+	}
+
+	m.clients.Store(tenantID, sess)
+	log.Printf("[WhatsAppManager] Auto-reconnected WhatsApp session for tenant %s (JID: %s)\n", tenantID, jid.String())
+	return sess, nil
+}
+
+func (m *WhatsAppManager) GetStatus(ctx context.Context, tenantID string) (status string, phone string, name string, err error) {
+	// Try self-healing connection first
+	sess, err := m.ensureSession(ctx, tenantID)
+	if err == nil && sess != nil {
+		sess.mu.RLock()
+		defer sess.mu.RUnlock()
+		return "connected", sess.phone, sess.name, nil
 	}
 
 	// Check DB fallback
 	var senderIdentity, chStatus string
 	var credsJSON []byte
-	err = m.db.QueryRow(
+	err = m.db.QueryRowContext(
+		ctx,
 		`SELECT sender_identity, encrypted_credentials, status FROM tenant_channels WHERE tenant_id = $1 AND platform_name = 'whatsapp'`,
 		tenantID,
 	).Scan(&senderIdentity, &credsJSON, &chStatus)
@@ -406,21 +490,32 @@ func (m *WhatsAppManager) Disconnect(ctx context.Context, tenantID string) error
 		m.clients.Delete(tenantID)
 	}
 
-	_, err := m.db.Exec(`
+	_, err := m.db.ExecContext(ctx, `
 		UPDATE tenant_channels SET status = 'inactive', updated_at = NOW()
 		WHERE tenant_id = $1 AND platform_name = 'whatsapp'
 	`, tenantID)
 	return err
 }
 
+// Close gracefully terminates all active WhatsApp Multi-Device client connections on shutdown
+func (m *WhatsAppManager) Close() {
+	m.clients.Range(func(key, val interface{}) bool {
+		if sess, ok := val.(*tenantSession); ok {
+			sess.mu.Lock()
+			if sess.client != nil && sess.client.IsConnected() {
+				sess.client.Disconnect()
+			}
+			sess.mu.Unlock()
+		}
+		return true
+	})
+	log.Println("[WhatsAppManager] All WhatsApp sessions cleanly disconnected.")
+}
+
 func (m *WhatsAppManager) SendMessage(ctx context.Context, tenantID string, recipientPhone string, text string) error {
-	val, ok := m.clients.Load(tenantID)
-	if !ok {
-		return fmt.Errorf("no active WhatsApp session for tenant %s", tenantID)
-	}
-	sess := val.(*tenantSession)
-	if !sess.client.IsConnected() || !sess.client.IsLoggedIn() {
-		return fmt.Errorf("WhatsApp client is not connected for tenant %s", tenantID)
+	sess, err := m.ensureSession(ctx, tenantID)
+	if err != nil {
+		return fmt.Errorf("WhatsApp client is not connected for tenant %s: %w", tenantID, err)
 	}
 
 	phoneClean := strings.TrimPrefix(strings.TrimSpace(recipientPhone), "+")
@@ -439,19 +534,15 @@ func (m *WhatsAppManager) SendMessage(ctx context.Context, tenantID string, reci
 		Conversation: proto.String(text),
 	}
 
-	_, err := sess.client.SendMessage(ctx, targetJID, msg)
+	_, err = sess.client.SendMessage(ctx, targetJID, msg)
 	return err
 }
 
 // SyncContacts reads all saved contacts from the linked WhatsApp account, groups, and local store
 func (m *WhatsAppManager) SyncContacts(ctx context.Context, tenantID string, contactRepo domain.ContactRepository) (int, error) {
-	val, ok := m.clients.Load(tenantID)
-	if !ok {
-		return 0, fmt.Errorf("no active WhatsApp session for tenant %s. Please connect WhatsApp first", tenantID)
-	}
-	sess := val.(*tenantSession)
-	if !sess.client.IsConnected() || !sess.client.IsLoggedIn() {
-		return 0, fmt.Errorf("WhatsApp is not connected for tenant %s", tenantID)
+	sess, err := m.ensureSession(ctx, tenantID)
+	if err != nil {
+		return 0, fmt.Errorf("WhatsApp is not connected for tenant %s: %w", tenantID, err)
 	}
 
 	syncedCount := 0

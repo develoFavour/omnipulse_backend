@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"omnipulse/apps/api-gateway/internal/domain"
 	"omnipulse/apps/api-gateway/internal/service"
@@ -41,7 +42,8 @@ type whatsAppPhoneNumberResponse struct {
 }
 
 func verifyTelegramToken(token string) (string, string, error) {
-	resp, err := http.Get(fmt.Sprintf("https://api.telegram.org/bot%s/getMe", token))
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(fmt.Sprintf("https://api.telegram.org/bot%s/getMe", token))
 	if err != nil {
 		return "", "", fmt.Errorf("failed to reach telegram api: %v", err)
 	}
@@ -72,7 +74,8 @@ func configureTelegramWebhook(token, publicAPIBaseURL, tenantID string) error {
 
 	webhookURL := fmt.Sprintf("%s/api/v1/webhooks/telegram/%s", baseURL, tenantID)
 	body, _ := json.Marshal(map[string]string{"url": webhookURL})
-	resp, err := http.Post(fmt.Sprintf("https://api.telegram.org/bot%s/setWebhook", token), "application/json", bytes.NewReader(body))
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Post(fmt.Sprintf("https://api.telegram.org/bot%s/setWebhook", token), "application/json", bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("failed to reach telegram setWebhook: %v", err)
 	}
@@ -99,7 +102,7 @@ func verifyWhatsAppCredentials(phoneNumberID, accessToken string) (string, strin
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 
-	client := &http.Client{}
+	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to reach Meta Graph API: %v", err)
@@ -246,6 +249,7 @@ func (h *ChannelHandler) ListChannels(w http.ResponseWriter, r *http.Request) {
 
 	channels, err := h.repo.ListByTenant(r.Context(), tenantID)
 	if err != nil {
+		log.Printf("[ChannelHandler] ListChannels failed for tenant %s: %v\n", tenantID, err)
 		utils.WriteError(w, http.StatusInternalServerError, "Failed to list channels")
 		return
 	}
@@ -420,7 +424,8 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 			}
 
 			log.Printf("[WhatsApp-OAuth-Exchange] Trying code exchange with Meta (redirect_uri: %q)...\n", rURI)
-			resp, err := http.PostForm("https://graph.facebook.com/v21.0/oauth/access_token", formData)
+			metaExchangeClient := &http.Client{Timeout: 15 * time.Second}
+			resp, err := metaExchangeClient.PostForm("https://graph.facebook.com/v21.0/oauth/access_token", formData)
 			if err != nil {
 				log.Printf("[WhatsApp-OAuth-Exchange-Error] Network error with redirect_uri %q: %v\n", rURI, err)
 				continue
@@ -468,7 +473,7 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 	log.Printf("[WhatsApp-OAuth] stage=token_received token_present=true\n")
 
 	longLivedToken := tokenResult.AccessToken
-	client := &http.Client{}
+	client := &http.Client{Timeout: 15 * time.Second}
 
 	// Step 2: Discover or verify the WABA ID
 	wabaID := req.WABAID

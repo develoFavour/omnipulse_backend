@@ -18,9 +18,8 @@ import (
 )
 
 func main() {
-	// 1. Initialize Logging Matrix & Environment Ingestion
-	godotenv.Load("../../.env")
 	logger := log.New(os.Stdout, "[COMPLIANCE-ENGINE] ", log.LstdFlags|log.Lshortfile)
+	loadEnv(logger)
 	cfg := config.Load()
 
 	logger.Printf("Bootstrapping subsystem engine runtime [Mode: %s]...\n", cfg.Environment)
@@ -92,4 +91,20 @@ func main() {
 	natsConsumer.Stop()
 
 	logger.Println("Compliance Engine worker pool safely terminated. Clean exit.")
+}
+
+func loadEnv(logger *log.Logger) {
+	candidates := []string{
+		"../../.env",
+		"../.env",
+		".env",
+		"../../../.env",
+	}
+	for _, candidate := range candidates {
+		if err := godotenv.Load(candidate); err == nil {
+			logger.Printf("Loaded environment file from %s\n", candidate)
+			return
+		}
+	}
+	logger.Println("No .env file loaded; using process environment variables")
 }

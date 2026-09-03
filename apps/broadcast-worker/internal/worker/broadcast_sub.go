@@ -95,10 +95,20 @@ func (c *BroadcastConsumer) Stop() {
 	if c.nc != nil {
 		c.nc.Close()
 	}
+	c.waClients.Range(func(key, val interface{}) bool {
+		if client, ok := val.(*whatsmeow.Client); ok && client != nil {
+			client.Disconnect()
+		}
+		return true
+	})
 	log.Println("[WORKER] Broadcast Engine cleanly disconnected.")
 }
 
 func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) {
+	// Set a defensive 30-second processing timeout to prevent infinite network hangs
+	msgCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	var task contracts.TargetDispatchTask
 	if err := json.Unmarshal(msg.Data, &task); err != nil {
 		log.Printf("[WORKER-ERROR] Failed to unmarshal task: %v\n", err)
@@ -113,7 +123,7 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 
 	if task.TargetPlatform == "telegram" {
 		var tokenData []byte
-		err := c.db.QueryRowContext(ctx, "SELECT encrypted_credentials FROM tenant_channels WHERE tenant_id = $1 AND platform_name = 'telegram' AND status = 'active' LIMIT 1", task.TenantID).Scan(&tokenData)
+		err := c.db.QueryRowContext(msgCtx, "SELECT encrypted_credentials FROM tenant_channels WHERE tenant_id = $1 AND platform_name = 'telegram' AND status = 'active' LIMIT 1", task.TenantID).Scan(&tokenData)
 
 		if err != nil {
 			status = "failed"
@@ -139,28 +149,38 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 				payloadBytes, _ := json.Marshal(tgPayload)
 				tgURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", creds.BotToken)
 
-				resp, err := http.Post(tgURL, "application/json", bytes.NewBuffer(payloadBytes))
-				if err != nil {
+				req, reqErr := http.NewRequestWithContext(msgCtx, "POST", tgURL, bytes.NewBuffer(payloadBytes))
+				if reqErr != nil {
 					status = "failed"
-					reason := fmt.Sprintf("network error calling telegram API: %v", err)
+					reason := fmt.Sprintf("failed to construct telegram request: %v", reqErr)
 					errMsg = &reason
 					log.Printf("[❌ TELEGRAM API -> ERROR] %s\n", reason)
 				} else {
-					defer resp.Body.Close()
-					if resp.StatusCode != http.StatusOK {
+					req.Header.Set("Content-Type", "application/json")
+					tgClient := &http.Client{Timeout: 10 * time.Second}
+					resp, err := tgClient.Do(req)
+					if err != nil {
 						status = "failed"
-						reason := fmt.Sprintf("telegram API rejected message (status %d)", resp.StatusCode)
+						reason := fmt.Sprintf("network error calling telegram API: %v", err)
 						errMsg = &reason
 						log.Printf("[❌ TELEGRAM API -> ERROR] %s\n", reason)
 					} else {
-						log.Printf("[📲 TELEGRAM API] Dispatched cleanly to %s (%s)\n", task.FirstName, task.RoutingValue)
+						defer resp.Body.Close()
+						if resp.StatusCode != http.StatusOK {
+							status = "failed"
+							reason := fmt.Sprintf("telegram API rejected message (status %d)", resp.StatusCode)
+							errMsg = &reason
+							log.Printf("[❌ TELEGRAM API -> ERROR] %s\n", reason)
+						} else {
+							log.Printf("[📲 TELEGRAM API] Dispatched cleanly to %s (%s)\n", task.FirstName, task.RoutingValue)
+						}
 					}
 				}
 			}
 		}
 	} else if task.TargetPlatform == "whatsapp" {
 		var tokenData []byte
-		err := c.db.QueryRowContext(ctx, "SELECT encrypted_credentials FROM tenant_channels WHERE tenant_id = $1 AND platform_name = 'whatsapp' AND status = 'active' LIMIT 1", task.TenantID).Scan(&tokenData)
+		err := c.db.QueryRowContext(msgCtx, "SELECT encrypted_credentials FROM tenant_channels WHERE tenant_id = $1 AND platform_name = 'whatsapp' AND status = 'active' LIMIT 1", task.TenantID).Scan(&tokenData)
 
 		if err != nil {
 			status = "failed"
@@ -181,7 +201,7 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 					errMsg = &reason
 					log.Printf("[❌ WHATSAPP MULTI-DEVICE -> ERROR] %s\n", reason)
 				} else {
-					client, clientErr := c.getOrCreateWhatsAppClient(ctx, jid)
+					client, clientErr := c.getOrCreateWhatsAppClient(msgCtx, jid)
 					if clientErr != nil {
 						status = "failed"
 						reason := fmt.Sprintf("WhatsApp client connection failed: %v", clientErr)
@@ -192,7 +212,7 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 						targetJID := types.NewJID(recipientPhone, types.DefaultUserServer)
 
 						// Resolve true deliverable JID (handles modern WhatsApp LID encryption routing)
-						if onWaResp, onWaErr := client.IsOnWhatsApp(ctx, []string{recipientPhone, task.RoutingValue}); onWaErr == nil && len(onWaResp) > 0 {
+						if onWaResp, onWaErr := client.IsOnWhatsApp(msgCtx, []string{recipientPhone, task.RoutingValue}); onWaErr == nil && len(onWaResp) > 0 {
 							for _, r := range onWaResp {
 								if r.IsIn {
 									targetJID = r.JID
@@ -204,7 +224,7 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 						msg := &waE2E.Message{
 							Conversation: proto.String(personalizedMsg),
 						}
-						resp, sendErr := client.SendMessage(ctx, targetJID, msg)
+						resp, sendErr := client.SendMessage(msgCtx, targetJID, msg)
 						if sendErr != nil {
 							status = "failed"
 							reason := fmt.Sprintf("failed to send WhatsApp message: %v", sendErr)
@@ -240,7 +260,7 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 					payloadBytes, _ := json.Marshal(waPayload)
 					waURL := fmt.Sprintf("https://graph.facebook.com/v21.0/%s/messages", phoneID)
 
-					req, _ := http.NewRequestWithContext(ctx, "POST", waURL, bytes.NewBuffer(payloadBytes))
+					req, _ := http.NewRequestWithContext(msgCtx, "POST", waURL, bytes.NewBuffer(payloadBytes))
 					req.Header.Set("Content-Type", "application/json")
 					req.Header.Set("Authorization", "Bearer "+token)
 
@@ -340,7 +360,7 @@ func (c *BroadcastConsumer) getOrCreateWhatsAppClient(ctx context.Context, jid t
 
 	dev, devErr := c.waContainer.GetDevice(ctx, jid)
 	if devErr != nil || dev == nil {
-		return nil, fmt.Errorf("device session not found in database: %v", devErr)
+		return nil, fmt.Errorf("device session not found in database: %w", devErr)
 	}
 
 	client := whatsmeow.NewClient(dev, waLog.Stdout("WA-Worker", "WARN", true))

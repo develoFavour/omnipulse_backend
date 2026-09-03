@@ -213,6 +213,9 @@ func main() {
 	if telemetryWorker != nil {
 		telemetryWorker.Stop()
 	}
+	if waManager != nil {
+		waManager.Close()
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

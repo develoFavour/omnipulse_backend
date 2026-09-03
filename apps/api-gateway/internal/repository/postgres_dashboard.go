@@ -24,13 +24,13 @@ func (r *PostgresDashboardRepository) GetStats(ctx context.Context, tenantID str
 	// 1. Total Audience
 	err := r.db.QueryRowContext(ctx, "SELECT count(*) FROM contacts WHERE tenant_id = $1 AND status = 'active'", tenantID).Scan(&stats.TotalAudience)
 	if err != nil {
-		return nil, fmt.Errorf("failed to count audience: %v", err)
+		return nil, fmt.Errorf("failed to count audience: %w", err)
 	}
 
 	// 2. Broadcasts Sent
 	err = r.db.QueryRowContext(ctx, "SELECT count(*) FROM campaigns WHERE tenant_id = $1", tenantID).Scan(&stats.BroadcastsSent)
 	if err != nil {
-		return nil, fmt.Errorf("failed to count campaigns: %v", err)
+		return nil, fmt.Errorf("failed to count campaigns: %w", err)
 	}
 
 	// 3. Delivery Stats (Total & Failed)
@@ -47,7 +47,7 @@ func (r *PostgresDashboardRepository) GetStats(ctx context.Context, tenantID str
 	var failed sql.NullInt64
 	err = r.db.QueryRowContext(ctx, deliveryQuery, tenantID).Scan(&total, &failed)
 	if err != nil {
-		return nil, fmt.Errorf("failed to aggregate deliveries: %v", err)
+		return nil, fmt.Errorf("failed to aggregate deliveries: %w", err)
 	}
 
 	if total.Valid {
@@ -67,7 +67,7 @@ func (r *PostgresDashboardRepository) GetStats(ctx context.Context, tenantID str
 	// 4. Active Channels
 	err = r.db.QueryRowContext(ctx, "SELECT count(*) FROM tenant_channels WHERE tenant_id = $1 AND status = 'active'", tenantID).Scan(&stats.ActiveChannels)
 	if err != nil {
-		return nil, fmt.Errorf("failed to count channels: %v", err)
+		return nil, fmt.Errorf("failed to count channels: %w", err)
 	}
 
 	// 5. Channel Distribution (Contacts by Channel)
@@ -78,7 +78,7 @@ func (r *PostgresDashboardRepository) GetStats(ctx context.Context, tenantID str
 	`
 	rows, err := r.db.QueryContext(ctx, channelQuery, tenantID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch channel distribution: %v", err)
+		return nil, fmt.Errorf("failed to fetch channel distribution: %w", err)
 	}
 	defer rows.Close()
 
@@ -126,7 +126,7 @@ func (r *PostgresDashboardRepository) GetStats(ctx context.Context, tenantID str
 	`
 	rRows, err := r.db.QueryContext(ctx, recentQuery, tenantID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch recent deliveries: %v", err)
+		return nil, fmt.Errorf("failed to fetch recent deliveries: %w", err)
 	}
 	defer rRows.Close()
 
@@ -165,7 +165,7 @@ func (r *PostgresDashboardRepository) ListDeliveries(ctx context.Context, tenant
 	`
 	rows, err := r.db.QueryContext(ctx, query, tenantID, limit, offset)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list deliveries: %v", err)
+		return nil, fmt.Errorf("failed to list deliveries: %w", err)
 	}
 	defer rows.Close()
 
