@@ -840,9 +840,43 @@ func (h *ChannelHandler) HandleTelegramSyncContacts(w http.ResponseWriter, r *ht
 		return
 	}
 
-	// 3. Call Telegram Bot API getUpdates to pull recent interactions
 	client := &http.Client{Timeout: 15 * time.Second}
-	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?limit=100&allowed_updates=[\"message\",\"my_chat_member\"]", botToken)
+
+	// 3. Inspect webhook status so we don't hit Telegram's 409 Conflict:
+	// "Conflict: can't use getUpdates method while webhook is active; use deleteWebhook to delete the webhook first"
+	var savedWebhookURL string
+	whResp, err := client.Get(fmt.Sprintf("https://api.telegram.org/bot%s/getWebhookInfo", botToken))
+	if err == nil && whResp != nil {
+		var whData struct {
+			Ok     bool `json:"ok"`
+			Result struct {
+				URL string `json:"url"`
+			} `json:"result"`
+		}
+		if err := json.NewDecoder(whResp.Body).Decode(&whData); err == nil && whData.Ok {
+			savedWebhookURL = whData.Result.URL
+		}
+		whResp.Body.Close()
+	}
+
+	// If a webhook is active on Telegram, temporarily delete it so getUpdates is allowed,
+	// and guarantee restore via defer so live webhooks are never left disconnected.
+	if savedWebhookURL != "" {
+		delResp, err := client.Post(fmt.Sprintf("https://api.telegram.org/bot%s/deleteWebhook", botToken), "application/json", nil)
+		if err == nil && delResp != nil {
+			delResp.Body.Close()
+		}
+		defer func() {
+			setBody, _ := json.Marshal(map[string]string{"url": savedWebhookURL})
+			setResp, err := client.Post(fmt.Sprintf("https://api.telegram.org/bot%s/setWebhook", botToken), "application/json", bytes.NewReader(setBody))
+			if err == nil && setResp != nil {
+				setResp.Body.Close()
+			}
+		}()
+	}
+
+	// 4. Call getUpdates to pull recent interactions
+	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?limit=100", botToken)
 	resp, err := client.Get(apiURL)
 	if err != nil {
 		log.Printf("[TelegramSyncContacts] Failed to reach Telegram API for tenant %s: %v\n", tenantID, err)
@@ -852,8 +886,10 @@ func (h *ChannelHandler) HandleTelegramSyncContacts(w http.ResponseWriter, r *ht
 	defer resp.Body.Close()
 
 	var tgResponse struct {
-		Ok     bool `json:"ok"`
-		Result []struct {
+		Ok          bool   `json:"ok"`
+		ErrorCode   int    `json:"error_code"`
+		Description string `json:"description"`
+		Result      []struct {
 			Message struct {
 				From struct {
 					ID        int64  `json:"id"`
@@ -877,11 +913,12 @@ func (h *ChannelHandler) HandleTelegramSyncContacts(w http.ResponseWriter, r *ht
 	}
 
 	if !tgResponse.Ok {
-		utils.WriteError(w, http.StatusBadGateway, "Telegram Bot API returned an error — check your bot token")
+		log.Printf("[TelegramSyncContacts] Telegram API error %d for tenant %s: %s\n", tgResponse.ErrorCode, tenantID, tgResponse.Description)
+		utils.WriteError(w, http.StatusBadGateway, fmt.Sprintf("Telegram Bot API error: %s", tgResponse.Description))
 		return
 	}
 
-	// 4. Deduplicate users and sync as contacts
+	// 5. Deduplicate users and sync as contacts
 	type telegramUser struct {
 		id        int64
 		firstName string
@@ -915,7 +952,7 @@ func (h *ChannelHandler) HandleTelegramSyncContacts(w http.ResponseWriter, r *ht
 		}
 	}
 
-	// 5. Upsert each unique user as a contact
+	// 6. Upsert each unique user as a contact
 	syncedCount := 0
 	for _, user := range seen {
 		chatIDStr := fmt.Sprintf("%d", user.id)
@@ -936,9 +973,27 @@ func (h *ChannelHandler) HandleTelegramSyncContacts(w http.ResponseWriter, r *ht
 		syncedCount++
 	}
 
+	botUsername := channel.SenderIdentity
+	botLink := ""
+	cleanUsername := strings.TrimPrefix(botUsername, "@")
+	if cleanUsername != "" {
+		botLink = fmt.Sprintf("https://t.me/%s", cleanUsername)
+	}
+
+	msg := fmt.Sprintf("Successfully synced %d contacts from your Telegram bot", syncedCount)
+	if syncedCount == 0 {
+		if botUsername != "" {
+			msg = fmt.Sprintf("No new interactions found. Users must open your bot (%s) and tap Start to be automatically synced.", botUsername)
+		} else {
+			msg = "No new Telegram interactions found. Users must send a message or tap Start on your bot to be synced."
+		}
+	}
+
 	log.Printf("[TelegramSyncContacts] Synced %d Telegram contacts for tenant %s\n", syncedCount, tenantID)
 	utils.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"synced_count": syncedCount,
-		"message":      fmt.Sprintf("Successfully synced %d contacts from your Telegram bot", syncedCount),
+		"bot_username": botUsername,
+		"bot_link":     botLink,
+		"message":      msg,
 	})
 }
