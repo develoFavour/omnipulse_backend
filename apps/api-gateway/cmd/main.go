@@ -150,6 +150,7 @@ func main() {
 
 	// Telegram Destination Endpoints
 	mux.HandleFunc("GET /api/v1/telegram/destinations", destinationHandler.ListDestinations)
+	mux.HandleFunc("POST /api/v1/channels/telegram/sync-contacts", channelHandler.HandleTelegramSyncContacts)
 
 	// Contact Subsystem Endpoints
 	mux.HandleFunc("GET /api/v1/contacts/{id}", contactHandler.GetContact)

@@ -807,3 +807,138 @@ func (h *ChannelHandler) HandleWhatsAppSyncContacts(w http.ResponseWriter, r *ht
 		"message":      fmt.Sprintf("Successfully synced %d contacts from your WhatsApp", syncedCount),
 	})
 }
+
+// HandleTelegramSyncContacts pulls recent interactions from the Telegram Bot API
+// and syncs unique private-chat users as contacts — no webhook knowledge required.
+// POST /api/v1/channels/telegram/sync-contacts
+func (h *ChannelHandler) HandleTelegramSyncContacts(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	// 1. Look up the tenant's active Telegram channel
+	channel, err := h.repo.FindActiveByPlatform(r.Context(), tenantID, "telegram")
+	if err != nil {
+		log.Printf("[TelegramSyncContacts] No active Telegram channel for tenant %s: %v\n", tenantID, err)
+		utils.WriteError(w, http.StatusBadRequest, "No active Telegram channel found. Please connect a Telegram bot first.")
+		return
+	}
+
+	// 2. Extract bot_token from stored credentials
+	var creds map[string]string
+	if err := json.Unmarshal(channel.EncryptedCredentials, &creds); err != nil {
+		log.Printf("[TelegramSyncContacts] Failed to parse credentials for tenant %s: %v\n", tenantID, err)
+		utils.WriteError(w, http.StatusInternalServerError, "Failed to read Telegram bot credentials")
+		return
+	}
+
+	botToken := creds["bot_token"]
+	if botToken == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Telegram bot token is missing from channel configuration")
+		return
+	}
+
+	// 3. Call Telegram Bot API getUpdates to pull recent interactions
+	client := &http.Client{Timeout: 15 * time.Second}
+	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?limit=100&allowed_updates=[\"message\",\"my_chat_member\"]", botToken)
+	resp, err := client.Get(apiURL)
+	if err != nil {
+		log.Printf("[TelegramSyncContacts] Failed to reach Telegram API for tenant %s: %v\n", tenantID, err)
+		utils.WriteError(w, http.StatusBadGateway, "Failed to reach Telegram Bot API")
+		return
+	}
+	defer resp.Body.Close()
+
+	var tgResponse struct {
+		Ok     bool `json:"ok"`
+		Result []struct {
+			Message struct {
+				From struct {
+					ID        int64  `json:"id"`
+					FirstName string `json:"first_name"`
+					LastName  string `json:"last_name"`
+					Username  string `json:"username"`
+					IsBot     bool   `json:"is_bot"`
+				} `json:"from"`
+				Chat struct {
+					ID   int64  `json:"id"`
+					Type string `json:"type"`
+				} `json:"chat"`
+			} `json:"message"`
+		} `json:"result"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&tgResponse); err != nil {
+		log.Printf("[TelegramSyncContacts] Failed to decode Telegram API response for tenant %s: %v\n", tenantID, err)
+		utils.WriteError(w, http.StatusBadGateway, "Failed to parse Telegram API response")
+		return
+	}
+
+	if !tgResponse.Ok {
+		utils.WriteError(w, http.StatusBadGateway, "Telegram Bot API returned an error — check your bot token")
+		return
+	}
+
+	// 4. Deduplicate users and sync as contacts
+	type telegramUser struct {
+		id        int64
+		firstName string
+		lastName  string
+	}
+	seen := make(map[int64]telegramUser)
+
+	for _, update := range tgResponse.Result {
+		msg := update.Message
+		// Only sync private-chat human users (not bots, not groups)
+		if msg.From.ID == 0 || msg.From.IsBot {
+			continue
+		}
+		if msg.Chat.Type != "" && msg.Chat.Type != "private" {
+			continue
+		}
+
+		if _, exists := seen[msg.From.ID]; !exists {
+			firstName := msg.From.FirstName
+			if firstName == "" {
+				firstName = msg.From.Username
+			}
+			if firstName == "" {
+				firstName = "Telegram User"
+			}
+			seen[msg.From.ID] = telegramUser{
+				id:        msg.From.ID,
+				firstName: firstName,
+				lastName:  msg.From.LastName,
+			}
+		}
+	}
+
+	// 5. Upsert each unique user as a contact
+	syncedCount := 0
+	for _, user := range seen {
+		chatIDStr := fmt.Sprintf("%d", user.id)
+		contact := &domain.Contact{
+			TenantID:     tenantID,
+			FirstName:    user.firstName,
+			LastName:     user.lastName,
+			Channel:      "telegram",
+			RoutingValue: chatIDStr,
+			Source:       "inbound_webhook",
+			Status:       "active",
+		}
+
+		if err := h.contactRepo.Create(r.Context(), contact); err != nil {
+			log.Printf("[TelegramSyncContacts] Failed to upsert contact %s for tenant %s: %v\n", chatIDStr, tenantID, err)
+			continue
+		}
+		syncedCount++
+	}
+
+	log.Printf("[TelegramSyncContacts] Synced %d Telegram contacts for tenant %s\n", syncedCount, tenantID)
+	utils.WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"synced_count": syncedCount,
+		"message":      fmt.Sprintf("Successfully synced %d contacts from your Telegram bot", syncedCount),
+	})
+}
