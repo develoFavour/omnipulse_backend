@@ -141,13 +141,26 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 				log.Printf("[❌ TELEGRAM API -> ERROR] %s\n", reason)
 			} else {
 				personalizedMsg := strings.ReplaceAll(task.MessageBody, "{first_name}", task.FirstName)
-				tgPayload := map[string]interface{}{
-					"chat_id": task.RoutingValue,
-					"text":    personalizedMsg,
+
+				var tgURL string
+				var tgPayload map[string]interface{}
+
+				if task.MediaURL != nil && *task.MediaURL != "" {
+					tgURL = fmt.Sprintf("https://api.telegram.org/bot%s/sendPhoto", creds.BotToken)
+					tgPayload = map[string]interface{}{
+						"chat_id": task.RoutingValue,
+						"photo":   *task.MediaURL,
+						"caption": personalizedMsg,
+					}
+				} else {
+					tgURL = fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", creds.BotToken)
+					tgPayload = map[string]interface{}{
+						"chat_id": task.RoutingValue,
+						"text":    personalizedMsg,
+					}
 				}
 
 				payloadBytes, _ := json.Marshal(tgPayload)
-				tgURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", creds.BotToken)
 
 				req, reqErr := http.NewRequestWithContext(msgCtx, "POST", tgURL, bytes.NewBuffer(payloadBytes))
 				if reqErr != nil {
@@ -246,15 +259,29 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 					errMsg = &reason
 					log.Printf("[❌ WHATSAPP API -> ERROR] %s\n", reason)
 				} else {
-					waPayload := map[string]interface{}{
-						"messaging_product": "whatsapp",
-						"recipient_type":    "individual",
-						"to":                task.RoutingValue,
-						"type":              "text",
-						"text": map[string]interface{}{
-							"preview_url": false,
-							"body":        personalizedMsg,
-						},
+					var waPayload map[string]interface{}
+					if task.MediaURL != nil && *task.MediaURL != "" {
+						waPayload = map[string]interface{}{
+							"messaging_product": "whatsapp",
+							"recipient_type":    "individual",
+							"to":                task.RoutingValue,
+							"type":              "image",
+							"image": map[string]interface{}{
+								"link":    *task.MediaURL,
+								"caption": personalizedMsg,
+							},
+						}
+					} else {
+						waPayload = map[string]interface{}{
+							"messaging_product": "whatsapp",
+							"recipient_type":    "individual",
+							"to":                task.RoutingValue,
+							"type":              "text",
+							"text": map[string]interface{}{
+								"preview_url": false,
+								"body":        personalizedMsg,
+							},
+						}
 					}
 
 					payloadBytes, _ := json.Marshal(waPayload)
