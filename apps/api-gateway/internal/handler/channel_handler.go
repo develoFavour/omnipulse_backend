@@ -973,6 +973,14 @@ func (h *ChannelHandler) HandleTelegramSyncContacts(w http.ResponseWriter, r *ht
 		syncedCount++
 	}
 
+	// 7. Query total Telegram contacts currently in the directory for this tenant
+	totalContacts, err := h.contactRepo.ListByTenant(r.Context(), tenantID, "telegram", 1000, 0)
+	totalCount := len(totalContacts)
+	if err != nil {
+		log.Printf("[TelegramSyncContacts] Warning: failed to count total contacts for tenant %s: %v\n", tenantID, err)
+		totalCount = syncedCount
+	}
+
 	botUsername := channel.SenderIdentity
 	botLink := ""
 	cleanUsername := strings.TrimPrefix(botUsername, "@")
@@ -980,18 +988,23 @@ func (h *ChannelHandler) HandleTelegramSyncContacts(w http.ResponseWriter, r *ht
 		botLink = fmt.Sprintf("https://t.me/%s", cleanUsername)
 	}
 
-	msg := fmt.Sprintf("Successfully synced %d contacts from your Telegram bot", syncedCount)
-	if syncedCount == 0 {
+	var msg string
+	if syncedCount > 0 {
+		msg = fmt.Sprintf("Successfully synced %d new contact(s). You now have %d Telegram contact(s) in your audience.", syncedCount, totalCount)
+	} else if totalCount > 0 {
+		msg = fmt.Sprintf("Your directory is up to date! All %d Telegram contact(s) are already synced in your audience.", totalCount)
+	} else {
 		if botUsername != "" {
-			msg = fmt.Sprintf("No new interactions found. Users must open your bot (%s) and tap Start to be automatically synced.", botUsername)
+			msg = fmt.Sprintf("No Telegram contacts found yet. Users must open your bot (%s) and tap Start to be automatically synced.", botUsername)
 		} else {
-			msg = "No new Telegram interactions found. Users must send a message or tap Start on your bot to be synced."
+			msg = "No Telegram contacts found yet. Users must send a message or tap Start on your bot to be synced."
 		}
 	}
 
-	log.Printf("[TelegramSyncContacts] Synced %d Telegram contacts for tenant %s\n", syncedCount, tenantID)
+	log.Printf("[TelegramSyncContacts] Synced %d new, %d total Telegram contacts for tenant %s\n", syncedCount, totalCount, tenantID)
 	utils.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"synced_count": syncedCount,
+		"total_count":  totalCount,
 		"bot_username": botUsername,
 		"bot_link":     botLink,
 		"message":      msg,
