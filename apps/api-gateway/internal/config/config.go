@@ -26,6 +26,9 @@ type Config struct {
 
 	// CORS — comma-separated allowed origins (e.g. "https://app.omnipulse.ng,http://localhost:3000")
 	AllowedOrigins string
+
+	// Cloudinary CDN Configuration
+	CloudinaryURL string
 }
 
 // Load reads values from the OS environment variables or supplies secure defaults
@@ -51,6 +54,7 @@ func Load() *Config {
 		MetaWABAID:        getEnv("WHATSAPP_BUSINESS_ACCOUNT_ID", getEnv("META_WABA_ID", "")),
 		MetaPhoneNumberID: getEnv("PHONE_NUMBER_ID", getEnv("META_PHONE_NUMBER_ID", "")),
 		AllowedOrigins:    getEnv("ALLOWED_ORIGINS", "http://localhost:3000"),
+		CloudinaryURL:     getEnv("CLOUDINARY_URL", ""),
 	}
 }
 

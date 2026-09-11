@@ -100,6 +100,20 @@ func main() {
 	dashboardHandler := handler.NewDashboardHandler(dashboardUseCase)
 	destinationHandler := handler.NewTelegramDestinationHandler(destinationRepo)
 
+	var mediaService *service.MediaService
+	if cfg.CloudinaryURL != "" {
+		ms, err := service.NewMediaService(cfg.CloudinaryURL)
+		if err != nil {
+			logger.Printf("[MEDIA-WARN] Cloudinary media service initialization failed: %v\n", err)
+		} else {
+			mediaService = ms
+			logger.Println("[MEDIA] Cloudinary media service initialized successfully")
+		}
+	} else {
+		logger.Println("[MEDIA-WARN] CLOUDINARY_URL is not set; media uploads will be unavailable")
+	}
+	mediaHandler := handler.NewMediaHandler(mediaService)
+
 	globalWorkerCtx, cancelWorkers := context.WithCancel(context.Background())
 	var natsConn *nats.Conn
 	var natsJS nats.JetStreamContext
@@ -162,6 +176,9 @@ func main() {
 	mux.HandleFunc("GET /api/v1/campaigns", campaignHandler.ListCampaigns)
 	mux.HandleFunc("POST /api/v1/campaigns/{id}/dispatch", campaignHandler.DispatchCampaign)
 	mux.HandleFunc("GET /api/v1/campaigns/{id}/stats", campaignHandler.GetCampaignStats)
+
+	// Media Asset Subsystem Endpoints (Cloudinary CDN)
+	mux.HandleFunc("POST /api/v1/media/upload", mediaHandler.UploadImage)
 
 	// Dashboard Subsystem Endpoints
 	mux.HandleFunc("GET /api/v1/dashboard/stats", dashboardHandler.GetStats)
