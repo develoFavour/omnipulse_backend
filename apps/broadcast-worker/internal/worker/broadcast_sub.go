@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -237,6 +238,37 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 						msg := &waE2E.Message{
 							Conversation: proto.String(personalizedMsg),
 						}
+
+						if task.MediaURL != nil && *task.MediaURL != "" {
+							imgReq, imgReqErr := http.NewRequestWithContext(msgCtx, "GET", *task.MediaURL, nil)
+							if imgReqErr == nil {
+								imgResp, imgErr := http.DefaultClient.Do(imgReq)
+								if imgErr == nil && imgResp.StatusCode == http.StatusOK {
+									imgBytes, readErr := io.ReadAll(imgResp.Body)
+									imgResp.Body.Close()
+									if readErr == nil && len(imgBytes) > 0 {
+										uploaded, upErr := client.Upload(msgCtx, imgBytes, whatsmeow.MediaImage)
+										if upErr == nil {
+											msg = &waE2E.Message{
+												ImageMessage: &waE2E.ImageMessage{
+													Caption:       proto.String(personalizedMsg),
+													Mimetype:      proto.String(http.DetectContentType(imgBytes)),
+													URL:           &uploaded.URL,
+													DirectPath:    &uploaded.DirectPath,
+													MediaKey:      uploaded.MediaKey,
+													FileEncSHA256: uploaded.FileEncSHA256,
+													FileSHA256:    uploaded.FileSHA256,
+													FileLength:    proto.Uint64(uint64(len(imgBytes))),
+												},
+											}
+										} else {
+											log.Printf("[⚠️ WHATSAPP MULTI-DEVICE] Failed to upload image attachment: %v (falling back to text)\n", upErr)
+										}
+									}
+								}
+							}
+						}
+
 						resp, sendErr := client.SendMessage(msgCtx, targetJID, msg)
 						if sendErr != nil {
 							status = "failed"
