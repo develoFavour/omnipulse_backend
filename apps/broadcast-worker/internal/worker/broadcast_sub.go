@@ -225,11 +225,13 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 						recipientPhone := strings.TrimPrefix(strings.TrimSpace(task.RoutingValue), "+")
 						targetJID := types.NewJID(recipientPhone, types.DefaultUserServer)
 
-						// Resolve true deliverable JID (handles modern WhatsApp LID encryption routing)
+						// Check if recipient is on WhatsApp and resolve verified standard JID
 						if onWaResp, onWaErr := client.IsOnWhatsApp(msgCtx, []string{recipientPhone, task.RoutingValue}); onWaErr == nil && len(onWaResp) > 0 {
 							for _, r := range onWaResp {
 								if r.IsIn {
-									targetJID = r.JID
+									if r.JID.Server == types.DefaultUserServer {
+										targetJID = r.JID
+									}
 									break
 								}
 							}

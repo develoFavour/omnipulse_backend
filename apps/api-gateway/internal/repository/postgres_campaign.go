@@ -89,16 +89,22 @@ func (r *PostgresCampaignRepository) GetByID(ctx context.Context, tenantID, id s
 }
 
 func (r *PostgresCampaignRepository) UpdateStatus(ctx context.Context, tenantID, id string, status string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin tx for status transition: %w", err)
+	}
+	defer tx.Rollback()
+
 	query := `
 		UPDATE campaigns 
 		SET status = $1, updated_at = CURRENT_TIMESTAMP 
 		WHERE tenant_id = $2 AND id = $3;
 	`
-	_, err := r.db.ExecContext(ctx, query, status, tenantID, id)
+	_, err = tx.ExecContext(ctx, query, status, tenantID, id)
 	if err != nil {
 		return fmt.Errorf("failed to transition campaign status state: %w", err)
 	}
-	return nil
+	return tx.Commit()
 }
 
 func (r *PostgresCampaignRepository) RecordDeliveryResult(ctx context.Context, res *contracts.TargetDeliveryResult) error {
