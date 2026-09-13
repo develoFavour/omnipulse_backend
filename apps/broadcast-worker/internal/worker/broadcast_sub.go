@@ -106,6 +106,7 @@ func (c *BroadcastConsumer) Stop() {
 }
 
 func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) {
+	log.Printf("[WORKER] Start processing NATS message on subject %s", msg.Subject)
 	// Set a defensive 30-second processing timeout to prevent infinite network hangs
 	msgCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -121,6 +122,7 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 	var errMsg *string
 
 	log.Printf("[WORKER] Processing delivery to %s (%s) on channel %s\n", task.FirstName, task.RoutingValue, task.TargetPlatform)
+	log.Printf("[WORKER] Full task details: %+v", task)
 
 	if task.TargetPlatform == "telegram" {
 		var tokenData []byte
@@ -271,7 +273,8 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 							}
 						}
 
-						resp, sendErr := client.SendMessage(msgCtx, targetJID, msg)
+						log.Printf("[WORKER] Sending WhatsApp message to %s (%s)", task.FirstName, task.RoutingValue)
+		resp, sendErr := client.SendMessage(msgCtx, targetJID, msg)
 						if sendErr != nil {
 							status = "failed"
 							reason := fmt.Sprintf("failed to send WhatsApp message: %v", sendErr)
@@ -375,6 +378,7 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 		return
 	}
 
+	log.Printf("[WORKER] Completed task %s for contact %s, status %s", task.CampaignID, task.ContactID, status)
 	_ = msg.Ack()
 }
 
