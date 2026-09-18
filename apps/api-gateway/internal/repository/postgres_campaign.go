@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 
 	"omnipulse/apps/api-gateway/internal/domain"
 	"omnipulse/shared/contracts"
@@ -154,11 +155,15 @@ func (r *PostgresCampaignRepository) RecordDeliveryResult(ctx context.Context, r
 	return tx.Commit()
 }
 
-func (r *PostgresCampaignRepository) GetCampaignStats(ctx context.Context, tenantID, campaignID string) (map[string]int, error) {
-	var exists bool
-	err := r.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM campaigns WHERE id = $1 AND tenant_id = $2)", campaignID, tenantID).Scan(&exists)
-	if err != nil || !exists {
-		return nil, ErrCampaignNotFound
+func (r *PostgresCampaignRepository) GetCampaignStats(ctx context.Context, tenantID, campaignID string) (*domain.CampaignStats, error) {
+	var status string
+	var totalTargets, processedTargets int
+	err := r.db.QueryRowContext(ctx, "SELECT status, total_targets, processed_targets FROM campaigns WHERE id = $1 AND tenant_id = $2", campaignID, tenantID).Scan(&status, &totalTargets, &processedTargets)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrCampaignNotFound
+		}
+		return nil, fmt.Errorf("failed to fetch campaign stats header: %w", err)
 	}
 
 	query := `
@@ -173,16 +178,78 @@ func (r *PostgresCampaignRepository) GetCampaignStats(ctx context.Context, tenan
 	}
 	defer rows.Close()
 
-	stats := map[string]int{"sent": 0, "delivered": 0, "failed": 0}
+	counts := map[string]int{"sent": 0, "delivered": 0, "failed": 0}
 	for rows.Next() {
-		var status string
-		var count int
-		if err := rows.Scan(&status, &count); err != nil {
+		var st string
+		var cnt int
+		if err := rows.Scan(&st, &cnt); err != nil {
 			return nil, err
 		}
-		stats[status] = count
+		counts[st] = cnt
 	}
-	return stats, nil
+
+	progress := 0.0
+	if totalTargets > 0 {
+		progress = (float64(processedTargets) / float64(totalTargets)) * 100.0
+		if progress > 100.0 {
+			progress = 100.0
+		}
+	} else if status == "completed" {
+		progress = 100.0
+	}
+
+	return &domain.CampaignStats{
+		CampaignID:       campaignID,
+		Status:           status,
+		TotalTargets:     totalTargets,
+		ProcessedTargets: processedTargets,
+		Sent:             counts["sent"],
+		Delivered:        counts["delivered"],
+		Failed:           counts["failed"],
+		ProgressPercent:  math.Round(progress*10) / 10,
+	}, nil
+}
+
+func (r *PostgresCampaignRepository) ListDeliveriesByCampaign(ctx context.Context, tenantID, campaignID string, limit, offset int) ([]*domain.CampaignDelivery, error) {
+	var exists bool
+	err := r.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM campaigns WHERE id = $1 AND tenant_id = $2)", campaignID, tenantID).Scan(&exists)
+	if err != nil || !exists {
+		return nil, ErrCampaignNotFound
+	}
+
+	query := `
+		SELECT d.id, d.campaign_id, d.contact_id, d.target_type, d.platform, d.routing_value, d.status, d.error_message, d.created_at
+		FROM campaign_deliveries d
+		WHERE d.campaign_id = $1
+		ORDER BY d.created_at DESC
+		LIMIT $2 OFFSET $3;
+	`
+	rows, err := r.db.QueryContext(ctx, query, campaignID, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query campaign deliveries: %w", err)
+	}
+	defer rows.Close()
+
+	deliveries := make([]*domain.CampaignDelivery, 0, limit)
+	for rows.Next() {
+		var d domain.CampaignDelivery
+		var contactID sql.NullString
+		var errMsg sql.NullString
+		if err := rows.Scan(&d.ID, &d.CampaignID, &contactID, &d.TargetType, &d.Platform, &d.RoutingValue, &d.Status, &errMsg, &d.CreatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan campaign delivery: %w", err)
+		}
+		if contactID.Valid {
+			d.ContactID = &contactID.String
+		}
+		if errMsg.Valid {
+			d.ErrorMessage = &errMsg.String
+		}
+		deliveries = append(deliveries, &d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed during delivery rows iteration: %w", err)
+	}
+	return deliveries, nil
 }
 func nullableContactID(res *contracts.TargetDeliveryResult) interface{} {
 	if res.TargetType == "telegram_destination" || res.ContactID == "" {

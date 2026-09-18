@@ -25,6 +25,18 @@ type Campaign struct {
 	UpdatedAt                      time.Time `json:"updated_at"`
 }
 
+// CampaignStats models real-time execution progress and telemetry for a campaign
+type CampaignStats struct {
+	CampaignID       string  `json:"campaign_id"`
+	Status           string  `json:"status"`
+	TotalTargets     int     `json:"total_targets"`
+	ProcessedTargets int     `json:"processed_targets"`
+	Sent             int     `json:"sent"`
+	Delivered        int     `json:"delivered"`
+	Failed           int     `json:"failed"`
+	ProgressPercent  float64 `json:"progress_percent"`
+}
+
 // CampaignRepository handles SQL transactions for orchestrating campaign lifecycle boundaries
 type CampaignRepository interface {
 	Create(ctx context.Context, campaign *Campaign) error
@@ -33,7 +45,8 @@ type CampaignRepository interface {
 	UpdateStatus(ctx context.Context, tenantID, id string, status string) error
 	SetDispatching(ctx context.Context, tenantID, id string, totalTargets int) error
 	RecordDeliveryResult(ctx context.Context, res *contracts.TargetDeliveryResult) error
-	GetCampaignStats(ctx context.Context, tenantID, campaignID string) (map[string]int, error)
+	GetCampaignStats(ctx context.Context, tenantID, campaignID string) (*CampaignStats, error)
+	ListDeliveriesByCampaign(ctx context.Context, tenantID, campaignID string, limit, offset int) ([]*CampaignDelivery, error)
 }
 
 // EventPublisher defines our outbound streaming Port (DIP)
@@ -45,7 +58,8 @@ type EventPublisher interface {
 type CampaignDelivery struct {
 	ID           string    `json:"id"`
 	CampaignID   string    `json:"campaign_id"`
-	ContactID    string    `json:"contact_id"`
+	ContactID    *string   `json:"contact_id,omitempty"`
+	TargetType   string    `json:"target_type"`
 	Platform     string    `json:"platform"`
 	RoutingValue string    `json:"routing_value"`
 	Status       string    `json:"status"` // sent, delivered, failed

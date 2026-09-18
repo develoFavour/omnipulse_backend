@@ -183,12 +183,22 @@ func (u *CampaignUseCase) emitDestinationTask(ctx context.Context, cmp *domain.C
 	}
 }
 
-func (u *CampaignUseCase) GetStats(ctx context.Context, tenantID, campaignID string) (map[string]int, error) {
-	_, err := u.campaignRepo.GetByID(ctx, tenantID, campaignID)
-	if err != nil {
-		return nil, err
-	}
+func (u *CampaignUseCase) GetCampaign(ctx context.Context, tenantID, campaignID string) (*domain.Campaign, error) {
+	return u.campaignRepo.GetByID(ctx, tenantID, campaignID)
+}
+
+func (u *CampaignUseCase) GetStats(ctx context.Context, tenantID, campaignID string) (*domain.CampaignStats, error) {
 	return u.campaignRepo.GetCampaignStats(ctx, tenantID, campaignID)
+}
+
+func (u *CampaignUseCase) ListDeliveries(ctx context.Context, tenantID, campaignID string, page, pageSize int) ([]*domain.CampaignDelivery, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 50
+	}
+	return u.campaignRepo.ListDeliveriesByCampaign(ctx, tenantID, campaignID, pageSize, (page-1)*pageSize)
 }
 
 func parseStringList(raw string) []string {

@@ -70,6 +70,33 @@ func (h *CampaignHandler) ListCampaigns(w http.ResponseWriter, r *http.Request) 
 	utils.WriteJSON(w, http.StatusOK, campaigns)
 }
 
+// GetCampaign handles: GET /api/v1/campaigns/{id}
+func (h *CampaignHandler) GetCampaign(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	campaignID := r.PathValue("id")
+	if campaignID == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Missing explicit campaign mapping ID parameter")
+		return
+	}
+
+	campaign, err := h.useCase.GetCampaign(r.Context(), tenantID, campaignID)
+	if err != nil {
+		if errors.Is(err, repository.ErrCampaignNotFound) {
+			utils.WriteError(w, http.StatusNotFound, "Campaign not found")
+			return
+		}
+		utils.WriteError(w, http.StatusInternalServerError, "Failed to retrieve campaign details")
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, campaign)
+}
+
 // DispatchCampaign handles: POST /api/v1/campaigns/{id}/dispatch
 func (h *CampaignHandler) DispatchCampaign(w http.ResponseWriter, r *http.Request) {
 	tenantID, ok := r.Context().Value(TenantIDKey).(string)
@@ -130,4 +157,35 @@ func (h *CampaignHandler) GetCampaignStats(w http.ResponseWriter, r *http.Reques
 	}
 
 	utils.WriteJSON(w, http.StatusOK, stats)
+}
+
+// GetCampaignDeliveries handles: GET /api/v1/campaigns/{id}/deliveries
+func (h *CampaignHandler) GetCampaignDeliveries(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	campaignID := r.PathValue("id")
+	if campaignID == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Missing explicit campaign mapping ID parameter")
+		return
+	}
+
+	queryParams := r.URL.Query()
+	page, _ := strconv.Atoi(queryParams.Get("page"))
+	pageSize, _ := strconv.Atoi(queryParams.Get("pageSize"))
+
+	deliveries, err := h.useCase.ListDeliveries(r.Context(), tenantID, campaignID, page, pageSize)
+	if err != nil {
+		if errors.Is(err, repository.ErrCampaignNotFound) {
+			utils.WriteError(w, http.StatusNotFound, "Campaign not found")
+			return
+		}
+		utils.WriteError(w, http.StatusInternalServerError, "Failed to fetch campaign delivery records")
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, deliveries)
 }
