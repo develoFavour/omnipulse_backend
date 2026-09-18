@@ -52,7 +52,7 @@ func NewBroadcastConsumer(natsURL string, natsCreds string, db *sql.DB) (*Broadc
 	// Double check stream configuration to ensure campaign topics are tracked
 	_, err = js.AddStream(&nats.StreamConfig{
 		Name:     "CAMPAIGNS",
-		Subjects: []string{"campaign.dispatched", "campaign.approved", "dispatch.result"},
+		Subjects: []string{"campaign.dispatched", "campaign.approved", "dispatch.result", "campaign.dlq"},
 		Storage:  nats.FileStorage,
 		MaxBytes: 10 * 1024 * 1024,
 	})
@@ -71,13 +71,14 @@ func NewBroadcastConsumer(natsURL string, natsCreds string, db *sql.DB) (*Broadc
 }
 
 func (c *BroadcastConsumer) Start(ctx context.Context) error {
-	// Subscribe to campaign.dispatched (direct broadcast stream)
+	queueName := "broadcast-delivery-pool"
 	sub, err := c.js.QueueSubscribe(
 		"campaign.dispatched",
-		"broadcast-worker-v2",
+		queueName,
 		func(msg *nats.Msg) {
 			c.executeDelivery(ctx, msg)
 		},
+		nats.Durable(queueName),
 		nats.ManualAck(),
 	)
 	if err != nil {
@@ -85,7 +86,7 @@ func (c *BroadcastConsumer) Start(ctx context.Context) error {
 	}
 
 	c.sub = sub
-	log.Println("[WORKER] Broadcast Engine actively monitoring outbound streams...")
+	log.Printf("[WORKER] Broadcast Engine actively monitoring outbound streams (queue: %s)...\n", queueName)
 	return nil
 }
 

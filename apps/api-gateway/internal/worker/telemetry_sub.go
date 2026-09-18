@@ -60,6 +60,7 @@ func (c *TelemetryConsumer) Start(ctx context.Context) error {
 		func(msg *nats.Msg) {
 			c.processReceipt(ctx, msg)
 		},
+		nats.Durable("telemetry-gateway-group"),
 		nats.ManualAck(),
 	)
 	if err != nil {

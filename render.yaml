@@ -24,6 +24,8 @@ services:
         sync: false
       - key: NATS_URL
         value: nats://omnipulse-nats:4222
+      - key: NATS_CREDS
+        sync: false
       - key: CLERK_SECRET_KEY
         sync: false
       - key: META_APP_ID
@@ -52,6 +54,8 @@ services:
         sync: false
       - key: NATS_URL
         value: nats://omnipulse-nats:4222
+      - key: NATS_CREDS
+        sync: false
 
   # 4. Compliance Engine Worker
   - type: web

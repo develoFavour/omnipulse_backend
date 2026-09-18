@@ -41,21 +41,22 @@ func NewBroadcastConsumer(nc *nats.Conn, js nats.JetStreamContext, db *sql.DB, w
 
 // Start initiates the QueueSubscription on campaign.dispatched.
 func (c *BroadcastConsumer) Start(ctx context.Context) error {
+	queueName := "broadcast-delivery-pool"
 	sub, err := c.js.QueueSubscribe(
 		"campaign.dispatched",
-		"broadcast-delivery-v1",
+		queueName,
 		func(msg *nats.Msg) {
 			c.executeDelivery(ctx, msg)
 		},
+		nats.Durable(queueName),
 		nats.ManualAck(),
-		nats.DeliverAll(),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to subscribe to campaign.dispatched: %w", err)
 	}
 
 	c.sub = sub
-	log.Println("[BROADCAST-WORKER] 🚀 Outbound delivery engine active and listening to campaign.dispatched (queue: broadcast-delivery-v1)...")
+	log.Printf("[BROADCAST-WORKER] 🚀 Outbound delivery engine active and listening to campaign.dispatched (queue: %s)...\n", queueName)
 	return nil
 }
 

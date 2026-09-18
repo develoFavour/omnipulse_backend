@@ -48,7 +48,7 @@ func NewJetStreamPublisher(natsURL string, natsCreds string) (domain.EventPublis
 	}
 
 	streamName := "CAMPAIGNS"
-	requiredSubjects := []string{"campaign.dispatched", "campaign.approved", "dispatch.result"}
+	requiredSubjects := []string{"campaign.dispatched", "campaign.approved", "dispatch.result", "campaign.dlq"}
 	_, err = js.AddStream(&nats.StreamConfig{
 		Name:     streamName,
 		Subjects: requiredSubjects,
