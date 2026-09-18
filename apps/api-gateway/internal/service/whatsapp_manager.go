@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -512,7 +514,7 @@ func (m *WhatsAppManager) Close() {
 	log.Println("[WhatsAppManager] All WhatsApp sessions cleanly disconnected.")
 }
 
-func (m *WhatsAppManager) SendMessage(ctx context.Context, tenantID string, recipientPhone string, text string) error {
+func (m *WhatsAppManager) SendMessage(ctx context.Context, tenantID string, recipientPhone string, text string, mediaURL *string) error {
 	sess, err := m.ensureSession(ctx, tenantID)
 	if err != nil {
 		return fmt.Errorf("WhatsApp client is not connected for tenant %s: %w", tenantID, err)
@@ -534,8 +536,42 @@ func (m *WhatsAppManager) SendMessage(ctx context.Context, tenantID string, reci
 		Conversation: proto.String(text),
 	}
 
-	_, err = sess.client.SendMessage(ctx, targetJID, msg)
-	return err
+	if mediaURL != nil && *mediaURL != "" {
+		imgReq, imgReqErr := http.NewRequestWithContext(ctx, "GET", *mediaURL, nil)
+		if imgReqErr == nil {
+			imgResp, imgErr := http.DefaultClient.Do(imgReq)
+			if imgErr == nil && imgResp.StatusCode == http.StatusOK {
+				imgBytes, readErr := io.ReadAll(imgResp.Body)
+				imgResp.Body.Close()
+				if readErr == nil && len(imgBytes) > 0 {
+					uploaded, upErr := sess.client.Upload(ctx, imgBytes, whatsmeow.MediaImage)
+					if upErr == nil {
+						msg = &waE2E.Message{
+							ImageMessage: &waE2E.ImageMessage{
+								Caption:       proto.String(text),
+								Mimetype:      proto.String(http.DetectContentType(imgBytes)),
+								URL:           &uploaded.URL,
+								DirectPath:    &uploaded.DirectPath,
+								MediaKey:      uploaded.MediaKey,
+								FileEncSHA256: uploaded.FileEncSHA256,
+								FileSHA256:    uploaded.FileSHA256,
+								FileLength:    proto.Uint64(uint64(len(imgBytes))),
+							},
+						}
+					} else {
+						log.Printf("[WhatsAppManager] Warning: failed to upload image attachment: %v (falling back to text)\n", upErr)
+					}
+				}
+			}
+		}
+	}
+
+	resp, err := sess.client.SendMessage(ctx, targetJID, msg)
+	if err != nil {
+		return err
+	}
+	log.Printf("[WhatsAppManager] ✅ Dispatched message to %s (%s) [MsgID: %s]\n", recipientPhone, targetJID.String(), resp.ID)
+	return nil
 }
 
 // SyncContacts reads all saved contacts from the linked WhatsApp account, groups, and local store

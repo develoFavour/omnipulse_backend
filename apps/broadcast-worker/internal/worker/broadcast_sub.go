@@ -71,9 +71,9 @@ func NewBroadcastConsumer(natsURL string, natsCreds string, db *sql.DB) (*Broadc
 }
 
 func (c *BroadcastConsumer) Start(ctx context.Context) error {
-	// Subscribe to campaign.approved (listening to the compliance engine)
+	// Subscribe to campaign.dispatched (direct broadcast stream)
 	sub, err := c.js.QueueSubscribe(
-		"campaign.approved",
+		"campaign.dispatched",
 		"broadcast-worker-v2",
 		func(msg *nats.Msg) {
 			c.executeDelivery(ctx, msg)

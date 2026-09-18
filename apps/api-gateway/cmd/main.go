@@ -132,6 +132,19 @@ func main() {
 		}
 	}
 
+	var broadcastWorker *worker.BroadcastConsumer
+	bw, err := worker.NewBroadcastConsumer(natsConn, natsJS, db, waManager)
+	if err != nil {
+		logger.Printf("[NATS-WARN] Broadcast delivery worker initialization deferred: %v\n", err)
+	} else {
+		broadcastWorker = bw
+		if err := broadcastWorker.Start(globalWorkerCtx); err != nil {
+			logger.Printf("[NATS-WARN] Broadcast stream subscription deferred: %v\n", err)
+		} else {
+			defer broadcastWorker.Stop()
+		}
+	}
+
 	// 4. Modern Native HTTP Routing Multiplexer
 	mux := http.NewServeMux()
 
@@ -228,6 +241,9 @@ func main() {
 	logger.Printf("Termination signal received (%s). Commencing graceful cleanup drain loop...\n", sig.String())
 
 	cancelWorkers()
+	if broadcastWorker != nil {
+		broadcastWorker.Stop()
+	}
 	if telemetryWorker != nil {
 		telemetryWorker.Stop()
 	}
