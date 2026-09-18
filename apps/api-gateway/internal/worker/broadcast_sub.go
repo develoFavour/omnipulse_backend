@@ -109,6 +109,7 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 
 	status := "delivered"
 	var errMsg *string
+	isTransient := false
 
 	personalizedMsg := strings.ReplaceAll(task.MessageBody, "{first_name}", task.FirstName)
 
@@ -160,6 +161,7 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 					resp, err := tgClient.Do(req)
 					if err != nil {
 						status = "failed"
+						isTransient = true
 						reason := fmt.Sprintf("network error calling Telegram API: %v", err)
 						errMsg = &reason
 						log.Printf("[❌ TELEGRAM -> ERROR] %s\n", reason)
@@ -167,7 +169,10 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 						defer resp.Body.Close()
 						if resp.StatusCode != http.StatusOK {
 							status = "failed"
-							reason := fmt.Sprintf("Telegram API returned non-200 status (%d)", resp.StatusCode)
+							if resp.StatusCode == 429 || resp.StatusCode >= 500 {
+								isTransient = true
+							}
+							reason := fmt.Sprintf("Telegram API returned status %d", resp.StatusCode)
 							errMsg = &reason
 							log.Printf("[❌ TELEGRAM -> ERROR] %s\n", reason)
 						} else {
@@ -247,6 +252,7 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 					resp, err := client.Do(req)
 					if err != nil {
 						status = "failed"
+						isTransient = true
 						reason := fmt.Sprintf("network error calling WhatsApp Cloud API: %v", err)
 						errMsg = &reason
 						log.Printf("[❌ WHATSAPP API -> ERROR] %s\n", reason)
@@ -254,6 +260,9 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 						defer resp.Body.Close()
 						if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 							status = "failed"
+							if resp.StatusCode == 429 || resp.StatusCode >= 500 {
+								isTransient = true
+							}
 							reason := fmt.Sprintf("WhatsApp Cloud API rejected message (status %d)", resp.StatusCode)
 							errMsg = &reason
 							log.Printf("[❌ WHATSAPP API -> ERROR] %s\n", reason)
@@ -269,6 +278,45 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 		reason := fmt.Sprintf("unsupported platform '%s' — no delivery adapter configured", task.TargetPlatform)
 		errMsg = &reason
 		log.Printf("[❌ WORKER -> ERROR] %s\n", reason)
+	}
+
+	// Retry & Dead Letter Queue (DLQ) policy for failed attempts
+	if status == "failed" {
+		deliveryAttempts := uint64(1)
+		if meta, metaErr := msg.Metadata(); metaErr == nil && meta != nil {
+			deliveryAttempts = meta.NumDelivered
+		}
+
+		maxRetries := uint64(3)
+		if isTransient && deliveryAttempts < maxRetries {
+			backoff := time.Duration(deliveryAttempts*3) * time.Second
+			log.Printf("[BROADCAST-WORKER] ⚠️ Transient failure for %s (%s): %s (attempt %d/%d). Scheduling retry with %v backoff...\n",
+				task.FirstName, task.RoutingValue, *errMsg, deliveryAttempts, maxRetries, backoff)
+			_ = msg.NakWithDelay(backoff)
+			return
+		}
+
+		// Permanent failure or max retries exhausted: Route task event to DLQ (campaign.dlq)
+		dlqPayload := map[string]interface{}{
+			"campaign_id":       task.CampaignID,
+			"tenant_id":         task.TenantID,
+			"contact_id":        task.ContactID,
+			"platform":          task.TargetPlatform,
+			"routing_value":     task.RoutingValue,
+			"error":             *errMsg,
+			"delivery_attempts": deliveryAttempts,
+			"is_transient":      isTransient,
+			"failed_at":         time.Now().UTC().Format(time.RFC3339),
+			"task":              task,
+		}
+		if dlqBytes, err := json.Marshal(dlqPayload); err == nil {
+			if _, dlqErr := c.js.Publish("campaign.dlq", dlqBytes); dlqErr != nil {
+				log.Printf("[BROADCAST-WORKER-WARN] Failed to publish to campaign.dlq: %v\n", dlqErr)
+			} else {
+				log.Printf("[BROADCAST-WORKER] 💀 Routed permanently failed task to DLQ (campaign.dlq): contact=%s (%s) attempts=%d reason=%s\n",
+					task.ContactID, task.RoutingValue, deliveryAttempts, *errMsg)
+			}
+		}
 	}
 
 	result := contracts.TargetDeliveryResult{
