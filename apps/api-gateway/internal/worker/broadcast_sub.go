@@ -43,18 +43,19 @@ func NewBroadcastConsumer(nc *nats.Conn, js nats.JetStreamContext, db *sql.DB, w
 func (c *BroadcastConsumer) Start(ctx context.Context) error {
 	sub, err := c.js.QueueSubscribe(
 		"campaign.dispatched",
-		"broadcast-worker-v2",
+		"broadcast-delivery-v1",
 		func(msg *nats.Msg) {
 			c.executeDelivery(ctx, msg)
 		},
 		nats.ManualAck(),
+		nats.DeliverAll(),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to subscribe to campaign.dispatched: %w", err)
 	}
 
 	c.sub = sub
-	log.Println("[BROADCAST-WORKER] 🚀 Outbound delivery engine active and listening to campaign.dispatched...")
+	log.Println("[BROADCAST-WORKER] 🚀 Outbound delivery engine active and listening to campaign.dispatched (queue: broadcast-delivery-v1)...")
 	return nil
 }
 
