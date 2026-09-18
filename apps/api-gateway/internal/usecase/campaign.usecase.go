@@ -66,19 +66,29 @@ func (u *CampaignUseCase) ListCampaigns(ctx context.Context, tenantID string, pa
 }
 
 func (u *CampaignUseCase) TriggerDispatch(ctx context.Context, tenantID, campaignID string) error {
+	log.Printf("[DISPATCH-TRACE] === TriggerDispatch START === tenant=%s campaign=%s\n", tenantID, campaignID)
+
 	campaign, err := u.campaignRepo.GetByID(ctx, tenantID, campaignID)
 	if err != nil {
+		log.Printf("[DISPATCH-TRACE] ❌ Campaign lookup failed: %v\n", err)
 		return err
 	}
+	log.Printf("[DISPATCH-TRACE] Campaign found: title=%q status=%s channels=%s destinations=%s\n",
+		campaign.Title, campaign.Status, campaign.SelectedChannels, campaign.SelectedTelegramDestinationIDs)
+
 	if campaign.Status == "processing" || campaign.Status == "completed" {
+		log.Printf("[DISPATCH-TRACE] ❌ Rejected: status already %s\n", campaign.Status)
 		return fmt.Errorf("campaign execution rejected: status is already %s", campaign.Status)
 	}
 	if err := u.campaignRepo.UpdateStatus(ctx, tenantID, campaignID, "processing"); err != nil {
+		log.Printf("[DISPATCH-TRACE] ❌ Failed to update status to processing: %v\n", err)
 		return err
 	}
 
 	selectedChannels := parseStringList(campaign.SelectedChannels)
 	selectedDestinations := parseStringList(campaign.SelectedTelegramDestinationIDs)
+	log.Printf("[DISPATCH-TRACE] Parsed channels=%v destinations=%v\n", selectedChannels, selectedDestinations)
+
 	publishedTargets := 0
 
 	if len(selectedChannels) > 0 {
@@ -87,15 +97,21 @@ func (u *CampaignUseCase) TriggerDispatch(ctx context.Context, tenantID, campaig
 		for {
 			contacts, err := u.contactRepo.ListByTenant(ctx, tenantID, "", pageSize, (page-1)*pageSize)
 			if err != nil {
+				log.Printf("[DISPATCH-TRACE] ❌ Contact query failed on page %d: %v\n", page, err)
 				return fmt.Errorf("database reading failed mid-flight during chunk stream: %w", err)
 			}
+			log.Printf("[DISPATCH-TRACE] Contact page %d: fetched %d contacts\n", page, len(contacts))
 			if len(contacts) == 0 {
 				break
 			}
 			for _, contact := range contacts {
 				if contact.Status != "active" || !containsString(selectedChannels, contact.Channel) {
+					log.Printf("[DISPATCH-TRACE] Skipping contact %s: status=%s channel=%s (not in %v)\n",
+						contact.ID, contact.Status, contact.Channel, selectedChannels)
 					continue
 				}
+				log.Printf("[DISPATCH-TRACE] Emitting task for contact %s (%s) on %s\n",
+					contact.ID, contact.RoutingValue, contact.Channel)
 				u.emitContactTask(ctx, campaign, contact)
 				publishedTargets++
 			}
@@ -106,15 +122,21 @@ func (u *CampaignUseCase) TriggerDispatch(ctx context.Context, tenantID, campaig
 	if len(selectedDestinations) > 0 {
 		destinations, err := u.destinationRepo.ListByIDs(ctx, tenantID, selectedDestinations)
 		if err != nil {
+			log.Printf("[DISPATCH-TRACE] ❌ Telegram destination lookup failed: %v\n", err)
 			return fmt.Errorf("telegram destination lookup failed: %w", err)
 		}
+		log.Printf("[DISPATCH-TRACE] Found %d telegram destinations\n", len(destinations))
 		for _, destination := range destinations {
+			log.Printf("[DISPATCH-TRACE] Emitting task for destination %s (%s)\n", destination.ID, destination.Title)
 			u.emitDestinationTask(ctx, campaign, &destination)
 			publishedTargets++
 		}
 	}
 
+	log.Printf("[DISPATCH-TRACE] === TriggerDispatch END === total published targets: %d\n", publishedTargets)
+
 	if publishedTargets == 0 {
+		log.Printf("[DISPATCH-TRACE] ❌ No targets matched! Campaign will NOT dispatch.\n")
 		return fmt.Errorf("campaign execution rejected: no active targets matched this campaign")
 	}
 	return u.campaignRepo.UpdateStatus(ctx, tenantID, campaignID, "completed")

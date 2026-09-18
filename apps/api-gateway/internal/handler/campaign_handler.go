@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 
@@ -73,18 +74,23 @@ func (h *CampaignHandler) ListCampaigns(w http.ResponseWriter, r *http.Request) 
 func (h *CampaignHandler) DispatchCampaign(w http.ResponseWriter, r *http.Request) {
 	tenantID, ok := r.Context().Value(TenantIDKey).(string)
 	if !ok {
+		log.Println("[DISPATCH-TRACE] ❌ Missing tenant context in request")
 		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
 		return
 	}
 
 	campaignID := r.PathValue("id")
 	if campaignID == "" {
+		log.Println("[DISPATCH-TRACE] ❌ Missing campaign ID in URL path")
 		utils.WriteError(w, http.StatusBadRequest, "Missing explicit campaign mapping ID parameter")
 		return
 	}
 
+	log.Printf("[DISPATCH-TRACE] 📨 Received dispatch request: tenant=%s campaign=%s\n", tenantID, campaignID)
+
 	err := h.useCase.TriggerDispatch(r.Context(), tenantID, campaignID)
 	if err != nil {
+		log.Printf("[DISPATCH-TRACE] ❌ TriggerDispatch returned error: %v\n", err)
 		if errors.Is(err, repository.ErrCampaignNotFound) {
 			utils.WriteError(w, http.StatusNotFound, "Target distribution campaign tracking context missing")
 			return
@@ -93,6 +99,7 @@ func (h *CampaignHandler) DispatchCampaign(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	log.Printf("[DISPATCH-TRACE] ✅ Dispatch completed successfully for campaign=%s\n", campaignID)
 	utils.WriteJSON(w, http.StatusAccepted, map[string]string{
 		"message":     "Campaign processing cycle successfully initialized",
 		"campaign_id": campaignID,

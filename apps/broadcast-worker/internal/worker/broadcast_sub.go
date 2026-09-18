@@ -274,7 +274,7 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 						}
 
 						log.Printf("[WORKER] Sending WhatsApp message to %s (%s)", task.FirstName, task.RoutingValue)
-		resp, sendErr := client.SendMessage(msgCtx, targetJID, msg)
+						resp, sendErr := client.SendMessage(msgCtx, targetJID, msg)
 						if sendErr != nil {
 							status = "failed"
 							reason := fmt.Sprintf("failed to send WhatsApp message: %v", sendErr)

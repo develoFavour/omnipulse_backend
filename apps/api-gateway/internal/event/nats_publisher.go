@@ -24,19 +24,21 @@ type JetStreamPublisher struct {
 type InMemoryPublisher struct{}
 
 func (p *InMemoryPublisher) PublishDispatchTask(ctx context.Context, task *contracts.TargetDispatchTask) error {
-	log.Printf("[EVENT-BUS-FALLBACK] Dispatched task for contact %s (%s) on %s\n", task.FirstName, task.RoutingValue, task.TargetPlatform)
+	log.Printf("[⚠️ EVENT-BUS-FALLBACK] NATS IS NOT CONNECTED! Task for %s (%s) on %s was SILENTLY DROPPED — message will NOT be delivered!\n", task.FirstName, task.RoutingValue, task.TargetPlatform)
 	return nil
 }
 
 // NewJetStreamPublisher sets up the connection and provisions the streaming topic boundary.
 // Supports Synadia Cloud credentials via natsCreds parameter.
 func NewJetStreamPublisher(natsURL string, natsCreds string) (domain.EventPublisher, error) {
+	log.Printf("[NATS-TRACE] Attempting NATS connection to: %s (creds present: %v)\n", natsURL, natsCreds != "")
 	opts := getNatsOptions(natsCreds)
 	nc, err := nats.Connect(natsURL, opts...)
 	if err != nil {
-		log.Printf("[NATS-WARN] Connection failed (%v). Operating with resilient event publisher fallback.\n", err)
+		log.Printf("[🚨 NATS-CRITICAL] Connection FAILED to %s: %v — ALL dispatches will be silently dropped!\n", natsURL, err)
 		return &InMemoryPublisher{}, nil
 	}
+	log.Printf("[NATS-TRACE] ✅ Successfully connected to NATS at %s\n", natsURL)
 
 	js, err := nc.JetStream()
 	if err != nil {
@@ -130,17 +132,23 @@ func subjectsEqual(a, b []string) bool {
 }
 
 func (p *JetStreamPublisher) PublishDispatchTask(ctx context.Context, task *contracts.TargetDispatchTask) error {
+	log.Printf("[DISPATCH-TRACE] Publishing task to NATS: campaign=%s contact=%s (%s) platform=%s\n",
+		task.CampaignID, task.ContactID, task.RoutingValue, task.TargetPlatform)
+
 	payload, err := json.Marshal(task)
 	if err != nil {
+		log.Printf("[DISPATCH-TRACE] ❌ Failed to serialize task: %v\n", err)
 		return fmt.Errorf("failed to serialize target task payload: %w", err)
 	}
 
 	subject := "campaign.dispatched"
 
-	_, err = p.js.Publish(subject, payload, nats.Context(ctx))
+	ack, err := p.js.Publish(subject, payload, nats.Context(ctx))
 	if err != nil {
+		log.Printf("[DISPATCH-TRACE] ❌ NATS rejected publish on %s: %v\n", subject, err)
 		return fmt.Errorf("nats stream rejected dispatch acknowledgment: %w", err)
 	}
 
+	log.Printf("[DISPATCH-TRACE] ✅ Published to %s (stream=%s seq=%d)\n", subject, ack.Stream, ack.Sequence)
 	return nil
 }
