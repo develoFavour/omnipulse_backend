@@ -31,6 +31,7 @@ type CampaignRepository interface {
 	GetByID(ctx context.Context, tenantID, id string) (*Campaign, error)
 	ListByTenant(ctx context.Context, tenantID string, limit, offset int) ([]*Campaign, error)
 	UpdateStatus(ctx context.Context, tenantID, id string, status string) error
+	SetDispatching(ctx context.Context, tenantID, id string, totalTargets int) error
 	RecordDeliveryResult(ctx context.Context, res *contracts.TargetDeliveryResult) error
 	GetCampaignStats(ctx context.Context, tenantID, campaignID string) (map[string]int, error)
 }

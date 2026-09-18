@@ -107,6 +107,18 @@ func (r *PostgresCampaignRepository) UpdateStatus(ctx context.Context, tenantID,
 	return tx.Commit()
 }
 
+// SetDispatching atomically marks the campaign as 'processing' and records total_targets.
+// Called once when all tasks are queued to NATS — NOT when they're delivered.
+func (r *PostgresCampaignRepository) SetDispatching(ctx context.Context, tenantID, id string, totalTargets int) error {
+	query := `
+		UPDATE campaigns
+		SET status = 'processing', total_targets = $1, processed_targets = 0, updated_at = CURRENT_TIMESTAMP
+		WHERE tenant_id = $2 AND id = $3;
+	`
+	_, err := r.db.ExecContext(ctx, query, totalTargets, tenantID, id)
+	return err
+}
+
 func (r *PostgresCampaignRepository) RecordDeliveryResult(ctx context.Context, res *contracts.TargetDeliveryResult) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -123,9 +135,15 @@ func (r *PostgresCampaignRepository) RecordDeliveryResult(ctx context.Context, r
 		return fmt.Errorf("failed to insert audit line record: %w", err)
 	}
 
+	// Increment the processed counter and check if all targets are done in one atomic query.
+	// If processed_targets reaches total_targets, auto-transition to 'completed'.
 	counterQuery := `
-		UPDATE campaigns 
-		SET processed_targets = processed_targets + 1, updated_at = CURRENT_TIMESTAMP 
+		UPDATE campaigns
+		SET processed_targets = processed_targets + 1, updated_at = CURRENT_TIMESTAMP,
+		    status = CASE
+		        WHEN (processed_targets + 1) >= total_targets AND total_targets > 0 THEN 'completed'
+		        ELSE status
+		    END
 		WHERE id = $1;
 	`
 	_, err = tx.ExecContext(ctx, counterQuery, res.CampaignID)

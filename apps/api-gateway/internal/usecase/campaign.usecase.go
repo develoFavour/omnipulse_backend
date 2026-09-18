@@ -80,10 +80,6 @@ func (u *CampaignUseCase) TriggerDispatch(ctx context.Context, tenantID, campaig
 		log.Printf("[DISPATCH-TRACE] ❌ Rejected: status already %s\n", campaign.Status)
 		return fmt.Errorf("campaign execution rejected: status is already %s", campaign.Status)
 	}
-	if err := u.campaignRepo.UpdateStatus(ctx, tenantID, campaignID, "processing"); err != nil {
-		log.Printf("[DISPATCH-TRACE] ❌ Failed to update status to processing: %v\n", err)
-		return err
-	}
 
 	selectedChannels := parseStringList(campaign.SelectedChannels)
 	selectedDestinations := parseStringList(campaign.SelectedTelegramDestinationIDs)
@@ -139,7 +135,15 @@ func (u *CampaignUseCase) TriggerDispatch(ctx context.Context, tenantID, campaig
 		log.Printf("[DISPATCH-TRACE] ❌ No targets matched! Campaign will NOT dispatch.\n")
 		return fmt.Errorf("campaign execution rejected: no active targets matched this campaign")
 	}
-	return u.campaignRepo.UpdateStatus(ctx, tenantID, campaignID, "completed")
+
+	// Mark campaign as 'processing' and record total_targets.
+	// Status will only transition to 'completed' once all delivery receipts arrive via telemetryWorker.
+	if err := u.campaignRepo.SetDispatching(ctx, tenantID, campaignID, publishedTargets); err != nil {
+		log.Printf("[DISPATCH-TRACE] ❌ Failed to set campaign to processing: %v\n", err)
+		return err
+	}
+	log.Printf("[DISPATCH-TRACE] ✅ Campaign %s set to processing with %d total targets\n", campaignID, publishedTargets)
+	return nil
 }
 
 func (u *CampaignUseCase) emitContactTask(ctx context.Context, cmp *domain.Campaign, con *domain.Contact) {
