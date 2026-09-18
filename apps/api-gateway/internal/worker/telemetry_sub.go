@@ -14,12 +14,22 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// CampaignHubBroadcaster defines the interface for streaming live telemetry over WebSockets
+type CampaignHubBroadcaster interface {
+	BroadcastProgress(campaignID string, stats *domain.CampaignStats, delivery *domain.CampaignDelivery)
+}
+
 // TelemetryConsumer listens for delivery receipts coming back from outbound networks
 type TelemetryConsumer struct {
 	nc   *nats.Conn
 	js   nats.JetStreamContext
 	sub  *nats.Subscription
 	repo domain.CampaignRepository
+	hub  CampaignHubBroadcaster
+}
+
+func (c *TelemetryConsumer) SetHub(hub CampaignHubBroadcaster) {
+	c.hub = hub
 }
 
 // NewTelemetryConsumer initializes the background database-writer event node.
@@ -101,6 +111,21 @@ func (c *TelemetryConsumer) processReceipt(ctx context.Context, msg *nats.Msg) {
 		log.Printf("[TELEMETRY-ERROR] Transaction failed to commit to SQL ledger: %v. Retrying stream...\n", err)
 		_ = msg.Nak()
 		return
+	}
+
+	// Instantaneously broadcast progress & audit row to connected WebSocket clients
+	if c.hub != nil {
+		stats, _ := c.repo.GetCampaignStats(dbCtx, "", result.CampaignID)
+		deliveryItem := &domain.CampaignDelivery{
+			CampaignID:   result.CampaignID,
+			TargetType:   result.TargetType,
+			Platform:     result.Platform,
+			RoutingValue: result.RoutingValue,
+			Status:       result.Status,
+			ErrorMessage: result.ErrorMessage,
+			CreatedAt:    time.Now().UTC(),
+		}
+		c.hub.BroadcastProgress(result.CampaignID, stats, deliveryItem)
 	}
 
 	// Acknowledge receipt: Safe from the message queue queue loop!

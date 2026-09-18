@@ -158,7 +158,13 @@ func (r *PostgresCampaignRepository) RecordDeliveryResult(ctx context.Context, r
 func (r *PostgresCampaignRepository) GetCampaignStats(ctx context.Context, tenantID, campaignID string) (*domain.CampaignStats, error) {
 	var status string
 	var totalTargets, processedTargets int
-	err := r.db.QueryRowContext(ctx, "SELECT status, total_targets, processed_targets FROM campaigns WHERE id = $1 AND tenant_id = $2", campaignID, tenantID).Scan(&status, &totalTargets, &processedTargets)
+	headerQuery := "SELECT status, total_targets, processed_targets FROM campaigns WHERE id = $1"
+	headerArgs := []interface{}{campaignID}
+	if tenantID != "" {
+		headerQuery += " AND tenant_id = $2"
+		headerArgs = append(headerArgs, tenantID)
+	}
+	err := r.db.QueryRowContext(ctx, headerQuery, headerArgs...).Scan(&status, &totalTargets, &processedTargets)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrCampaignNotFound
@@ -211,10 +217,12 @@ func (r *PostgresCampaignRepository) GetCampaignStats(ctx context.Context, tenan
 }
 
 func (r *PostgresCampaignRepository) ListDeliveriesByCampaign(ctx context.Context, tenantID, campaignID string, limit, offset int) ([]*domain.CampaignDelivery, error) {
-	var exists bool
-	err := r.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM campaigns WHERE id = $1 AND tenant_id = $2)", campaignID, tenantID).Scan(&exists)
-	if err != nil || !exists {
-		return nil, ErrCampaignNotFound
+	if tenantID != "" {
+		var exists bool
+		err := r.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM campaigns WHERE id = $1 AND tenant_id = $2)", campaignID, tenantID).Scan(&exists)
+		if err != nil || !exists {
+			return nil, ErrCampaignNotFound
+		}
 	}
 
 	query := `

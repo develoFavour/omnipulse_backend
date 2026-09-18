@@ -49,7 +49,6 @@ func (c *BroadcastConsumer) Start(ctx context.Context) error {
 			c.executeDelivery(ctx, msg)
 		},
 		nats.Durable(queueName),
-		nats.DeliverNew(),
 		nats.ManualAck(),
 	)
 	if err != nil {

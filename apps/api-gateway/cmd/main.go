@@ -126,10 +126,13 @@ func main() {
 		natsConn, natsJS = jp.GetConn()
 	}
 
+	campaignHub := service.NewCampaignHub(campaignRepo)
+
 	telemetryWorker, err := worker.NewTelemetryConsumer(cfg.NatsURL, cfg.NatsCreds, natsConn, natsJS, campaignRepo)
 	if err != nil {
 		logger.Printf("[NATS-WARN] Telemetry worker initialization deferred: %v\n", err)
 	} else {
+		telemetryWorker.SetHub(campaignHub)
 		if err := telemetryWorker.Start(globalWorkerCtx); err != nil {
 			logger.Printf("[NATS-WARN] Telemetry stream subscription deferred: %v\n", err)
 		} else {
@@ -196,6 +199,7 @@ func main() {
 	mux.HandleFunc("POST /api/v1/campaigns/{id}/dispatch", campaignHandler.DispatchCampaign)
 	mux.HandleFunc("GET /api/v1/campaigns/{id}/stats", campaignHandler.GetCampaignStats)
 	mux.HandleFunc("GET /api/v1/campaigns/{id}/deliveries", campaignHandler.GetCampaignDeliveries)
+	mux.HandleFunc("GET /api/v1/ws/campaigns/{id}", campaignHub.HandleWebSocket)
 
 	// Media Asset Subsystem Endpoints (Cloudinary CDN)
 	mux.HandleFunc("POST /api/v1/media/upload", mediaHandler.UploadImage)

@@ -67,8 +67,34 @@ func RequestLoggerMiddleware(logger *log.Logger) func(http.Handler) http.Handler
 func AuthMiddleware(identityUC *usecase.IdentityUseCase) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Bypass health check, root path, and external webhooks
+			// Bypass health check, root path, external webhooks, and handle WebSocket upgrade
 			if r.URL.Path == "/" || r.URL.Path == "/health" || strings.HasPrefix(r.URL.Path, "/api/v1/webhooks/") {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// WebSocket endpoint auth: browser WebSocket API cannot send headers, so accept query param ?token=
+			if strings.HasPrefix(r.URL.Path, "/api/v1/ws/") {
+				token := r.URL.Query().Get("token")
+				if token == "" {
+					authHeader := r.Header.Get("Authorization")
+					if strings.HasPrefix(authHeader, "Bearer ") {
+						token = strings.TrimPrefix(authHeader, "Bearer ")
+					}
+				}
+				if token != "" {
+					claims, err := jwt.Verify(r.Context(), &jwt.VerifyParams{Token: token})
+					if err == nil {
+						clerkUserID := claims.Subject
+						syncRes, err := identityUC.SyncUser(r.Context(), clerkUserID, clerkUserID+"@placeholder.com")
+						if err == nil && syncRes != nil && syncRes.Tenant != nil {
+							ctx := context.WithValue(r.Context(), TenantIDKey, syncRes.Tenant.ID)
+							ctx = context.WithValue(ctx, UserIDKey, syncRes.User.ID)
+							next.ServeHTTP(w, r.WithContext(ctx))
+							return
+						}
+					}
+				}
 				next.ServeHTTP(w, r)
 				return
 			}
