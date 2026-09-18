@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"omnipulse/apps/api-gateway/internal/domain"
 	"omnipulse/shared/contracts"
@@ -157,6 +158,7 @@ func (u *CampaignUseCase) emitContactTask(ctx context.Context, cmp *domain.Campa
 		RoutingValue:   con.RoutingValue,
 		MessageBody:    cmp.MessageBody,
 		MediaURL:       cmp.MediaURL,
+		ExpiresAt:      time.Now().Add(2 * time.Hour).Unix(),
 	}
 	if err := u.publisher.PublishDispatchTask(ctx, task); err != nil {
 		log.Printf("[USECASE-ERROR] Failed to emit dispatch task for contact %s: %v\n", con.ID, err)
@@ -174,6 +176,7 @@ func (u *CampaignUseCase) emitDestinationTask(ctx context.Context, cmp *domain.C
 		RoutingValue:   dest.TelegramChatID,
 		MessageBody:    cmp.MessageBody,
 		MediaURL:       cmp.MediaURL,
+		ExpiresAt:      time.Now().Add(2 * time.Hour).Unix(),
 	}
 	if err := u.publisher.PublishDispatchTask(ctx, task); err != nil {
 		log.Printf("[USECASE-ERROR] Failed to emit telegram destination task for %s: %v\n", dest.ID, err)

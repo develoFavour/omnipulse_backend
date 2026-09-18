@@ -81,6 +81,32 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 	log.Printf("[BROADCAST-WORKER] 📨 Received dispatch task: campaign=%s contact=%s (%s) platform=%s\n",
 		task.CampaignID, task.ContactID, task.RoutingValue, task.TargetPlatform)
 
+	// TTL guard: discard stale messages that arrived after the campaign expiry window.
+	// This prevents "zombie broadcasts" delivering announcements hours or days after dispatch.
+	if task.ExpiresAt > 0 && time.Now().Unix() > task.ExpiresAt {
+		expiredReason := fmt.Sprintf("message expired: dispatch window closed at %s (arrived %s late)",
+			time.Unix(task.ExpiresAt, 0).UTC().Format(time.RFC3339),
+			time.Since(time.Unix(task.ExpiresAt, 0)).Truncate(time.Second))
+		log.Printf("[BROADCAST-WORKER] ⏰ EXPIRED task for %s (%s): %s — skipping delivery\n",
+			task.FirstName, task.RoutingValue, expiredReason)
+
+		// Still emit a delivery result so telemetryWorker can track the count and eventually complete the campaign
+		expiredResult := contracts.TargetDeliveryResult{
+			CampaignID:   task.CampaignID,
+			ContactID:    task.ContactID,
+			TargetType:   deliveryNormalizedTargetType(task.TargetType),
+			Platform:     task.TargetPlatform,
+			RoutingValue: task.RoutingValue,
+			Status:       "failed",
+			ErrorMessage: &expiredReason,
+		}
+		if resultBytes, err := json.Marshal(expiredResult); err == nil {
+			_, _ = c.js.Publish("dispatch.result", resultBytes)
+		}
+		_ = msg.Ack()
+		return
+	}
+
 	status := "delivered"
 	var errMsg *string
 

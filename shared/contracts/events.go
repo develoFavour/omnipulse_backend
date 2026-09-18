@@ -11,6 +11,7 @@ type TargetDispatchTask struct {
 	RoutingValue   string  `json:"routing_value"`   // Phone number, ChatID, or Handle
 	MessageBody    string  `json:"message_body"`
 	MediaURL       *string `json:"media_url,omitempty"`
+	ExpiresAt      int64   `json:"expires_at"` // Unix timestamp; worker skips delivery after this time
 }
 
 // TargetDeliveryResult represents the event payload streaming back from workers

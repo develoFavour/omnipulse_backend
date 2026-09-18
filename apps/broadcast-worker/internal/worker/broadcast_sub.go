@@ -118,6 +118,30 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 		return
 	}
 
+	// TTL guard: discard stale messages that arrived after the campaign expiry window.
+	if task.ExpiresAt > 0 && time.Now().Unix() > task.ExpiresAt {
+		expiredReason := fmt.Sprintf("message expired: dispatch window closed at %s (arrived %s late)",
+			time.Unix(task.ExpiresAt, 0).UTC().Format(time.RFC3339),
+			time.Since(time.Unix(task.ExpiresAt, 0)).Truncate(time.Second))
+		log.Printf("[WORKER] ⏰ EXPIRED task for %s (%s): %s — skipping delivery\n",
+			task.FirstName, task.RoutingValue, expiredReason)
+
+		expiredResult := contracts.TargetDeliveryResult{
+			CampaignID:   task.CampaignID,
+			ContactID:    task.ContactID,
+			TargetType:   normalizedTargetType(task.TargetType),
+			Platform:     task.TargetPlatform,
+			RoutingValue: task.RoutingValue,
+			Status:       "failed",
+			ErrorMessage: &expiredReason,
+		}
+		if resultBytes, err := json.Marshal(expiredResult); err == nil {
+			_, _ = c.js.Publish("dispatch.result", resultBytes)
+		}
+		_ = msg.Ack()
+		return
+	}
+
 	status := "delivered"
 	var errMsg *string
 
