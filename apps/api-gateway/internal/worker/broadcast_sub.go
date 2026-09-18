@@ -49,6 +49,7 @@ func (c *BroadcastConsumer) Start(ctx context.Context) error {
 			c.executeDelivery(ctx, msg)
 		},
 		nats.Durable(queueName),
+		nats.DeliverNew(),
 		nats.ManualAck(),
 	)
 	if err != nil {
@@ -88,16 +89,55 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 	log.Printf("[BROADCAST-WORKER] 📨 Received dispatch task: campaign=%s contact=%s (%s) platform=%s\n",
 		task.CampaignID, task.ContactID, task.RoutingValue, task.TargetPlatform)
 
-	// TTL guard: discard stale messages that arrived after the campaign expiry window.
-	// This prevents "zombie broadcasts" delivering announcements hours or days after dispatch.
+	// Guard 1: Check Database Campaign State.
+	// If the campaign is already marked 'completed' or 'failed', NEVER dispatch again.
+	var campaignStatus string
+	var campaignCreatedAt time.Time
+	err := c.db.QueryRowContext(msgCtx, "SELECT status, created_at FROM campaigns WHERE id = $1", task.CampaignID).Scan(&campaignStatus, &campaignCreatedAt)
+	if err != nil {
+		log.Printf("[BROADCAST-WORKER] 🛑 Campaign %s not found in DB — dropping task\n", task.CampaignID)
+		_ = msg.Ack()
+		return
+	}
+	if campaignStatus == "completed" || campaignStatus == "failed" {
+		log.Printf("[BROADCAST-WORKER] 🛑 Campaign %s is already '%s' — dropping zombie task for %s (%s)\n",
+			task.CampaignID, campaignStatus, task.FirstName, task.RoutingValue)
+		_ = msg.Ack()
+		return
+	}
+
+	// Guard 2: Per-Recipient Idempotency.
+	// If this exact recipient already received a confirmed delivery for this campaign, DO NOT RESEND.
+	var alreadyDelivered bool
+	_ = c.db.QueryRowContext(msgCtx,
+		"SELECT EXISTS(SELECT 1 FROM campaign_deliveries WHERE campaign_id = $1 AND routing_value = $2 AND platform = $3 AND status = 'delivered')",
+		task.CampaignID, task.RoutingValue, task.TargetPlatform).Scan(&alreadyDelivered)
+	if alreadyDelivered {
+		log.Printf("[BROADCAST-WORKER] 🛑 Recipient %s (%s) already confirmed delivered for campaign %s — skipping duplicate send\n",
+			task.FirstName, task.RoutingValue, task.CampaignID)
+		_ = msg.Ack()
+		return
+	}
+
+	// Guard 3: TTL / Expiry Guard.
+	// Reject expired messages or legacy messages with no ExpiresAt whose campaign is older than 30m.
+	isExpired := false
+	var expiredReason string
 	if task.ExpiresAt > 0 && time.Now().Unix() > task.ExpiresAt {
-		expiredReason := fmt.Sprintf("message expired: dispatch window closed at %s (arrived %s late)",
+		isExpired = true
+		expiredReason = fmt.Sprintf("message expired: dispatch window closed at %s (arrived %s late)",
 			time.Unix(task.ExpiresAt, 0).UTC().Format(time.RFC3339),
 			time.Since(time.Unix(task.ExpiresAt, 0)).Truncate(time.Second))
+	} else if task.ExpiresAt == 0 && time.Since(campaignCreatedAt) > 30*time.Minute {
+		isExpired = true
+		expiredReason = fmt.Sprintf("legacy task expired: campaign was created %s ago (max 30m)",
+			time.Since(campaignCreatedAt).Truncate(time.Minute))
+	}
+
+	if isExpired {
 		log.Printf("[BROADCAST-WORKER] ⏰ EXPIRED task for %s (%s): %s — skipping delivery\n",
 			task.FirstName, task.RoutingValue, expiredReason)
 
-		// Still emit a delivery result so telemetryWorker can track the count and eventually complete the campaign
 		expiredResult := contracts.TargetDeliveryResult{
 			CampaignID:   task.CampaignID,
 			ContactID:    task.ContactID,
