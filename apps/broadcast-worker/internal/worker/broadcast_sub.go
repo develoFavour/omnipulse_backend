@@ -91,10 +91,23 @@ func (c *BroadcastConsumer) Start(ctx context.Context) error {
 
 func (c *BroadcastConsumer) Stop() {
 	if c.sub != nil {
-		_ = c.sub.Unsubscribe()
+		// Drain waits for all in-flight messages to be Ack'd/Nak'd before
+		// closing the subscription. This prevents zombie redelivery on the
+		// next startup because unacknowledged messages stay in the durable
+		// consumer and get requeued when a new instance reconnects.
+		drainErr := c.sub.Drain()
+		if drainErr != nil {
+			// Drain timed out or failed — log and continue shutdown
+			log.Printf("[WORKER] Warning: subscription drain incomplete: %v\n", drainErr)
+			_ = c.sub.Unsubscribe()
+		}
 	}
 	if c.nc != nil {
-		c.nc.Close()
+		// Drain the NATS connection itself (5-second grace window)
+		if drainErr := c.nc.Drain(); drainErr != nil {
+			log.Printf("[WORKER] Warning: NATS connection drain incomplete: %v\n", drainErr)
+			c.nc.Close()
+		}
 	}
 	c.waClients.Range(func(key, val interface{}) bool {
 		if client, ok := val.(*whatsmeow.Client); ok && client != nil {
@@ -102,7 +115,7 @@ func (c *BroadcastConsumer) Stop() {
 		}
 		return true
 	})
-	log.Println("[WORKER] Broadcast Engine cleanly disconnected.")
+	log.Println("[WORKER] Broadcast Engine cleanly drained and disconnected.")
 }
 
 func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) {

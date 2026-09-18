@@ -23,12 +23,12 @@ func NewPostgresCampaignRepository(db *sql.DB) domain.CampaignRepository {
 
 func (r *PostgresCampaignRepository) Create(ctx context.Context, c *domain.Campaign) error {
 	query := `
-		INSERT INTO campaigns (tenant_id, title, message_body, external_template_code, media_url, delivery_type, selected_channels, selected_telegram_destination_ids, status, total_targets)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		INSERT INTO campaigns (tenant_id, title, message_body, external_template_code, media_url, delivery_type, selected_channels, selected_telegram_destination_ids, selected_contact_ids, status, total_targets)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		RETURNING id, created_at, updated_at;
 	`
 	err := r.db.QueryRowContext(ctx, query,
-		c.TenantID, c.Title, c.MessageBody, c.ExternalTemplateCode, c.MediaURL, c.DeliveryType, c.SelectedChannels, c.SelectedTelegramDestinationIDs, c.Status, c.TotalTargets,
+		c.TenantID, c.Title, c.MessageBody, c.ExternalTemplateCode, c.MediaURL, c.DeliveryType, c.SelectedChannels, c.SelectedTelegramDestinationIDs, c.SelectedContactIDs, c.Status, c.TotalTargets,
 	).Scan(&c.ID, &c.CreatedAt, &c.UpdatedAt)
 
 	if err != nil {
@@ -39,7 +39,7 @@ func (r *PostgresCampaignRepository) Create(ctx context.Context, c *domain.Campa
 
 func (r *PostgresCampaignRepository) ListByTenant(ctx context.Context, tenantID string, limit, offset int) ([]*domain.Campaign, error) {
 	query := `
-		SELECT id, tenant_id, title, message_body, external_template_code, media_url, delivery_type, selected_channels, selected_telegram_destination_ids, status, total_targets, processed_targets, created_at, updated_at
+		SELECT id, tenant_id, title, message_body, external_template_code, media_url, delivery_type, selected_channels, selected_telegram_destination_ids, selected_contact_ids, status, total_targets, processed_targets, created_at, updated_at
 		FROM campaigns
 		WHERE tenant_id = $1
 		ORDER BY created_at DESC
@@ -55,7 +55,7 @@ func (r *PostgresCampaignRepository) ListByTenant(ctx context.Context, tenantID 
 	for rows.Next() {
 		var c domain.Campaign
 		err := rows.Scan(
-			&c.ID, &c.TenantID, &c.Title, &c.MessageBody, &c.ExternalTemplateCode, &c.MediaURL, &c.DeliveryType, &c.SelectedChannels, &c.SelectedTelegramDestinationIDs, &c.Status, &c.TotalTargets, &c.ProcessedTargets, &c.CreatedAt, &c.UpdatedAt,
+			&c.ID, &c.TenantID, &c.Title, &c.MessageBody, &c.ExternalTemplateCode, &c.MediaURL, &c.DeliveryType, &c.SelectedChannels, &c.SelectedTelegramDestinationIDs, &c.SelectedContactIDs, &c.Status, &c.TotalTargets, &c.ProcessedTargets, &c.CreatedAt, &c.UpdatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan row into campaign domain: %w", err)
@@ -72,13 +72,13 @@ func (r *PostgresCampaignRepository) ListByTenant(ctx context.Context, tenantID 
 
 func (r *PostgresCampaignRepository) GetByID(ctx context.Context, tenantID, id string) (*domain.Campaign, error) {
 	query := `
-		SELECT id, tenant_id, title, message_body, external_template_code, media_url, delivery_type, selected_channels, selected_telegram_destination_ids, status, total_targets, processed_targets, created_at, updated_at
+		SELECT id, tenant_id, title, message_body, external_template_code, media_url, delivery_type, selected_channels, selected_telegram_destination_ids, selected_contact_ids, status, total_targets, processed_targets, created_at, updated_at
 		FROM campaigns
 		WHERE tenant_id = $1 AND id = $2;
 	`
 	var c domain.Campaign
 	err := r.db.QueryRowContext(ctx, query, tenantID, id).Scan(
-		&c.ID, &c.TenantID, &c.Title, &c.MessageBody, &c.ExternalTemplateCode, &c.MediaURL, &c.DeliveryType, &c.SelectedChannels, &c.SelectedTelegramDestinationIDs, &c.Status, &c.TotalTargets, &c.ProcessedTargets, &c.CreatedAt, &c.UpdatedAt,
+		&c.ID, &c.TenantID, &c.Title, &c.MessageBody, &c.ExternalTemplateCode, &c.MediaURL, &c.DeliveryType, &c.SelectedChannels, &c.SelectedTelegramDestinationIDs, &c.SelectedContactIDs, &c.Status, &c.TotalTargets, &c.ProcessedTargets, &c.CreatedAt, &c.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

@@ -49,12 +49,17 @@ func main() {
 	}
 	logger.Printf("Attached to PostgreSQL database pool [Mode: %s].\n", cfg.Environment)
 
-	// Idempotent schema migrations: ensure users.id supports Clerk string IDs
+	// Idempotent schema migrations: ensure users.id supports Clerk string IDs and campaigns have selected_contact_ids
 	_, _ = db.Exec(`ALTER TABLE users ALTER COLUMN id DROP DEFAULT;`)
 	if _, err := db.Exec(`ALTER TABLE users ALTER COLUMN id TYPE VARCHAR(255) USING id::varchar(255);`); err != nil {
 		logger.Printf("[DB-MIGRATE] Alter users.id column type: %v\n", err)
 	} else {
 		logger.Println("[DB-MIGRATE] Successfully ensured users.id is VARCHAR(255).")
+	}
+	if _, err := db.Exec(`ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS selected_contact_ids JSONB NOT NULL DEFAULT '[]';`); err != nil {
+		logger.Printf("[DB-MIGRATE] Add selected_contact_ids column: %v\n", err)
+	} else {
+		logger.Println("[DB-MIGRATE] Successfully ensured campaigns.selected_contact_ids column exists.")
 	}
 
 	// 2. Initialize NATS JetStream Event Broker Adapter

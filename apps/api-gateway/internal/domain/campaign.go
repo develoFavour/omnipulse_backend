@@ -18,6 +18,7 @@ type Campaign struct {
 	DeliveryType                   string    `json:"delivery_type"`
 	SelectedChannels               string    `json:"selected_channels"`
 	SelectedTelegramDestinationIDs string    `json:"selected_telegram_destination_ids"`
+	SelectedContactIDs             string    `json:"selected_contact_ids"`
 	Status                         string    `json:"status"`
 	TotalTargets                   int       `json:"total_targets"`
 	ProcessedTargets               int       `json:"processed_targets"`

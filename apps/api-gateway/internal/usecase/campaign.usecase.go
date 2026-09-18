@@ -45,6 +45,9 @@ func (u *CampaignUseCase) CreateCampaign(ctx context.Context, c *domain.Campaign
 	if c.SelectedTelegramDestinationIDs == "" {
 		c.SelectedTelegramDestinationIDs = "[]"
 	}
+	if c.SelectedContactIDs == "" {
+		c.SelectedContactIDs = "[]"
+	}
 	if c.DeliveryType == "" {
 		c.DeliveryType = "direct_message"
 	}
@@ -74,8 +77,8 @@ func (u *CampaignUseCase) TriggerDispatch(ctx context.Context, tenantID, campaig
 		log.Printf("[DISPATCH-TRACE] ❌ Campaign lookup failed: %v\n", err)
 		return err
 	}
-	log.Printf("[DISPATCH-TRACE] Campaign found: title=%q status=%s channels=%s destinations=%s\n",
-		campaign.Title, campaign.Status, campaign.SelectedChannels, campaign.SelectedTelegramDestinationIDs)
+	log.Printf("[DISPATCH-TRACE] Campaign found: title=%q status=%s channels=%s destinations=%s contacts=%s\n",
+		campaign.Title, campaign.Status, campaign.SelectedChannels, campaign.SelectedTelegramDestinationIDs, campaign.SelectedContactIDs)
 
 	if campaign.Status == "processing" || campaign.Status == "completed" {
 		log.Printf("[DISPATCH-TRACE] ❌ Rejected: status already %s\n", campaign.Status)
@@ -84,11 +87,53 @@ func (u *CampaignUseCase) TriggerDispatch(ctx context.Context, tenantID, campaig
 
 	selectedChannels := parseStringList(campaign.SelectedChannels)
 	selectedDestinations := parseStringList(campaign.SelectedTelegramDestinationIDs)
-	log.Printf("[DISPATCH-TRACE] Parsed channels=%v destinations=%v\n", selectedChannels, selectedDestinations)
+	selectedContacts := parseStringList(campaign.SelectedContactIDs)
+	log.Printf("[DISPATCH-TRACE] Parsed channels=%v destinations=%v contacts=%v\n", selectedChannels, selectedDestinations, selectedContacts)
 
 	publishedTargets := 0
 
-	if len(selectedChannels) > 0 {
+	// 1. Dispatch to contacts
+	if len(selectedContacts) > 0 {
+		// Target ONLY explicitly selected contacts
+		selectedMap := make(map[string]bool, len(selectedContacts))
+		for _, id := range selectedContacts {
+			selectedMap[id] = true
+		}
+
+		pageSize := 100
+		page := 1
+		for {
+			contacts, err := u.contactRepo.ListByTenant(ctx, tenantID, "", pageSize, (page-1)*pageSize)
+			if err != nil {
+				log.Printf("[DISPATCH-TRACE] ❌ Contact query failed on page %d: %v\n", page, err)
+				return fmt.Errorf("database reading failed mid-flight during chunk stream: %w", err)
+			}
+			if len(contacts) == 0 {
+				break
+			}
+			for _, contact := range contacts {
+				if !selectedMap[contact.ID] {
+					continue
+				}
+				if contact.Status != "active" {
+					log.Printf("[DISPATCH-TRACE] Skipping selected contact %s: inactive status\n", contact.ID)
+					continue
+				}
+				if len(selectedChannels) > 0 && !containsString(selectedChannels, contact.Channel) {
+					continue
+				}
+				log.Printf("[DISPATCH-TRACE] Emitting task for selected contact %s (%s) on %s\n",
+					contact.ID, contact.RoutingValue, contact.Channel)
+				u.emitContactTask(ctx, campaign, contact)
+				publishedTargets++
+			}
+			if len(contacts) < pageSize {
+				break
+			}
+			page++
+		}
+	} else if len(selectedChannels) > 0 {
+		// Default: broadcast to all active contacts in selected channels
 		pageSize := 100
 		page := 1
 		for {
@@ -111,6 +156,9 @@ func (u *CampaignUseCase) TriggerDispatch(ctx context.Context, tenantID, campaig
 					contact.ID, contact.RoutingValue, contact.Channel)
 				u.emitContactTask(ctx, campaign, contact)
 				publishedTargets++
+			}
+			if len(contacts) < pageSize {
+				break
 			}
 			page++
 		}

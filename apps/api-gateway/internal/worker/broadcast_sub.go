@@ -59,12 +59,18 @@ func (c *BroadcastConsumer) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop safely unsubscribes the consumer.
+// Stop safely drains and unsubscribes the consumer.
+// Drain() flushes all in-flight messages before closing, preventing zombie
+// redelivery when the service restarts (unacknowledged messages stay in the
+// durable consumer and get requeued without a proper drain).
 func (c *BroadcastConsumer) Stop() {
 	if c.sub != nil {
-		_ = c.sub.Unsubscribe()
+		if drainErr := c.sub.Drain(); drainErr != nil {
+			log.Printf("[BROADCAST-WORKER] Warning: subscription drain incomplete: %v\n", drainErr)
+			_ = c.sub.Unsubscribe()
+		}
 	}
-	log.Println("[BROADCAST-WORKER] Broadcast delivery engine cleanly disconnected.")
+	log.Println("[BROADCAST-WORKER] Broadcast delivery engine cleanly drained and disconnected.")
 }
 
 func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) {

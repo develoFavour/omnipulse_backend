@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS campaigns (
     delivery_type campaign_delivery_type NOT NULL DEFAULT 'direct_message',
     selected_channels JSONB NOT NULL DEFAULT '[]',
     selected_telegram_destination_ids JSONB NOT NULL DEFAULT '[]',
+    selected_contact_ids JSONB NOT NULL DEFAULT '[]',
     status campaign_status DEFAULT 'draft' NOT NULL,
     total_targets INT DEFAULT 0 NOT NULL,
     processed_targets INT DEFAULT 0 NOT NULL,
