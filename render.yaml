@@ -1,5 +1,5 @@
 services:
-  # 1. High-Throughput JetStream Event Broker
+  # 1. High-Throughput JetStream Event Broker (local fallback — not used in production)
   - type: web
     name: omnipulse-nats
     env: docker
@@ -23,7 +23,7 @@ services:
       - key: DATABASE_URL
         sync: false
       - key: NATS_URL
-        value: nats://omnipulse-nats:4222
+        sync: false
       - key: NATS_CREDS
         sync: false
       - key: CLERK_SECRET_KEY
@@ -40,35 +40,33 @@ services:
         sync: false
 
   # 3. Broadcast Engine Delivery Worker
-  - type: web
+  - type: worker
     name: omnipulse-broadcast-worker
     env: docker
     dockerfilePath: apps/broadcast-worker/Dockerfile
     dockerContext: .
     envVars:
-      - key: PORT
-        value: 8081
       - key: APP_ENV
         value: production
       - key: DATABASE_URL
         sync: false
       - key: NATS_URL
-        value: nats://omnipulse-nats:4222
+        sync: false
       - key: NATS_CREDS
         sync: false
 
   # 4. Compliance Engine Worker
-  - type: web
+  - type: worker
     name: omnipulse-compliance-engine
     env: docker
     dockerfilePath: apps/compliance-engine/Dockerfile
     dockerContext: .
     envVars:
-      - key: PORT
-        value: 8082
       - key: APP_ENV
         value: production
       - key: REDIS_URL
         sync: false
       - key: NATS_URL
-        value: nats://omnipulse-nats:4222
+        sync: false
+      - key: NATS_CREDS
+        sync: false
