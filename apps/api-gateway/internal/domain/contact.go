@@ -22,6 +22,7 @@ type Contact struct {
 	RoutingValue string    `json:"routing_value"`
 	Source       string    `json:"source"`
 	Status       string    `json:"status"`
+	Tags         []*Tag    `json:"tags,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }

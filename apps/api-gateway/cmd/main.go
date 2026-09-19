@@ -75,12 +75,15 @@ func main() {
 	channelRepo := repository.NewPostgresChannelRepository(db)
 	dashboardRepo := repository.NewPostgresDashboardRepository(db)
 	destinationRepo := repository.NewPostgresTelegramDestinationRepository(db)
+	tagRepo := repository.NewPostgresTagRepository(db)
 
-	contactUseCase := usecase.NewContactUseCase(contactRepo)
+	tagUseCase := usecase.NewTagUseCase(tagRepo)
+	contactUseCase := usecase.NewContactUseCase(contactRepo, tagRepo)
 	campaignUseCase := usecase.NewCampaignUseCase(campaignRepo, contactRepo, destinationRepo, natsPublisher)
 	identityUseCase := usecase.NewIdentityUseCase(identityRepo, channelRepo)
 	dashboardUseCase := usecase.NewDashboardUseCase(dashboardRepo)
 
+	tagHandler := handler.NewTagHandler(tagUseCase)
 	contactHandler := handler.NewContactHandler(contactUseCase)
 	campaignHandler := handler.NewCampaignHandler(campaignUseCase)
 	identityHandler := handler.NewIdentityHandler(identityUseCase)
@@ -191,6 +194,13 @@ func main() {
 	mux.HandleFunc("GET /api/v1/contacts/{id}", contactHandler.GetContact)
 	mux.HandleFunc("GET /api/v1/contacts", contactHandler.ListContacts)
 	mux.HandleFunc("POST /api/v1/contacts", contactHandler.CreateContact)
+
+	// Audience Tags & Segmentation Endpoints
+	mux.HandleFunc("GET /api/v1/tags", tagHandler.ListTags)
+	mux.HandleFunc("POST /api/v1/tags", tagHandler.CreateTag)
+	mux.HandleFunc("DELETE /api/v1/tags/{id}", tagHandler.DeleteTag)
+	mux.HandleFunc("POST /api/v1/contacts/{id}/tags", tagHandler.TagContact)
+	mux.HandleFunc("DELETE /api/v1/contacts/{id}/tags/{tag_id}", tagHandler.UntagContact)
 
 	// Campaign Execution Subsystem Endpoints
 	mux.HandleFunc("POST /api/v1/campaigns", campaignHandler.CreateCampaign)

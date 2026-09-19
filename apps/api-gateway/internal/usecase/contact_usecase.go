@@ -9,12 +9,16 @@ import (
 
 // ContactUseCase implements domain.ContactUseCase and orchestrates the business rules
 type ContactUseCase struct {
-	repo domain.ContactRepository
+	repo    domain.ContactRepository
+	tagRepo domain.TagRepository
 }
 
-// NewContactUseCase injects our driven database port interface
-func NewContactUseCase(repo domain.ContactRepository) domain.ContactUseCase {
-	return &ContactUseCase{repo: repo}
+// NewContactUseCase injects our driven database port interface and optional tag repository
+func NewContactUseCase(repo domain.ContactRepository, tagRepo domain.TagRepository) domain.ContactUseCase {
+	return &ContactUseCase{
+		repo:    repo,
+		tagRepo: tagRepo,
+	}
 }
 
 // FetchContact orchestrates the retrieval of an audience profile
@@ -23,8 +27,23 @@ func (u *ContactUseCase) FetchContact(ctx context.Context, tenantID, id string) 
 		return nil, fmt.Errorf("%w: contact ID cannot be blank", domain.ErrInvalidContact)
 	}
 
-	// Delegate directly to the persistence adapter layer
-	return u.repo.GetByID(ctx, tenantID, id)
+	contact, err := u.repo.GetByID(ctx, tenantID, id)
+	if err != nil {
+		return nil, err
+	}
+
+	if u.tagRepo != nil && contact != nil {
+		tagMap, err := u.tagRepo.GetTagsByContactIDs(ctx, tenantID, []string{contact.ID})
+		if err == nil {
+			if tags, ok := tagMap[contact.ID]; ok {
+				contact.Tags = tags
+			} else {
+				contact.Tags = []*domain.Tag{}
+			}
+		}
+	}
+
+	return contact, nil
 }
 
 // RegisterContact enforces data validation invariants before saving a user profile
@@ -65,5 +84,27 @@ func (u *ContactUseCase) GetAllContacts(ctx context.Context, tenantID, channelFi
 	limit := pageSize
 	offset := (page - 1) * pageSize
 
-	return u.repo.ListByTenant(ctx, tenantID, channelFilter, limit, offset)
+	contacts, err := u.repo.ListByTenant(ctx, tenantID, channelFilter, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+
+	if u.tagRepo != nil && len(contacts) > 0 {
+		contactIDs := make([]string, len(contacts))
+		for i, c := range contacts {
+			contactIDs[i] = c.ID
+			c.Tags = []*domain.Tag{} // default empty array instead of null
+		}
+
+		tagMap, err := u.tagRepo.GetTagsByContactIDs(ctx, tenantID, contactIDs)
+		if err == nil {
+			for _, c := range contacts {
+				if tags, ok := tagMap[c.ID]; ok {
+					c.Tags = tags
+				}
+			}
+		}
+	}
+
+	return contacts, nil
 }
