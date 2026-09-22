@@ -6,7 +6,7 @@
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 CREATE TYPE platform_type AS ENUM ('whatsapp', 'telegram', 'x', 'instagram');
-CREATE TYPE campaign_status AS ENUM ('draft', 'pending', 'processing', 'completed', 'failed');
+CREATE TYPE campaign_status AS ENUM ('draft', 'scheduled', 'pending', 'processing', 'completed', 'failed');
 CREATE TYPE dispatch_status AS ENUM ('queued', 'in_flight', 'rate_limited', 'delivered', 'failed');
 CREATE TYPE campaign_delivery_type AS ENUM ('direct_message', 'public_post');
 CREATE TYPE delivery_status_enum AS ENUM ('sent', 'delivered', 'failed');
@@ -89,11 +89,14 @@ CREATE TABLE IF NOT EXISTS campaigns (
     selected_telegram_destination_ids JSONB NOT NULL DEFAULT '[]',
     selected_contact_ids JSONB NOT NULL DEFAULT '[]',
     status campaign_status DEFAULT 'draft' NOT NULL,
+    scheduled_at TIMESTAMP WITH TIME ZONE,
     total_targets INT DEFAULT 0 NOT NULL,
     processed_targets INT DEFAULT 0 NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_campaigns_scheduled ON campaigns(status, scheduled_at) WHERE status = 'scheduled';
 
 -- 8. CAMPAIGN DISPATCHES & AUDIT LOGS
 CREATE TABLE IF NOT EXISTS campaign_dispatches (

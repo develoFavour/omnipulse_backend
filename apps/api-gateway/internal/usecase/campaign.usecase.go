@@ -59,6 +59,33 @@ func (u *CampaignUseCase) CreateCampaign(ctx context.Context, c *domain.Campaign
 	return u.campaignRepo.Create(ctx, c)
 }
 
+// ScheduleCampaign persists a campaign with status="scheduled" and the given scheduled_at time.
+func (u *CampaignUseCase) ScheduleCampaign(ctx context.Context, tenantID, campaignID string, scheduledAt time.Time) error {
+	campaign, err := u.campaignRepo.GetByID(ctx, tenantID, campaignID)
+	if err != nil {
+		return err
+	}
+	if campaign.Status != "draft" {
+		return fmt.Errorf("only draft campaigns can be scheduled (current status: %s)", campaign.Status)
+	}
+	if scheduledAt.Before(time.Now().Add(1 * time.Minute)) {
+		return fmt.Errorf("scheduled time must be at least 1 minute in the future")
+	}
+	return u.campaignRepo.SetScheduled(ctx, tenantID, campaignID, scheduledAt)
+}
+
+// CancelScheduledCampaign reverts a scheduled campaign back to draft.
+func (u *CampaignUseCase) CancelScheduledCampaign(ctx context.Context, tenantID, campaignID string) error {
+	return u.campaignRepo.CancelScheduledCampaign(ctx, tenantID, campaignID)
+}
+
+// TriggerScheduledDispatch is called by SchedulerService for campaigns whose scheduled_at has elapsed.
+// It re-uses the same TriggerDispatch path so the full fan-out logic is shared.
+func (u *CampaignUseCase) TriggerScheduledDispatch(ctx context.Context, campaign *domain.Campaign) error {
+	log.Printf("[SCHEDULER] 🕐 Firing scheduled campaign: id=%s tenant=%s title=%q\n", campaign.ID, campaign.TenantID, campaign.Title)
+	return u.TriggerDispatch(ctx, campaign.TenantID, campaign.ID)
+}
+
 func (u *CampaignUseCase) ListCampaigns(ctx context.Context, tenantID string, page, pageSize int) ([]*domain.Campaign, error) {
 	if page < 1 {
 		page = 1

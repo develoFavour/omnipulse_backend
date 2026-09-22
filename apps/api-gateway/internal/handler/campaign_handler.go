@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"omnipulse/apps/api-gateway/internal/domain"
 	"omnipulse/apps/api-gateway/internal/repository"
@@ -188,4 +189,77 @@ func (h *CampaignHandler) GetCampaignDeliveries(w http.ResponseWriter, r *http.R
 	}
 
 	utils.WriteJSON(w, http.StatusOK, deliveries)
+}
+
+// ScheduleCampaign handles: POST /api/v1/campaigns/{id}/schedule
+func (h *CampaignHandler) ScheduleCampaign(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	campaignID := r.PathValue("id")
+	if campaignID == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Missing campaign ID")
+		return
+	}
+
+	var payload struct {
+		ScheduledAt string `json:"scheduled_at"` // RFC3339 / ISO8601
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "Invalid JSON body")
+		return
+	}
+
+	scheduledAt, err := time.Parse(time.RFC3339, payload.ScheduledAt)
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "Invalid scheduled_at format — use ISO8601 / RFC3339")
+		return
+	}
+
+	if err := h.useCase.ScheduleCampaign(r.Context(), tenantID, campaignID, scheduledAt); err != nil {
+		if errors.Is(err, repository.ErrCampaignNotFound) {
+			utils.WriteError(w, http.StatusNotFound, "Campaign not found")
+			return
+		}
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]string{
+		"message":      "Campaign scheduled successfully",
+		"campaign_id":  campaignID,
+		"scheduled_at": scheduledAt.UTC().Format(time.RFC3339),
+	})
+}
+
+// CancelScheduledCampaign handles: DELETE /api/v1/campaigns/{id}/schedule
+func (h *CampaignHandler) CancelScheduledCampaign(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	campaignID := r.PathValue("id")
+	if campaignID == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Missing campaign ID")
+		return
+	}
+
+	if err := h.useCase.CancelScheduledCampaign(r.Context(), tenantID, campaignID); err != nil {
+		if errors.Is(err, repository.ErrCampaignNotFound) {
+			utils.WriteError(w, http.StatusNotFound, "Scheduled campaign not found")
+			return
+		}
+		utils.WriteError(w, http.StatusInternalServerError, "Failed to cancel scheduled campaign")
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]string{
+		"message":     "Scheduled campaign cancelled — reverted to draft",
+		"campaign_id": campaignID,
+	})
 }

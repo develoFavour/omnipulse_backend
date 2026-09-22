@@ -156,6 +156,10 @@ func main() {
 		}
 	}
 
+	// Campaign Scheduler — polls every 15s for due scheduled campaigns
+	schedulerService := service.NewSchedulerService(campaignRepo, campaignUseCase)
+	schedulerService.Start(globalWorkerCtx)
+
 	// 4. Modern Native HTTP Routing Multiplexer
 	mux := http.NewServeMux()
 
@@ -207,6 +211,8 @@ func main() {
 	mux.HandleFunc("GET /api/v1/campaigns", campaignHandler.ListCampaigns)
 	mux.HandleFunc("GET /api/v1/campaigns/{id}", campaignHandler.GetCampaign)
 	mux.HandleFunc("POST /api/v1/campaigns/{id}/dispatch", campaignHandler.DispatchCampaign)
+	mux.HandleFunc("POST /api/v1/campaigns/{id}/schedule", campaignHandler.ScheduleCampaign)
+	mux.HandleFunc("DELETE /api/v1/campaigns/{id}/schedule", campaignHandler.CancelScheduledCampaign)
 	mux.HandleFunc("GET /api/v1/campaigns/{id}/stats", campaignHandler.GetCampaignStats)
 	mux.HandleFunc("GET /api/v1/campaigns/{id}/deliveries", campaignHandler.GetCampaignDeliveries)
 	mux.HandleFunc("GET /api/v1/ws/campaigns/{id}", campaignHub.HandleWebSocket)
