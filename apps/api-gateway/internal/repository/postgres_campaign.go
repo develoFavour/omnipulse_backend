@@ -38,15 +38,41 @@ func (r *PostgresCampaignRepository) Create(ctx context.Context, c *domain.Campa
 	return nil
 }
 
-func (r *PostgresCampaignRepository) ListByTenant(ctx context.Context, tenantID string, limit, offset int) ([]*domain.Campaign, error) {
-	query := `
-		SELECT id, tenant_id, title, message_body, external_template_code, media_url, delivery_type, selected_channels, selected_telegram_destination_ids, selected_contact_ids, status, scheduled_at, total_targets, processed_targets, created_at, updated_at
-		FROM campaigns
-		WHERE tenant_id = $1
-		ORDER BY created_at DESC
-		LIMIT $2 OFFSET $3;
-	`
-	rows, err := r.db.QueryContext(ctx, query, tenantID, limit, offset)
+func (r *PostgresCampaignRepository) ListByTenant(ctx context.Context, tenantID, status string, limit, offset int) ([]*domain.Campaign, error) {
+	var query string
+	var rows *sql.Rows
+	var err error
+
+	if status != "" {
+		if status == "scheduled" {
+			query = `
+				SELECT id, tenant_id, title, message_body, external_template_code, media_url, delivery_type, selected_channels, selected_telegram_destination_ids, selected_contact_ids, status, scheduled_at, total_targets, processed_targets, created_at, updated_at
+				FROM campaigns
+				WHERE tenant_id = $1 AND status = $2
+				ORDER BY scheduled_at ASC NULLS LAST, created_at DESC
+				LIMIT $3 OFFSET $4;
+			`
+		} else {
+			query = `
+				SELECT id, tenant_id, title, message_body, external_template_code, media_url, delivery_type, selected_channels, selected_telegram_destination_ids, selected_contact_ids, status, scheduled_at, total_targets, processed_targets, created_at, updated_at
+				FROM campaigns
+				WHERE tenant_id = $1 AND status = $2
+				ORDER BY created_at DESC
+				LIMIT $3 OFFSET $4;
+			`
+		}
+		rows, err = r.db.QueryContext(ctx, query, tenantID, status, limit, offset)
+	} else {
+		query = `
+			SELECT id, tenant_id, title, message_body, external_template_code, media_url, delivery_type, selected_channels, selected_telegram_destination_ids, selected_contact_ids, status, scheduled_at, total_targets, processed_targets, created_at, updated_at
+			FROM campaigns
+			WHERE tenant_id = $1
+			ORDER BY created_at DESC
+			LIMIT $2 OFFSET $3;
+		`
+		rows, err = r.db.QueryContext(ctx, query, tenantID, limit, offset)
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute campaign list query: %w", err)
 	}

@@ -86,14 +86,14 @@ func (u *CampaignUseCase) TriggerScheduledDispatch(ctx context.Context, campaign
 	return u.TriggerDispatch(ctx, campaign.TenantID, campaign.ID)
 }
 
-func (u *CampaignUseCase) ListCampaigns(ctx context.Context, tenantID string, page, pageSize int) ([]*domain.Campaign, error) {
+func (u *CampaignUseCase) ListCampaigns(ctx context.Context, tenantID, status string, page, pageSize int) ([]*domain.Campaign, error) {
 	if page < 1 {
 		page = 1
 	}
 	if pageSize < 1 || pageSize > 100 {
 		pageSize = 20
 	}
-	return u.campaignRepo.ListByTenant(ctx, tenantID, pageSize, (page-1)*pageSize)
+	return u.campaignRepo.ListByTenant(ctx, tenantID, status, pageSize, (page-1)*pageSize)
 }
 
 func (u *CampaignUseCase) TriggerDispatch(ctx context.Context, tenantID, campaignID string) error {

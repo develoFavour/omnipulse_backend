@@ -43,7 +43,7 @@ type CampaignStats struct {
 type CampaignRepository interface {
 	Create(ctx context.Context, campaign *Campaign) error
 	GetByID(ctx context.Context, tenantID, id string) (*Campaign, error)
-	ListByTenant(ctx context.Context, tenantID string, limit, offset int) ([]*Campaign, error)
+	ListByTenant(ctx context.Context, tenantID, status string, limit, offset int) ([]*Campaign, error)
 	UpdateStatus(ctx context.Context, tenantID, id string, status string) error
 	SetDispatching(ctx context.Context, tenantID, id string, totalTargets int) error
 	SetScheduled(ctx context.Context, tenantID, id string, scheduledAt time.Time) error

@@ -61,8 +61,9 @@ func (h *CampaignHandler) ListCampaigns(w http.ResponseWriter, r *http.Request) 
 	queryParams := r.URL.Query()
 	page, _ := strconv.Atoi(queryParams.Get("page"))
 	pageSize, _ := strconv.Atoi(queryParams.Get("pageSize"))
+	status := queryParams.Get("status")
 
-	campaigns, err := h.useCase.ListCampaigns(r.Context(), tenantID, page, pageSize)
+	campaigns, err := h.useCase.ListCampaigns(r.Context(), tenantID, status, page, pageSize)
 	if err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, "Error streaming campaign collection results")
 		return
