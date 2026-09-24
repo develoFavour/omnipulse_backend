@@ -205,6 +205,7 @@ func main() {
 	mux.HandleFunc("DELETE /api/v1/tags/{id}", tagHandler.DeleteTag)
 	mux.HandleFunc("POST /api/v1/contacts/{id}/tags", tagHandler.TagContact)
 	mux.HandleFunc("DELETE /api/v1/contacts/{id}/tags/{tag_id}", tagHandler.UntagContact)
+	mux.HandleFunc("POST /api/v1/tags/{id}/bulk-assign", tagHandler.BulkTagContacts)
 
 	// Campaign Execution Subsystem Endpoints
 	mux.HandleFunc("POST /api/v1/campaigns", campaignHandler.CreateCampaign)

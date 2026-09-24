@@ -126,3 +126,39 @@ func (h *TagHandler) UntagContact(w http.ResponseWriter, r *http.Request) {
 
 	utils.WriteJSON(w, http.StatusOK, map[string]string{"message": "Tag removed successfully"})
 }
+
+// BulkTagContacts handles: POST /api/v1/tags/{id}/bulk-assign
+// Body: { "action": "assign"|"remove", "contact_ids": ["uuid1","uuid2",...] }
+func (h *TagHandler) BulkTagContacts(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	tagID := r.PathValue("id")
+	if tagID == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Missing tag ID")
+		return
+	}
+
+	var req struct {
+		Action     string   `json:"action"`
+		ContactIDs []string `json:"contact_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+
+	if err := h.useCase.BulkTagContacts(r.Context(), tenantID, tagID, req.ContactIDs, req.Action); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]any{
+		"message": "Bulk tag operation completed",
+		"count":   len(req.ContactIDs),
+		"action":  req.Action,
+	})
+}

@@ -77,6 +77,20 @@ func (r *PostgresTagRepository) GetByID(ctx context.Context, tenantID, id string
 	return &t, nil
 }
 
+func (r *PostgresTagRepository) Update(ctx context.Context, tag *domain.Tag) error {
+	query := `
+		UPDATE tags
+		SET name = $1, color = $2, updated_at = CURRENT_TIMESTAMP
+		WHERE tenant_id = $3 AND id = $4
+		RETURNING updated_at;
+	`
+	err := r.db.QueryRowContext(ctx, query, tag.Name, tag.Color, tag.TenantID, tag.ID).Scan(&tag.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("failed to update tag: %w", err)
+	}
+	return nil
+}
+
 func (r *PostgresTagRepository) Delete(ctx context.Context, tenantID, id string) error {
 	query := `DELETE FROM tags WHERE tenant_id = $1 AND id = $2;`
 	_, err := r.db.ExecContext(ctx, query, tenantID, id)
@@ -120,6 +134,44 @@ func (r *PostgresTagRepository) RemoveTagFromContact(ctx context.Context, tenant
 	_, err := r.db.ExecContext(ctx, query, tenantID, contactID, tagID)
 	if err != nil {
 		return fmt.Errorf("failed to remove tag: %w", err)
+	}
+	return nil
+}
+
+func (r *PostgresTagRepository) AssignTagToContacts(ctx context.Context, tenantID, tagID string, contactIDs []string) error {
+	if len(contactIDs) == 0 {
+		return nil
+	}
+	query := `
+		INSERT INTO contact_tags (contact_id, tag_id)
+		SELECT c.id, t.id
+		FROM contacts c, tags t
+		WHERE c.id = ANY($1) AND c.tenant_id = $2
+		  AND t.id = $3 AND t.tenant_id = $2
+		ON CONFLICT (contact_id, tag_id) DO NOTHING;
+	`
+	_, err := r.db.ExecContext(ctx, query, pq.Array(contactIDs), tenantID, tagID)
+	if err != nil {
+		return fmt.Errorf("failed to bulk assign tag: %w", err)
+	}
+	return nil
+}
+
+func (r *PostgresTagRepository) RemoveTagFromContacts(ctx context.Context, tenantID, tagID string, contactIDs []string) error {
+	if len(contactIDs) == 0 {
+		return nil
+	}
+	query := `
+		DELETE FROM contact_tags ct
+		USING contacts c
+		WHERE ct.contact_id = c.id
+		  AND c.tenant_id = $1
+		  AND ct.tag_id = $2
+		  AND ct.contact_id = ANY($3);
+	`
+	_, err := r.db.ExecContext(ctx, query, tenantID, tagID, pq.Array(contactIDs))
+	if err != nil {
+		return fmt.Errorf("failed to bulk remove tag: %w", err)
 	}
 	return nil
 }

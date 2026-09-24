@@ -58,3 +58,37 @@ func (u *TagUseCase) UntagContact(ctx context.Context, tenantID, contactID, tagI
 func (u *TagUseCase) GetTagsForContacts(ctx context.Context, tenantID string, contactIDs []string) (map[string][]*domain.Tag, error) {
 	return u.tagRepo.GetTagsByContactIDs(ctx, tenantID, contactIDs)
 }
+
+// BulkTagContacts assigns or removes a tag from multiple contacts at once.
+// action must be "assign" or "remove".
+func (u *TagUseCase) BulkTagContacts(ctx context.Context, tenantID, tagID string, contactIDs []string, action string) error {
+	if len(contactIDs) == 0 {
+		return fmt.Errorf("contact_ids cannot be empty")
+	}
+	switch action {
+	case "assign":
+		return u.tagRepo.AssignTagToContacts(ctx, tenantID, tagID, contactIDs)
+	case "remove":
+		return u.tagRepo.RemoveTagFromContacts(ctx, tenantID, tagID, contactIDs)
+	default:
+		return fmt.Errorf("invalid action %q: must be 'assign' or 'remove'", action)
+	}
+}
+
+// UpdateTag renames or recolors an existing tag.
+func (u *TagUseCase) UpdateTag(ctx context.Context, tenantID, id, name, color string) (*domain.Tag, error) {
+	tag, err := u.tagRepo.GetByID(ctx, tenantID, id)
+	if err != nil {
+		return nil, err
+	}
+	if name != "" {
+		tag.Name = strings.TrimSpace(name)
+	}
+	if color != "" {
+		tag.Color = color
+	}
+	if err := u.tagRepo.Update(ctx, tag); err != nil {
+		return nil, err
+	}
+	return tag, nil
+}
