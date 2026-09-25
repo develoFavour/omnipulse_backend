@@ -151,3 +151,19 @@ CREATE TABLE IF NOT EXISTS contact_tags (
 
 CREATE INDEX IF NOT EXISTS idx_contact_tags_contact_id ON contact_tags(contact_id);
 CREATE INDEX IF NOT EXISTS idx_contact_tags_tag_id ON contact_tags(tag_id);
+
+-- 10. MESSAGE TEMPLATES LIBRARY
+CREATE TABLE IF NOT EXISTS message_templates (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    title VARCHAR(150) NOT NULL,
+    category VARCHAR(50) NOT NULL DEFAULT 'general',
+    body TEXT NOT NULL,
+    media_url TEXT,
+    variables JSONB DEFAULT '[]'::jsonb,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_message_templates_tenant_id ON message_templates(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_message_templates_category ON message_templates(category);

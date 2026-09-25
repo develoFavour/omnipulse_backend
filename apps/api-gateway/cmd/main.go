@@ -76,14 +76,17 @@ func main() {
 	dashboardRepo := repository.NewPostgresDashboardRepository(db)
 	destinationRepo := repository.NewPostgresTelegramDestinationRepository(db)
 	tagRepo := repository.NewPostgresTagRepository(db)
+	templateRepo := repository.NewPostgresTemplateRepository(db)
 
 	tagUseCase := usecase.NewTagUseCase(tagRepo)
+	templateUseCase := usecase.NewTemplateUseCase(templateRepo)
 	contactUseCase := usecase.NewContactUseCase(contactRepo, tagRepo)
 	campaignUseCase := usecase.NewCampaignUseCase(campaignRepo, contactRepo, destinationRepo, natsPublisher)
 	identityUseCase := usecase.NewIdentityUseCase(identityRepo, channelRepo)
 	dashboardUseCase := usecase.NewDashboardUseCase(dashboardRepo)
 
 	tagHandler := handler.NewTagHandler(tagUseCase)
+	templateHandler := handler.NewTemplateHandler(templateUseCase)
 	contactHandler := handler.NewContactHandler(contactUseCase)
 	campaignHandler := handler.NewCampaignHandler(campaignUseCase)
 	identityHandler := handler.NewIdentityHandler(identityUseCase)
@@ -206,6 +209,13 @@ func main() {
 	mux.HandleFunc("POST /api/v1/contacts/{id}/tags", tagHandler.TagContact)
 	mux.HandleFunc("DELETE /api/v1/contacts/{id}/tags/{tag_id}", tagHandler.UntagContact)
 	mux.HandleFunc("POST /api/v1/tags/{id}/bulk-assign", tagHandler.BulkTagContacts)
+
+	// Message Templates Subsystem Endpoints
+	mux.HandleFunc("GET /api/v1/templates", templateHandler.ListTemplates)
+	mux.HandleFunc("POST /api/v1/templates", templateHandler.CreateTemplate)
+	mux.HandleFunc("GET /api/v1/templates/{id}", templateHandler.GetTemplate)
+	mux.HandleFunc("PUT /api/v1/templates/{id}", templateHandler.UpdateTemplate)
+	mux.HandleFunc("DELETE /api/v1/templates/{id}", templateHandler.DeleteTemplate)
 
 	// Campaign Execution Subsystem Endpoints
 	mux.HandleFunc("POST /api/v1/campaigns", campaignHandler.CreateCampaign)
