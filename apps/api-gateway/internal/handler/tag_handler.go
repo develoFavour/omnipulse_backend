@@ -82,6 +82,38 @@ func (h *TagHandler) DeleteTag(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJSON(w, http.StatusOK, map[string]string{"message": "Tag deleted successfully"})
 }
 
+// UpdateTag handles: PUT /api/v1/tags/{id}
+func (h *TagHandler) UpdateTag(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	tagID := r.PathValue("id")
+	if tagID == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Missing tag ID")
+		return
+	}
+
+	var req struct {
+		Name  string `json:"name"`
+		Color string `json:"color"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+
+	tag, err := h.useCase.UpdateTag(r.Context(), tenantID, tagID, req.Name, req.Color)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "Failed to update tag: "+err.Error())
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, tag)
+}
+
 // TagContact handles: POST /api/v1/contacts/{id}/tags
 func (h *TagHandler) TagContact(w http.ResponseWriter, r *http.Request) {
 	tenantID, ok := r.Context().Value(TenantIDKey).(string)

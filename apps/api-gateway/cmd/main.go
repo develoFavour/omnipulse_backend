@@ -205,6 +205,7 @@ func main() {
 	// Audience Tags & Segmentation Endpoints
 	mux.HandleFunc("GET /api/v1/tags", tagHandler.ListTags)
 	mux.HandleFunc("POST /api/v1/tags", tagHandler.CreateTag)
+	mux.HandleFunc("PUT /api/v1/tags/{id}", tagHandler.UpdateTag)
 	mux.HandleFunc("DELETE /api/v1/tags/{id}", tagHandler.DeleteTag)
 	mux.HandleFunc("POST /api/v1/contacts/{id}/tags", tagHandler.TagContact)
 	mux.HandleFunc("DELETE /api/v1/contacts/{id}/tags/{tag_id}", tagHandler.UntagContact)
