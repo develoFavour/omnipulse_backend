@@ -31,4 +31,5 @@ type TemplateUseCase interface {
 	GetTemplate(ctx context.Context, tenantID, id string) (*Template, error)
 	UpdateTemplate(ctx context.Context, tenantID, id, title, category, body string, mediaURL *string, variables []string) (*Template, error)
 	DeleteTemplate(ctx context.Context, tenantID, id string) error
+	SeedDefaultTemplates(ctx context.Context, tenantID string) error
 }

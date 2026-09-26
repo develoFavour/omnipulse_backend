@@ -4,11 +4,58 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
 
 	"omnipulse/apps/api-gateway/internal/domain"
 )
+
+type StarterTemplate struct {
+	Title     string
+	Category  string
+	Body      string
+	Variables []string
+}
+
+var DefaultStarterTemplates = []StarterTemplate{
+	{
+		Title:    "⚡ Flash 24H Exclusive Deal",
+		Category: "promotions",
+		Body:     "Hey {{first_name}}! ⚡ For the next 24 hours only, unlock 30% off our premier service bundle with code FLASH30.\n\nClaim your spot here before seats fill up: https://omnipulse.link/flash\n\nReply STOP to opt out.",
+		Variables: []string{"first_name"},
+	},
+	{
+		Title:    "⭐ VIP Early Access Invitation",
+		Category: "promotions",
+		Body:     "Hello {{first_name}}, as one of our top-tier partners, you get exclusive private access to our upcoming release 48 hours before the public.\n\nExplore the catalog here: https://omnipulse.link/vip-early\n\nNeed assistance? Reply directly to this chat!",
+		Variables: []string{"first_name"},
+	},
+	{
+		Title:    "👋 Welcome to the Community",
+		Category: "onboarding",
+		Body:     "Hi {{first_name}}! Welcome to our inner circle. 🎉\n\nHere is everything you need to get the most value right away:\n1. Community Guidelines & FAQ\n2. Schedule your 1-on-1 strategy briefing\n\nStay tuned for weekly updates right here on Telegram & WhatsApp!",
+		Variables: []string{"first_name"},
+	},
+	{
+		Title:    "💔 We Miss You — Special Comeback Offer",
+		Category: "re_engagement",
+		Body:     "Hey {{first_name}}, we noticed it's been a while! We've made huge improvements to our platform and want to welcome you back.\n\nUse voucher WELCOMEBACK for a free credit on your next campaign: https://omnipulse.link/return\n\nLet us know if you need anything!",
+		Variables: []string{"first_name"},
+	},
+	{
+		Title:    "⏰ Event Starts in 1 Hour",
+		Category: "reminders",
+		Body:     "Quick reminder {{first_name}}: Our live masterclass starts in exactly 60 minutes! 🎙️\n\nHave your questions ready and join the live stream using your secure link:\nhttps://omnipulse.link/room\n\nSee you inside!",
+		Variables: []string{"first_name"},
+	},
+	{
+		Title:    "📢 Important Service Notice",
+		Category: "urgent",
+		Body:     "Hello {{first_name}}, please note that our service will undergo scheduled maintenance tonight between 2:00 AM and 4:00 AM UTC. No action is required on your part. Thank you for your continued partnership.",
+		Variables: []string{"first_name"},
+	},
+}
 
 type templateUseCase struct {
 	repo domain.TemplateRepository
@@ -38,6 +85,22 @@ func extractVariables(body string, existing []string) []string {
 		result = append(result, k)
 	}
 	return result
+}
+
+func (u *templateUseCase) SeedDefaultTemplates(ctx context.Context, tenantID string) error {
+	for _, st := range DefaultStarterTemplates {
+		tmpl := &domain.Template{
+			TenantID:  tenantID,
+			Title:     st.Title,
+			Category:  st.Category,
+			Body:      st.Body,
+			Variables: st.Variables,
+		}
+		if err := u.repo.Create(ctx, tmpl); err != nil {
+			log.Printf("[TEMPLATE] Warning: failed to seed template %q for tenant %s: %v", st.Title, tenantID, err)
+		}
+	}
+	return nil
 }
 
 func (u *templateUseCase) CreateTemplate(
@@ -78,7 +141,18 @@ func (u *templateUseCase) CreateTemplate(
 }
 
 func (u *templateUseCase) ListTemplates(ctx context.Context, tenantID, category string) ([]*domain.Template, error) {
-	return u.repo.ListByTenant(ctx, tenantID, category)
+	templates, err := u.repo.ListByTenant(ctx, tenantID, category)
+	if err != nil {
+		return nil, err
+	}
+
+	// Auto-seed: If the tenant has no templates at all, seed starter templates automatically
+	if len(templates) == 0 && category == "" {
+		_ = u.SeedDefaultTemplates(ctx, tenantID)
+		return u.repo.ListByTenant(ctx, tenantID, category)
+	}
+
+	return templates, nil
 }
 
 func (u *templateUseCase) GetTemplate(ctx context.Context, tenantID, id string) (*domain.Template, error) {
