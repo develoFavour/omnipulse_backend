@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"omnipulse/apps/api-gateway/internal/domain"
-	"strings"
 
 	"github.com/lib/pq"
 )
@@ -191,10 +190,6 @@ func (r *PostgresTagRepository) GetTagsByContactIDs(ctx context.Context, tenantI
 	`
 	rows, err := r.db.QueryContext(ctx, query, tenantID, pq.Array(contactIDs))
 	if err != nil {
-		// If pq.Array has an issue, fallback or return error
-		if strings.Contains(err.Error(), "ANY") {
-			return tagMap, nil
-		}
 		return nil, fmt.Errorf("failed to query contact tags: %w", err)
 	}
 	defer rows.Close()

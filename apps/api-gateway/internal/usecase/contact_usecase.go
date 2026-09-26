@@ -77,8 +77,8 @@ func (u *ContactUseCase) GetAllContacts(ctx context.Context, tenantID, channelFi
 	if page < 1 {
 		page = 1
 	}
-	if pageSize < 1 || pageSize > 100 {
-		pageSize = 20 // Enforce a safe maximum default block size
+	if pageSize < 1 || pageSize > 1000 {
+		pageSize = 500 // Fetch all contacts in one page by default
 	}
 
 	limit := pageSize
