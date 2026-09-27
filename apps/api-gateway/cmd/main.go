@@ -62,6 +62,12 @@ func main() {
 		logger.Println("[DB-MIGRATE] Successfully ensured campaigns.selected_contact_ids column exists.")
 	}
 
+	// Idempotent indexes for contacts table search and pagination performance
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_contacts_tenant_created ON contacts(tenant_id, created_at DESC);`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_contacts_tenant_channel ON contacts(tenant_id, channel);`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_contacts_tenant_name ON contacts(tenant_id, first_name);`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_contacts_tenant_routing ON contacts(tenant_id, routing_value);`)
+
 	// 2. Initialize NATS JetStream Event Broker Adapter
 	natsPublisher, err := event.NewJetStreamPublisher(cfg.NatsURL, cfg.NatsCreds)
 	if err != nil {

@@ -90,8 +90,25 @@ func (h *ContactHandler) ListContacts(w http.ResponseWriter, r *http.Request) {
 	page, _ := strconv.Atoi(queryParams.Get("page"))
 	pageSize, _ := strconv.Atoi(queryParams.Get("pageSize"))
 	channelFilter := queryParams.Get("channel")
+	tagID := queryParams.Get("tagId")
+	if tagID == "" {
+		tagID = queryParams.Get("tag")
+	}
+	search := queryParams.Get("search")
+	sortKey := queryParams.Get("sort")
+	sortDir := queryParams.Get("sortDir")
 
-	contacts, err := h.useCase.GetAllContacts(r.Context(), tenantID, channelFilter, page, pageSize)
+	filter := domain.ContactFilter{
+		Channel:  channelFilter,
+		TagID:    tagID,
+		Search:   search,
+		SortKey:  sortKey,
+		SortDir:  sortDir,
+		Page:     page,
+		PageSize: pageSize,
+	}
+
+	contacts, err := h.useCase.GetAllContacts(r.Context(), tenantID, filter)
 	if err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, "Error streaming query collection results")
 		return

@@ -3,8 +3,10 @@ package usecase
 import (
 	"context"
 	"fmt"
-	"omnipulse/apps/api-gateway/internal/domain"
+	"math"
 	"strings"
+
+	"omnipulse/apps/api-gateway/internal/domain"
 )
 
 // ContactUseCase implements domain.ContactUseCase and orchestrates the business rules
@@ -72,19 +74,19 @@ func (u *ContactUseCase) RegisterContact(ctx context.Context, c *domain.Contact)
 	return u.repo.Create(ctx, c)
 }
 
-// GetAllContacts computes the pagination boundaries for mass reads
-func (u *ContactUseCase) GetAllContacts(ctx context.Context, tenantID, channelFilter string, page, pageSize int) ([]*domain.Contact, error) {
-	if page < 1 {
-		page = 1
+// GetAllContacts computes the pagination boundaries and filters for mass reads
+func (u *ContactUseCase) GetAllContacts(ctx context.Context, tenantID string, filter domain.ContactFilter) (*domain.PaginatedContacts, error) {
+	if filter.Page < 1 {
+		filter.Page = 1
 	}
-	if pageSize < 1 || pageSize > 1000 {
-		pageSize = 500 // Fetch all contacts in one page by default
+	if filter.PageSize < 1 || filter.PageSize > 500 {
+		filter.PageSize = 50
 	}
 
-	limit := pageSize
-	offset := (page - 1) * pageSize
+	filter.Limit = filter.PageSize
+	filter.Offset = (filter.Page - 1) * filter.PageSize
 
-	contacts, err := u.repo.ListByTenant(ctx, tenantID, channelFilter, limit, offset)
+	contacts, total, err := u.repo.ListWithFilter(ctx, tenantID, filter)
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +95,7 @@ func (u *ContactUseCase) GetAllContacts(ctx context.Context, tenantID, channelFi
 		contactIDs := make([]string, len(contacts))
 		for i, c := range contacts {
 			contactIDs[i] = c.ID
-			c.Tags = []*domain.Tag{} // default empty array instead of null
+			c.Tags = []*domain.Tag{} // default empty slice instead of null
 		}
 
 		tagMap, err := u.tagRepo.GetTagsByContactIDs(ctx, tenantID, contactIDs)
@@ -106,5 +108,16 @@ func (u *ContactUseCase) GetAllContacts(ctx context.Context, tenantID, channelFi
 		}
 	}
 
-	return contacts, nil
+	totalPages := 0
+	if total > 0 {
+		totalPages = int(math.Ceil(float64(total) / float64(filter.PageSize)))
+	}
+
+	return &domain.PaginatedContacts{
+		Data:       contacts,
+		Total:      total,
+		Page:       filter.Page,
+		PageSize:   filter.PageSize,
+		TotalPages: totalPages,
+	}, nil
 }
