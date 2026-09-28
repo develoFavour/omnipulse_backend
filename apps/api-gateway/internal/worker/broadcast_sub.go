@@ -157,7 +157,13 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 	var errMsg *string
 	isTransient := false
 
-	personalizedMsg := strings.ReplaceAll(task.MessageBody, "{first_name}", task.FirstName)
+	name := strings.TrimSpace(task.FirstName)
+	if name == "" {
+		name = "there"
+	}
+	personalizedMsg := strings.ReplaceAll(task.MessageBody, "{first_name}", name)
+	personalizedMsg = strings.ReplaceAll(personalizedMsg, "{name}", name)
+	personalizedMsg = strings.ReplaceAll(personalizedMsg, "{username}", name)
 
 	if task.TargetPlatform == "telegram" {
 		var tokenData []byte

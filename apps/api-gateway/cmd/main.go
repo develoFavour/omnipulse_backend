@@ -68,6 +68,34 @@ func main() {
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_contacts_tenant_name ON contacts(tenant_id, first_name);`)
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_contacts_tenant_routing ON contacts(tenant_id, routing_value);`)
 
+	// Idempotent schema migrations: notifications table
+	_, _ = db.Exec(`DO $$ BEGIN
+		CREATE TYPE notification_type AS ENUM (
+			'campaign_completed',
+			'delivery_failure',
+			'new_opt_out',
+			'contact_import_finished',
+			'channel_disconnected'
+		);
+	EXCEPTION
+		WHEN duplicate_object THEN null;
+	END $$;`)
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS notifications (
+		id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		tenant_id   UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+		type        notification_type NOT NULL,
+		title       TEXT NOT NULL,
+		body        TEXT NOT NULL,
+		metadata    JSONB NOT NULL DEFAULT '{}',
+		is_read     BOOLEAN NOT NULL DEFAULT FALSE,
+		created_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+	);`); err != nil {
+		logger.Printf("[DB-MIGRATE] notifications table create: %v\n", err)
+	} else {
+		_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_notifications_tenant_read ON notifications(tenant_id, is_read, created_at DESC);`)
+		logger.Println("[DB-MIGRATE] Successfully ensured notifications table and indexes exist.")
+	}
+
 	// 2. Initialize NATS JetStream Event Broker Adapter
 	natsPublisher, err := event.NewJetStreamPublisher(cfg.NatsURL, cfg.NatsCreds)
 	if err != nil {
@@ -83,6 +111,7 @@ func main() {
 	destinationRepo := repository.NewPostgresTelegramDestinationRepository(db)
 	tagRepo := repository.NewPostgresTagRepository(db)
 	templateRepo := repository.NewPostgresTemplateRepository(db)
+	notificationRepo := repository.NewPostgresNotificationRepository(db)
 
 	tagUseCase := usecase.NewTagUseCase(tagRepo)
 	templateUseCase := usecase.NewTemplateUseCase(templateRepo)
@@ -90,12 +119,14 @@ func main() {
 	campaignUseCase := usecase.NewCampaignUseCase(campaignRepo, contactRepo, destinationRepo, natsPublisher)
 	identityUseCase := usecase.NewIdentityUseCase(identityRepo, channelRepo)
 	dashboardUseCase := usecase.NewDashboardUseCase(dashboardRepo)
+	notificationUseCase := usecase.NewNotificationUseCase(notificationRepo)
 
 	tagHandler := handler.NewTagHandler(tagUseCase)
 	templateHandler := handler.NewTemplateHandler(templateUseCase)
 	contactHandler := handler.NewContactHandler(contactUseCase)
 	campaignHandler := handler.NewCampaignHandler(campaignUseCase)
 	identityHandler := handler.NewIdentityHandler(identityUseCase)
+	notificationHandler := handler.NewNotificationHandler(notificationUseCase)
 
 	var waManager *service.WhatsAppManager
 	var waErr error
@@ -140,7 +171,7 @@ func main() {
 
 	campaignHub := service.NewCampaignHub(campaignRepo)
 
-	telemetryWorker, err := worker.NewTelemetryConsumer(cfg.NatsURL, cfg.NatsCreds, natsConn, natsJS, campaignRepo)
+	telemetryWorker, err := worker.NewTelemetryConsumer(cfg.NatsURL, cfg.NatsCreds, natsConn, natsJS, campaignRepo, notificationRepo)
 	if err != nil {
 		logger.Printf("[NATS-WARN] Telemetry worker initialization deferred: %v\n", err)
 	} else {
@@ -241,6 +272,11 @@ func main() {
 	// Dashboard Subsystem Endpoints
 	mux.HandleFunc("GET /api/v1/dashboard/stats", dashboardHandler.GetStats)
 	mux.HandleFunc("GET /api/v1/deliveries", dashboardHandler.ListDeliveries)
+
+	// Notification Center Endpoints
+	mux.HandleFunc("GET /api/v1/notifications", notificationHandler.List)
+	mux.HandleFunc("PATCH /api/v1/notifications/{id}/read", notificationHandler.MarkRead)
+	mux.HandleFunc("PATCH /api/v1/notifications/read-all", notificationHandler.MarkAllRead)
 
 	// Webhook Subsystem Endpoints (Inbound Event Flywheel)
 	mux.HandleFunc("POST /api/v1/webhooks/telegram/{tenant_id}", webhookHandler.HandleTelegram)

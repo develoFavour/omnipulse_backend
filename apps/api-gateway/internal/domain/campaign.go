@@ -30,6 +30,7 @@ type Campaign struct {
 // CampaignStats models real-time execution progress and telemetry for a campaign
 type CampaignStats struct {
 	CampaignID       string  `json:"campaign_id"`
+	TenantID         string  `json:"tenant_id,omitempty"`
 	Status           string  `json:"status"`
 	TotalTargets     int     `json:"total_targets"`
 	ProcessedTargets int     `json:"processed_targets"`

@@ -223,7 +223,13 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 				errMsg = &reason
 				log.Printf("[❌ TELEGRAM API -> ERROR] %s\n", reason)
 			} else {
-				personalizedMsg := strings.ReplaceAll(task.MessageBody, "{first_name}", task.FirstName)
+				name := strings.TrimSpace(task.FirstName)
+				if name == "" {
+					name = "there"
+				}
+				personalizedMsg := strings.ReplaceAll(task.MessageBody, "{first_name}", name)
+				personalizedMsg = strings.ReplaceAll(personalizedMsg, "{name}", name)
+				personalizedMsg = strings.ReplaceAll(personalizedMsg, "{username}", name)
 
 				var tgURL string
 				var tgPayload map[string]interface{}
@@ -290,7 +296,13 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 		} else {
 			var creds map[string]interface{}
 			_ = json.Unmarshal(tokenData, &creds)
-			personalizedMsg := strings.ReplaceAll(task.MessageBody, "{first_name}", task.FirstName)
+			name := strings.TrimSpace(task.FirstName)
+			if name == "" {
+				name = "there"
+			}
+			personalizedMsg := strings.ReplaceAll(task.MessageBody, "{first_name}", name)
+			personalizedMsg = strings.ReplaceAll(personalizedMsg, "{name}", name)
+			personalizedMsg = strings.ReplaceAll(personalizedMsg, "{username}", name)
 
 			if jidStr, ok := creds["jid"].(string); ok && jidStr != "" && c.waContainer != nil {
 				// Send via Whatsmeow Multi-Device session

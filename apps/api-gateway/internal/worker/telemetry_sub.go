@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -21,11 +22,12 @@ type CampaignHubBroadcaster interface {
 
 // TelemetryConsumer listens for delivery receipts coming back from outbound networks
 type TelemetryConsumer struct {
-	nc   *nats.Conn
-	js   nats.JetStreamContext
-	sub  *nats.Subscription
-	repo domain.CampaignRepository
-	hub  CampaignHubBroadcaster
+	nc        *nats.Conn
+	js        nats.JetStreamContext
+	sub       *nats.Subscription
+	repo      domain.CampaignRepository
+	notifRepo domain.NotificationRepository
+	hub       CampaignHubBroadcaster
 }
 
 func (c *TelemetryConsumer) SetHub(hub CampaignHubBroadcaster) {
@@ -34,12 +36,13 @@ func (c *TelemetryConsumer) SetHub(hub CampaignHubBroadcaster) {
 
 // NewTelemetryConsumer initializes the background database-writer event node.
 // Reuses existing nc and js connections if provided to avoid exceeding NATS connection quotas.
-func NewTelemetryConsumer(natsURL string, natsCreds string, nc *nats.Conn, js nats.JetStreamContext, repo domain.CampaignRepository) (*TelemetryConsumer, error) {
+func NewTelemetryConsumer(natsURL string, natsCreds string, nc *nats.Conn, js nats.JetStreamContext, repo domain.CampaignRepository, notifRepo domain.NotificationRepository) (*TelemetryConsumer, error) {
 	if nc != nil && js != nil {
 		return &TelemetryConsumer{
-			nc:   nc,
-			js:   js,
-			repo: repo,
+			nc:        nc,
+			js:        js,
+			repo:      repo,
+			notifRepo: notifRepo,
 		}, nil
 	}
 
@@ -56,9 +59,10 @@ func NewTelemetryConsumer(natsURL string, natsCreds string, nc *nats.Conn, js na
 	}
 
 	return &TelemetryConsumer{
-		nc:   conn,
-		js:   streamCtx,
-		repo: repo,
+		nc:        conn,
+		js:        streamCtx,
+		repo:      repo,
+		notifRepo: notifRepo,
 	}, nil
 }
 
@@ -113,9 +117,10 @@ func (c *TelemetryConsumer) processReceipt(ctx context.Context, msg *nats.Msg) {
 		return
 	}
 
-	// Instantaneously broadcast progress & audit row to connected WebSocket clients
-	if c.hub != nil {
-		stats, _ := c.repo.GetCampaignStats(dbCtx, "", result.CampaignID)
+	// Fetch fresh campaign stats and broadcast live progress to WebSocket clients
+	stats, _ := c.repo.GetCampaignStats(dbCtx, "", result.CampaignID)
+
+	if c.hub != nil && stats != nil {
 		deliveryItem := &domain.CampaignDelivery{
 			CampaignID:   result.CampaignID,
 			TargetType:   result.TargetType,
@@ -126,6 +131,24 @@ func (c *TelemetryConsumer) processReceipt(ctx context.Context, msg *nats.Msg) {
 			CreatedAt:    time.Now().UTC(),
 		}
 		c.hub.BroadcastProgress(result.CampaignID, stats, deliveryItem)
+	}
+
+	// Write a campaign_completed notification once the campaign transitions to done
+	if stats != nil && stats.Status == "completed" && stats.ProcessedTargets == stats.TotalTargets && stats.TotalTargets > 0 && stats.TenantID != "" && c.notifRepo != nil {
+		deliveryRate := 0.0
+		if stats.TotalTargets > 0 {
+			deliveryRate = float64(stats.Delivered) / float64(stats.TotalTargets) * 100.0
+		}
+		notif := &domain.Notification{
+			TenantID: stats.TenantID,
+			Type:     domain.NotifCampaignCompleted,
+			Title:    "Campaign completed",
+			Body:     fmt.Sprintf("Campaign dispatched to %d contacts — %.1f%% delivery rate (%d failed).", stats.TotalTargets, deliveryRate, stats.Failed),
+			Metadata: []byte(fmt.Sprintf(`{"campaign_id":%q,"delivered":%d,"failed":%d,"total":%d}`, result.CampaignID, stats.Delivered, stats.Failed, stats.TotalTargets)),
+		}
+		if writeErr := c.notifRepo.Create(dbCtx, notif); writeErr != nil {
+			log.Printf("[TELEMETRY-WARN] Failed to write campaign_completed notification: %v\n", writeErr)
+		}
 	}
 
 	// Acknowledge receipt: Safe from the message queue queue loop!

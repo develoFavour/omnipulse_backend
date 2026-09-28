@@ -244,15 +244,15 @@ func (r *PostgresCampaignRepository) RecordDeliveryResult(ctx context.Context, r
 }
 
 func (r *PostgresCampaignRepository) GetCampaignStats(ctx context.Context, tenantID, campaignID string) (*domain.CampaignStats, error) {
-	var status string
+	var tID, status string
 	var totalTargets, processedTargets int
-	headerQuery := "SELECT status, total_targets, processed_targets FROM campaigns WHERE id = $1"
+	headerQuery := "SELECT tenant_id, status, total_targets, processed_targets FROM campaigns WHERE id = $1"
 	headerArgs := []interface{}{campaignID}
 	if tenantID != "" {
 		headerQuery += " AND tenant_id = $2"
 		headerArgs = append(headerArgs, tenantID)
 	}
-	err := r.db.QueryRowContext(ctx, headerQuery, headerArgs...).Scan(&status, &totalTargets, &processedTargets)
+	err := r.db.QueryRowContext(ctx, headerQuery, headerArgs...).Scan(&tID, &status, &totalTargets, &processedTargets)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrCampaignNotFound
@@ -294,6 +294,7 @@ func (r *PostgresCampaignRepository) GetCampaignStats(ctx context.Context, tenan
 
 	return &domain.CampaignStats{
 		CampaignID:       campaignID,
+		TenantID:         tID,
 		Status:           status,
 		TotalTargets:     totalTargets,
 		ProcessedTargets: processedTargets,
