@@ -96,6 +96,9 @@ func main() {
 		logger.Println("[DB-MIGRATE] Successfully ensured notifications table and indexes exist.")
 	}
 
+	// Idempotent index for fast aggregate time-series queries
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_campaign_deliveries_created ON campaign_deliveries(created_at DESC);`)
+
 	// 2. Initialize NATS JetStream Event Broker Adapter
 	natsPublisher, err := event.NewJetStreamPublisher(cfg.NatsURL, cfg.NatsCreds)
 	if err != nil {
@@ -112,6 +115,7 @@ func main() {
 	tagRepo := repository.NewPostgresTagRepository(db)
 	templateRepo := repository.NewPostgresTemplateRepository(db)
 	notificationRepo := repository.NewPostgresNotificationRepository(db)
+	analyticsRepo := repository.NewPostgresAnalyticsRepository(db)
 
 	tagUseCase := usecase.NewTagUseCase(tagRepo)
 	templateUseCase := usecase.NewTemplateUseCase(templateRepo)
@@ -120,6 +124,7 @@ func main() {
 	identityUseCase := usecase.NewIdentityUseCase(identityRepo, channelRepo)
 	dashboardUseCase := usecase.NewDashboardUseCase(dashboardRepo)
 	notificationUseCase := usecase.NewNotificationUseCase(notificationRepo)
+	analyticsUseCase := usecase.NewAnalyticsUseCase(analyticsRepo)
 
 	tagHandler := handler.NewTagHandler(tagUseCase)
 	templateHandler := handler.NewTemplateHandler(templateUseCase)
@@ -127,6 +132,7 @@ func main() {
 	campaignHandler := handler.NewCampaignHandler(campaignUseCase)
 	identityHandler := handler.NewIdentityHandler(identityUseCase)
 	notificationHandler := handler.NewNotificationHandler(notificationUseCase)
+	analyticsHandler := handler.NewAnalyticsHandler(analyticsUseCase)
 
 	var waManager *service.WhatsAppManager
 	var waErr error
@@ -277,6 +283,9 @@ func main() {
 	mux.HandleFunc("GET /api/v1/notifications", notificationHandler.List)
 	mux.HandleFunc("PATCH /api/v1/notifications/{id}/read", notificationHandler.MarkRead)
 	mux.HandleFunc("PATCH /api/v1/notifications/read-all", notificationHandler.MarkAllRead)
+
+	// Campaign Analytics Aggregate Subsystem Endpoints
+	mux.HandleFunc("GET /api/v1/analytics", analyticsHandler.GetReport)
 
 	// Webhook Subsystem Endpoints (Inbound Event Flywheel)
 	mux.HandleFunc("POST /api/v1/webhooks/telegram/{tenant_id}", webhookHandler.HandleTelegram)
