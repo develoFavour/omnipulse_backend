@@ -68,7 +68,7 @@ func AuthMiddleware(identityUC *usecase.IdentityUseCase) func(http.Handler) http
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Bypass health check, root path, external webhooks, and handle WebSocket upgrade
-			if r.URL.Path == "/" || r.URL.Path == "/health" || strings.HasPrefix(r.URL.Path, "/api/v1/webhooks/") {
+			if r.URL.Path == "/" || r.URL.Path == "/health" || r.URL.Path == "/health/workers" || strings.HasPrefix(r.URL.Path, "/api/v1/webhooks/") {
 				next.ServeHTTP(w, r)
 				return
 			}
