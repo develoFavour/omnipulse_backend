@@ -15,6 +15,7 @@ const (
 	NotifNewOptOut             NotificationType = "new_opt_out"
 	NotifContactImportFinished NotificationType = "contact_import_finished"
 	NotifChannelDisconnected   NotificationType = "channel_disconnected"
+	NotifSystemAlert           NotificationType = "system_alert" // worker outage / infrastructure alerts
 )
 
 // Notification is a single inbox event scoped to a tenant

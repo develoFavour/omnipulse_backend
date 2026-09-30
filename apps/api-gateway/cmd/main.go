@@ -197,10 +197,15 @@ func main() {
 		broadcastWorker = bw
 		if err := broadcastWorker.Start(globalWorkerCtx); err != nil {
 			logger.Printf("[NATS-WARN] Broadcast stream subscription deferred: %v\n", err)
+			broadcastWorker = nil // mark as nil so health endpoint reflects reality
 		} else {
 			defer broadcastWorker.Stop()
 		}
 	}
+
+	// Campaign Watchdog — detects stuck campaigns and fires in-app alerts
+	campaignWatchdog := worker.NewCampaignWatchdog(db, notificationRepo)
+	campaignWatchdog.Start(globalWorkerCtx)
 
 	// Campaign Scheduler — polls every 15s for due scheduled campaigns
 	schedulerService := service.NewSchedulerService(campaignRepo, campaignUseCase)
@@ -212,6 +217,71 @@ func main() {
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		utils.WriteJSON(w, http.StatusOK, map[string]string{"status": "healthy", "service": "api-gateway"})
 	})
+
+	// /health/workers — live NATS consumer health check
+	// Queries JetStream directly to count active consumers on the CAMPAIGNS stream.
+	// A consumer count of 0 means no worker is subscribed and broadcasts will queue silently.
+	mux.HandleFunc("GET /health/workers", func(w http.ResponseWriter, r *http.Request) {
+		type workerStatus struct {
+			Service        string `json:"service"`
+			Subscribed     bool   `json:"subscribed"`
+			NumPending     uint64 `json:"num_pending"`
+			NumAckPending  int    `json:"num_ack_pending"`
+			ConsumerExists bool   `json:"consumer_exists"`
+		}
+		type healthResponse struct {
+			Status          string       `json:"status"`
+			BroadcastWorker workerStatus `json:"broadcast_worker"`
+			TelemetryWorker workerStatus `json:"telemetry_worker"`
+			NATSStreamMsgs  uint64       `json:"nats_stream_msgs"`
+			CheckedAt       string       `json:"checked_at"`
+		}
+
+		resp := healthResponse{
+			Status:    "healthy",
+			CheckedAt: time.Now().UTC().Format(time.RFC3339),
+		}
+
+		if natsJS != nil {
+			if info, err := natsJS.StreamInfo("CAMPAIGNS"); err == nil {
+				resp.NATSStreamMsgs = info.State.Msgs
+			}
+			// Broadcast delivery pool consumer
+			if ci, err := natsJS.ConsumerInfo("CAMPAIGNS", "broadcast-delivery-pool"); err == nil {
+				resp.BroadcastWorker = workerStatus{
+					Service:        "broadcast-worker",
+					Subscribed:     ci.NumAckPending > 0 || ci.Delivered.Stream > 0,
+					NumPending:     ci.NumPending,
+					NumAckPending:  ci.NumAckPending,
+					ConsumerExists: true,
+				}
+			} else {
+				resp.BroadcastWorker = workerStatus{Service: "broadcast-worker", ConsumerExists: false}
+				resp.Status = "degraded"
+			}
+			// Telemetry consumer (durable name registered in telemetry_sub.go)
+			if ci, err := natsJS.ConsumerInfo("CAMPAIGNS", "telemetry-gateway-group"); err == nil {
+				resp.TelemetryWorker = workerStatus{
+					Service:        "telemetry-worker",
+					Subscribed:     ci.NumAckPending > 0 || ci.Delivered.Stream > 0,
+					NumPending:     ci.NumPending,
+					NumAckPending:  ci.NumAckPending,
+					ConsumerExists: true,
+				}
+			} else {
+				resp.TelemetryWorker = workerStatus{Service: "telemetry-worker", ConsumerExists: false}
+			}
+		} else {
+			resp.Status = "degraded"
+		}
+
+		statusCode := http.StatusOK
+		if resp.Status == "degraded" {
+			statusCode = http.StatusServiceUnavailable
+		}
+		utils.WriteJSON(w, statusCode, resp)
+	})
+
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		utils.WriteJSON(w, http.StatusOK, map[string]string{"status": "healthy", "service": "api-gateway"})
 	})
