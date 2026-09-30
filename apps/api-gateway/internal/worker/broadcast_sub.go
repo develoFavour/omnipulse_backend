@@ -68,7 +68,6 @@ func (c *BroadcastConsumer) Stop() {
 	if c.sub != nil {
 		if drainErr := c.sub.Drain(); drainErr != nil {
 			log.Printf("[BROADCAST-WORKER] Warning: subscription drain incomplete: %v\n", drainErr)
-			_ = c.sub.Unsubscribe()
 		}
 	}
 	log.Println("[BROADCAST-WORKER] Broadcast delivery engine cleanly drained and disconnected.")

@@ -89,7 +89,9 @@ func (c *TelemetryConsumer) Start(ctx context.Context) error {
 // Stop safely cuts network stream attachments during server termination
 func (c *TelemetryConsumer) Stop() {
 	if c.sub != nil {
-		_ = c.sub.Unsubscribe()
+		if drainErr := c.sub.Drain(); drainErr != nil {
+			log.Printf("[TELEMETRY-WORKER] Warning: subscription drain incomplete: %v\n", drainErr)
+		}
 	}
 	if c.nc != nil {
 		c.nc.Close()

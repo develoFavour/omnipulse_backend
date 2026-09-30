@@ -92,15 +92,9 @@ func (c *BroadcastConsumer) Start(ctx context.Context) error {
 
 func (c *BroadcastConsumer) Stop() {
 	if c.sub != nil {
-		// Drain waits for all in-flight messages to be Ack'd/Nak'd before
-		// closing the subscription. This prevents zombie redelivery on the
-		// next startup because unacknowledged messages stay in the durable
-		// consumer and get requeued when a new instance reconnects.
-		drainErr := c.sub.Drain()
-		if drainErr != nil {
-			// Drain timed out or failed — log and continue shutdown
+		// Drain waits for in-flight messages without destroying the durable consumer on NATS
+		if drainErr := c.sub.Drain(); drainErr != nil {
 			log.Printf("[WORKER] Warning: subscription drain incomplete: %v\n", drainErr)
-			_ = c.sub.Unsubscribe()
 		}
 	}
 	if c.nc != nil {
@@ -116,7 +110,7 @@ func (c *BroadcastConsumer) Stop() {
 		}
 		return true
 	})
-	log.Println("[WORKER] Broadcast Engine cleanly drained and disconnected.")
+	log.Println("[WORKER] Broadcast delivery engine cleanly drained and disconnected.")
 }
 
 func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) {

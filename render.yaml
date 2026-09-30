@@ -45,7 +45,6 @@ services:
     env: docker
     dockerfilePath: apps/broadcast-worker/Dockerfile
     dockerContext: .
-    healthCheckPath: /health
     envVars:
       - key: PORT
         value: 8081
