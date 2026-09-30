@@ -34,6 +34,8 @@ type Config struct {
 	BrevoAPIKey      string
 	BrevoSenderEmail string
 	BrevoSenderName  string
+	SMTPSender       string
+	SenderName       string
 }
 
 // Load reads values from the OS environment variables or supplies secure defaults
@@ -42,6 +44,9 @@ func Load() *Config {
 	if len(port) > 0 && port[0] != ':' {
 		port = ":" + port
 	}
+
+	senderEmail := getEnv("BREVO_SENDER_EMAIL", getEnv("SMTP_SENDER", "opiafavourjr@gmail.com"))
+	senderName := getEnv("BREVO_SENDER_NAME", getEnv("SENDER_NAME", "Omnipulseng"))
 
 	return &Config{
 		Port:              port,
@@ -61,8 +66,10 @@ func Load() *Config {
 		AllowedOrigins:    getEnv("ALLOWED_ORIGINS", "http://localhost:3000"),
 		CloudinaryURL:     getEnv("CLOUDINARY_URL", ""),
 		BrevoAPIKey:       getEnv("BREVO_API_KEY", ""),
-		BrevoSenderEmail:  getEnv("BREVO_SENDER_EMAIL", "opiafavourjr@gmail.com"),
-		BrevoSenderName:   getEnv("BREVO_SENDER_NAME", "Omnipulseng"),
+		BrevoSenderEmail:  senderEmail,
+		BrevoSenderName:   senderName,
+		SMTPSender:        senderEmail,
+		SenderName:        senderName,
 	}
 }
 

@@ -1,66 +1,118 @@
-package service
+package utils
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"html"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"time"
+
+	"omnipulse/apps/api-gateway/internal/config"
 )
 
-type EmailService struct {
-	apiKey      string
-	senderEmail string
-	senderName  string
-	httpClient  *http.Client
-	logger      *log.Logger
-}
+const brevoTransactionalEmailURL = "https://api.brevo.com/v3/smtp/email"
 
-func NewEmailService(apiKey, senderEmail, senderName string, logger *log.Logger) *EmailService {
-	if senderEmail == "" {
-		senderEmail = "opiafavourjr@gmail.com"
-	}
-	if senderName == "" {
-		senderName = "Omnipulseng"
-	}
-	return &EmailService{
-		apiKey:      apiKey,
-		senderEmail: senderEmail,
-		senderName:  senderName,
-		httpClient:  &http.Client{Timeout: 10 * time.Second},
-		logger:      logger,
-	}
-}
-
-type brevoRecipient struct {
-	Email string `json:"email"`
-	Name  string `json:"name,omitempty"`
-}
-
-type brevoSender struct {
-	Name  string `json:"name"`
-	Email string `json:"email"`
+// Mailer sends transactional emails through Brevo's HTTP API.
+type Mailer struct {
+	cfg    *config.Config
+	client *http.Client
 }
 
 type brevoEmailRequest struct {
-	Sender      brevoSender      `json:"sender"`
-	To          []brevoRecipient `json:"to"`
-	Subject     string           `json:"subject"`
-	HTMLContent string           `json:"htmlContent"`
+	Sender      brevoEmailAddress   `json:"sender"`
+	To          []brevoEmailAddress `json:"to"`
+	Subject     string              `json:"subject"`
+	HTMLContent string              `json:"htmlContent"`
 }
 
-// SendTeamInvitation dispatches a branded invitation email via the Brevo transactional SMTP API
-func (s *EmailService) SendTeamInvitation(ctx context.Context, toEmail, inviterName, workspaceName, role, inviteURL string) error {
-	if s.apiKey == "" {
-		s.logger.Printf("[EmailService] WARN: BREVO_API_KEY is not set. Skipping invitation email dispatch to %s (URL: %s)", toEmail, inviteURL)
-		return nil
-	}
+type brevoEmailAddress struct {
+	Name  string `json:"name,omitempty"`
+	Email string `json:"email"`
+}
 
+// NewMailer creates an instance of Mailer.
+func NewMailer(cfg *config.Config) *Mailer {
+	return &Mailer{
+		cfg: cfg,
+		client: &http.Client{
+			Timeout: 15 * time.Second,
+		},
+	}
+}
+
+// SendEmail asynchronously dispatches a transactional email using Brevo's API.
+func (m *Mailer) SendEmail(to, subject, htmlBody string) {
+	go func() {
+		senderEmail := m.cfg.BrevoSenderEmail
+		if senderEmail == "" {
+			senderEmail = m.cfg.SMTPSender
+		}
+		if senderEmail == "" {
+			senderEmail = "opiafavourjr@gmail.com"
+		}
+
+		senderName := m.cfg.BrevoSenderName
+		if senderName == "" {
+			senderName = m.cfg.SenderName
+		}
+		if senderName == "" {
+			senderName = "Omnipulseng"
+		}
+
+		if m.cfg.BrevoAPIKey == "" {
+			fmt.Println("Mailer Alert: BREVO_API_KEY is not configured. Email skipped.")
+			return
+		}
+
+		payload := brevoEmailRequest{
+			Sender: brevoEmailAddress{
+				Name:  senderName,
+				Email: senderEmail,
+			},
+			To: []brevoEmailAddress{
+				{Email: to},
+			},
+			Subject:     subject,
+			HTMLContent: htmlBody,
+		}
+
+		body, err := json.Marshal(payload)
+		if err != nil {
+			fmt.Printf("Mailer JSON Marshal Error to %s: %v\n", to, err)
+			return
+		}
+
+		req, err := http.NewRequest(http.MethodPost, brevoTransactionalEmailURL, bytes.NewReader(body))
+		if err != nil {
+			fmt.Printf("Mailer Request Build Error to %s: %v\n", to, err)
+			return
+		}
+		req.Header.Set("accept", "application/json")
+		req.Header.Set("api-key", m.cfg.BrevoAPIKey)
+		req.Header.Set("content-type", "application/json")
+
+		resp, err := m.client.Do(req)
+		if err != nil {
+			fmt.Printf("Mailer Brevo Dispatch Error to %s: %v\n", to, err)
+			return
+		}
+		defer resp.Body.Close()
+
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			fmt.Printf("Mailer Brevo API Error to %s: status=%d body=%s\n", to, resp.StatusCode, string(respBody))
+			return
+		}
+
+		fmt.Printf("Mailer Brevo email sent to %s (Subject: %s)\n", to, subject)
+	}()
+}
+
+// SendTeamInvitation builds a branded responsive template and dispatches via SendEmail
+func (m *Mailer) SendTeamInvitation(toEmail, inviterName, workspaceName, role, inviteURL string) {
 	roleDisplay := strings.ToUpper(role[:1]) + strings.ToLower(role[1:])
 	subject := fmt.Sprintf("You've been invited to join %s on Omnipulse", workspaceName)
 
@@ -114,43 +166,5 @@ func (s *EmailService) SendTeamInvitation(ctx context.Context, toEmail, inviterN
 </body>
 </html>`, escapedInviter, escapedWorkspace, escapedRole, escapedURL)
 
-	reqPayload := brevoEmailRequest{
-		Sender: brevoSender{
-			Name:  s.senderName,
-			Email: s.senderEmail,
-		},
-		To: []brevoRecipient{
-			{Email: toEmail},
-		},
-		Subject:     subject,
-		HTMLContent: htmlBody,
-	}
-
-	bodyBytes, err := json.Marshal(reqPayload)
-	if err != nil {
-		return fmt.Errorf("failed to encode email payload: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.brevo.com/v3/smtp/email", bytes.NewReader(bodyBytes))
-	if err != nil {
-		return fmt.Errorf("failed to construct Brevo API request: %w", err)
-	}
-
-	req.Header.Set("api-key", s.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("brevo API network error: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("brevo API rejected request with status %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	s.logger.Printf("[EmailService] Successfully dispatched team invitation email to %s (role: %s, workspace: %s)", toEmail, role, workspaceName)
-	return nil
+	m.SendEmail(toEmail, subject, htmlBody)
 }

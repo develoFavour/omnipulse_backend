@@ -174,8 +174,8 @@ func main() {
 	notificationHandler := handler.NewNotificationHandler(notificationUseCase)
 	analyticsHandler := handler.NewAnalyticsHandler(analyticsUseCase)
 
-	emailService := service.NewEmailService(cfg.BrevoAPIKey, cfg.BrevoSenderEmail, cfg.BrevoSenderName, logger)
-	teamUseCase := usecase.NewTeamUseCase(identityRepo, emailService, cfg.PublicAppBaseURL, logger)
+	mailer := utils.NewMailer(cfg)
+	teamUseCase := usecase.NewTeamUseCase(identityRepo, mailer, cfg.PublicAppBaseURL, logger)
 	teamHandler := handler.NewTeamHandler(teamUseCase)
 
 	var waManager *service.WhatsAppManager

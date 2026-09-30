@@ -12,19 +12,19 @@ import (
 	"time"
 
 	"omnipulse/apps/api-gateway/internal/domain"
-	"omnipulse/apps/api-gateway/internal/service"
+	"omnipulse/apps/api-gateway/internal/utils"
 )
 
 type TeamUseCase struct {
-	repo         domain.IdentityRepository
-	emailService *service.EmailService
-	appBaseURL   string
-	logger       *log.Logger
+	repo       domain.IdentityRepository
+	mailer     *utils.Mailer
+	appBaseURL string
+	logger     *log.Logger
 }
 
 func NewTeamUseCase(
 	repo domain.IdentityRepository,
-	emailService *service.EmailService,
+	mailer *utils.Mailer,
 	appBaseURL string,
 	logger *log.Logger,
 ) *TeamUseCase {
@@ -33,10 +33,10 @@ func NewTeamUseCase(
 	}
 	appBaseURL = strings.TrimRight(appBaseURL, "/")
 	return &TeamUseCase{
-		repo:         repo,
-		emailService: emailService,
-		appBaseURL:   appBaseURL,
-		logger:       logger,
+		repo:       repo,
+		mailer:     mailer,
+		appBaseURL: appBaseURL,
+		logger:     logger,
 	}
 }
 
@@ -154,15 +154,8 @@ func (u *TeamUseCase) InviteMember(
 
 	inviteURL := fmt.Sprintf("%s/invite?token=%s", u.appBaseURL, token)
 
-	go func() {
-		// Use a detached background context with timeout for email delivery
-		emailCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-
-		if err := u.emailService.SendTeamInvitation(emailCtx, targetEmail, inviterName, workspaceName, targetRole, inviteURL); err != nil {
-			u.logger.Printf("[TeamUseCase] Failed to send Brevo invitation email to %s: %v", targetEmail, err)
-		}
-	}()
+	// Dispatch transactional email via Brevo mailer
+	u.mailer.SendTeamInvitation(targetEmail, inviterName, workspaceName, targetRole, inviteURL)
 
 	return inv, nil
 }
