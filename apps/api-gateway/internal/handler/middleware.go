@@ -19,6 +19,7 @@ type contextKey string
 const (
 	TenantIDKey contextKey = "tenant_id"
 	UserIDKey   contextKey = "user_id"
+	UserRoleKey contextKey = "user_role"
 )
 
 type statusResponseWriter struct {
@@ -67,8 +68,8 @@ func RequestLoggerMiddleware(logger *log.Logger) func(http.Handler) http.Handler
 func AuthMiddleware(identityUC *usecase.IdentityUseCase) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Bypass health check, root path, external webhooks, and handle WebSocket upgrade
-			if r.URL.Path == "/" || r.URL.Path == "/health" || r.URL.Path == "/health/workers" || strings.HasPrefix(r.URL.Path, "/api/v1/webhooks/") {
+			// Bypass health check, root path, external webhooks, invitation preview, and handle WebSocket upgrade
+			if r.URL.Path == "/" || r.URL.Path == "/health" || r.URL.Path == "/health/workers" || strings.HasPrefix(r.URL.Path, "/api/v1/webhooks/") || strings.HasPrefix(r.URL.Path, "/api/v1/invitations/preview") {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -141,9 +142,32 @@ func AuthMiddleware(identityUC *usecase.IdentityUseCase) func(http.Handler) http
 			// 5. Inject the proven identity data cleanly downstream into the request lifetime context
 			ctx := context.WithValue(r.Context(), TenantIDKey, syncRes.Tenant.ID)
 			ctx = context.WithValue(ctx, UserIDKey, syncRes.User.ID)
+			ctx = context.WithValue(ctx, UserRoleKey, syncRes.User.Role)
 
 			// 6. Pass the structurally updated request envelope down to the next handler stage
 			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// RequireRole validates that the authenticated user possesses one of the allowed workspace roles
+func RequireRole(allowedRoles ...string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			userRole, ok := r.Context().Value(UserRoleKey).(string)
+			if !ok || userRole == "" {
+				utils.WriteError(w, http.StatusForbidden, "Access forbidden: unverified user role")
+				return
+			}
+
+			for _, allowed := range allowedRoles {
+				if strings.EqualFold(userRole, allowed) {
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+
+			utils.WriteError(w, http.StatusForbidden, "Access forbidden: insufficient role permissions for this operation")
 		})
 	}
 }

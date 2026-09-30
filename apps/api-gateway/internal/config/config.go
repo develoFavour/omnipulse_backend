@@ -29,6 +29,11 @@ type Config struct {
 
 	// Cloudinary CDN Configuration
 	CloudinaryURL string
+
+	// Brevo Transactional Email Configuration
+	BrevoAPIKey      string
+	BrevoSenderEmail string
+	BrevoSenderName  string
 }
 
 // Load reads values from the OS environment variables or supplies secure defaults
@@ -55,6 +60,9 @@ func Load() *Config {
 		MetaPhoneNumberID: getEnv("PHONE_NUMBER_ID", getEnv("META_PHONE_NUMBER_ID", "")),
 		AllowedOrigins:    getEnv("ALLOWED_ORIGINS", "http://localhost:3000"),
 		CloudinaryURL:     getEnv("CLOUDINARY_URL", ""),
+		BrevoAPIKey:       getEnv("BREVO_API_KEY", ""),
+		BrevoSenderEmail:  getEnv("BREVO_SENDER_EMAIL", "opiafavourjr@gmail.com"),
+		BrevoSenderName:   getEnv("BREVO_SENDER_NAME", "Omnipulseng"),
 	}
 }
 

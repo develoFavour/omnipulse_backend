@@ -99,6 +99,46 @@ func main() {
 	// Idempotent index for fast aggregate time-series queries
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_campaign_deliveries_created ON campaign_deliveries(created_at DESC);`)
 
+	// Idempotent schema migrations: team management & invitations
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS tenant_members (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+			user_id VARCHAR(255) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			role VARCHAR(50) NOT NULL CHECK (role IN ('owner', 'admin', 'member')),
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			CONSTRAINT uq_tenant_user UNIQUE (tenant_id, user_id)
+		);
+		CREATE INDEX IF NOT EXISTS idx_tenant_members_tenant ON tenant_members(tenant_id);
+		CREATE INDEX IF NOT EXISTS idx_tenant_members_user ON tenant_members(user_id);
+
+		CREATE TABLE IF NOT EXISTS team_invitations (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+			email VARCHAR(255) NOT NULL,
+			role VARCHAR(50) NOT NULL CHECK (role IN ('admin', 'member')),
+			token VARCHAR(255) NOT NULL UNIQUE,
+			invited_by VARCHAR(255) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			status VARCHAR(50) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'revoked', 'expired')),
+			expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE INDEX IF NOT EXISTS idx_team_invitations_token ON team_invitations(token);
+		CREATE INDEX IF NOT EXISTS idx_team_invitations_tenant ON team_invitations(tenant_id);
+		CREATE INDEX IF NOT EXISTS idx_team_invitations_email ON team_invitations(tenant_id, email);
+
+		INSERT INTO tenant_members (tenant_id, user_id, role)
+		SELECT tenant_id, id, CASE WHEN role = 'admin' THEN 'owner' ELSE role END
+		FROM users
+		ON CONFLICT (tenant_id, user_id) DO NOTHING;
+	`); err != nil {
+		logger.Printf("[DB-MIGRATE] team management tables create: %v\n", err)
+	} else {
+		logger.Println("[DB-MIGRATE] Successfully ensured tenant_members and team_invitations tables exist.")
+	}
+
 	// 2. Initialize NATS JetStream Event Broker Adapter
 	natsPublisher, err := event.NewJetStreamPublisher(cfg.NatsURL, cfg.NatsCreds)
 	if err != nil {
@@ -133,6 +173,10 @@ func main() {
 	identityHandler := handler.NewIdentityHandler(identityUseCase)
 	notificationHandler := handler.NewNotificationHandler(notificationUseCase)
 	analyticsHandler := handler.NewAnalyticsHandler(analyticsUseCase)
+
+	emailService := service.NewEmailService(cfg.BrevoAPIKey, cfg.BrevoSenderEmail, cfg.BrevoSenderName, logger)
+	teamUseCase := usecase.NewTeamUseCase(identityRepo, emailService, cfg.PublicAppBaseURL, logger)
+	teamHandler := handler.NewTeamHandler(teamUseCase)
 
 	var waManager *service.WhatsAppManager
 	var waErr error
@@ -291,20 +335,31 @@ func main() {
 	mux.HandleFunc("PATCH /api/v1/onboarding/brand", identityHandler.UpdateBrand)
 	mux.HandleFunc("POST /api/v1/onboarding/complete", identityHandler.CompleteOnboarding)
 
-	// Channel Subsystem Endpoints
-	mux.HandleFunc("POST /api/v1/channels", channelHandler.CreateChannel)
+	// Team Management & Invitation Endpoints
+	mux.HandleFunc("GET /api/v1/team/members", teamHandler.ListTeam)
+	mux.HandleFunc("POST /api/v1/team/invite", teamHandler.InviteMember)
+	mux.HandleFunc("DELETE /api/v1/team/invitations/{id}", teamHandler.RevokeInvitation)
+	mux.HandleFunc("DELETE /api/v1/team/members/{id}", teamHandler.RemoveMember)
+	mux.HandleFunc("PATCH /api/v1/team/members/{id}/role", teamHandler.UpdateMemberRole)
+
+	// Invitation Acceptance & Preview
+	mux.HandleFunc("GET /api/v1/invitations/preview", teamHandler.GetInvitationPreview)
+	mux.HandleFunc("POST /api/v1/invitations/accept", teamHandler.AcceptInvitation)
+
+	// Channel Subsystem Endpoints (Restricted: Owner & Admin only)
+	mux.Handle("POST /api/v1/channels", handler.RequireRole("owner", "admin")(http.HandlerFunc(channelHandler.CreateChannel)))
 	mux.HandleFunc("GET /api/v1/channels", channelHandler.ListChannels)
-	mux.HandleFunc("DELETE /api/v1/channels/{platform}", channelHandler.HandleDisconnectChannel)
+	mux.Handle("DELETE /api/v1/channels/{platform}", handler.RequireRole("owner", "admin")(http.HandlerFunc(channelHandler.HandleDisconnectChannel)))
 
 	// WhatsApp Multi-Device QR Endpoints
 	mux.HandleFunc("GET /api/v1/channels/whatsapp/qr", channelHandler.HandleWhatsAppQR)
 	mux.HandleFunc("GET /api/v1/channels/whatsapp/status", channelHandler.HandleWhatsAppStatus)
-	mux.HandleFunc("POST /api/v1/channels/whatsapp/disconnect", channelHandler.HandleWhatsAppDisconnect)
+	mux.Handle("POST /api/v1/channels/whatsapp/disconnect", handler.RequireRole("owner", "admin")(http.HandlerFunc(channelHandler.HandleWhatsAppDisconnect)))
 	mux.HandleFunc("POST /api/v1/channels/whatsapp/sync-contacts", channelHandler.HandleWhatsAppSyncContacts)
 
 	// WhatsApp Embedded Signup (1-Click OAuth) Endpoints
 	mux.HandleFunc("GET /api/v1/channels/whatsapp/oauth/config", channelHandler.HandleWhatsAppOAuthConfig)
-	mux.HandleFunc("POST /api/v1/channels/whatsapp/oauth/callback", channelHandler.HandleWhatsAppOAuthCallback)
+	mux.Handle("POST /api/v1/channels/whatsapp/oauth/callback", handler.RequireRole("owner", "admin")(http.HandlerFunc(channelHandler.HandleWhatsAppOAuthCallback)))
 
 	// Telegram Destination Endpoints
 	mux.HandleFunc("GET /api/v1/telegram/destinations", destinationHandler.ListDestinations)

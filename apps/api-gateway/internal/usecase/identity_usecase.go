@@ -44,6 +44,12 @@ func (u *IdentityUseCase) SyncUser(ctx context.Context, clerkUserID, email strin
 		if tenant == nil {
 			return nil, fmt.Errorf("tenant %q referenced by user %q was not found", user.TenantID, clerkUserID)
 		}
+
+		// Ensure active workspace role is accurate
+		if activeRole, err := u.repo.GetMemberRole(ctx, user.TenantID, user.ID); err == nil && activeRole != "" {
+			user.Role = activeRole
+		}
+
 		return &SyncResult{
 			Tenant:              tenant,
 			User:                user,
@@ -59,7 +65,7 @@ func (u *IdentityUseCase) SyncUser(ctx context.Context, clerkUserID, email strin
 	newUser := &domain.User{
 		ID:    clerkUserID,
 		Email: email,
-		Role:  "admin",
+		Role:  "owner",
 	}
 
 	if err := u.repo.CreateTenantWithUser(ctx, newTenant, newUser); err != nil {

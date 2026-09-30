@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS team_invitations CASCADE;
+DROP TABLE IF EXISTS tenant_members CASCADE;

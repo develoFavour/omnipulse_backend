@@ -37,13 +37,54 @@ type TenantChannel struct {
 	UpdatedAt            time.Time       `json:"updated_at"`
 }
 
-// IdentityRepository defines data access for Tenants and Users
+// TenantMember represents a user's membership and permissions within a workspace
+type TenantMember struct {
+	ID        string    `json:"id"`
+	TenantID  string    `json:"tenant_id"`
+	UserID    string    `json:"user_id"`
+	Role      string    `json:"role"` // "owner", "admin", "member"
+	Email     string    `json:"email,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// TeamInvitation represents a pending, accepted, or revoked invitation
+type TeamInvitation struct {
+	ID           string    `json:"id"`
+	TenantID     string    `json:"tenant_id"`
+	Email        string    `json:"email"`
+	Role         string    `json:"role"` // "admin", "member"
+	Token        string    `json:"token,omitempty"`
+	InvitedBy    string    `json:"invited_by"`
+	InviterEmail string    `json:"inviter_email,omitempty"`
+	Status       string    `json:"status"` // "pending", "accepted", "revoked", "expired"
+	ExpiresAt    time.Time `json:"expires_at"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// IdentityRepository defines data access for Tenants, Users, Memberships, and Invitations
 type IdentityRepository interface {
 	FindUserByClerkID(ctx context.Context, clerkID string) (*User, error)
 	FindTenantByID(ctx context.Context, tenantID string) (*Tenant, error)
 	CreateTenantWithUser(ctx context.Context, tenant *Tenant, user *User) error
 	UpdateTenantName(ctx context.Context, tenantID string, name string) error
 	SetOnboardingCompleted(ctx context.Context, tenantID string) error
+
+	// Multi-workspace & Team Memberships
+	ListMembers(ctx context.Context, tenantID string) ([]TenantMember, error)
+	GetMemberRole(ctx context.Context, tenantID, userID string) (string, error)
+	AddMember(ctx context.Context, tenantID, userID, role string) error
+	UpdateMemberRole(ctx context.Context, tenantID, memberID, newRole string) error
+	RemoveMember(ctx context.Context, tenantID, memberID string) error
+	CountOwners(ctx context.Context, tenantID string) (int, error)
+
+	// Team Invitations
+	CreateInvitation(ctx context.Context, inv *TeamInvitation) error
+	FindInvitationByToken(ctx context.Context, token string) (*TeamInvitation, error)
+	ListInvitations(ctx context.Context, tenantID string) ([]TeamInvitation, error)
+	RevokeInvitation(ctx context.Context, tenantID, invitationID string) error
+	AcceptInvitation(ctx context.Context, token, userID string) (*Tenant, error)
 }
 
 // ChannelRepository defines data access for Workspace channels
