@@ -22,20 +22,27 @@ type TeamUseCase struct {
 	logger     *log.Logger
 }
 
+func cleanAppBaseURL(raw string) string {
+	b := strings.TrimSpace(raw)
+	b = strings.TrimRight(b, "/")
+	b = strings.TrimSuffix(b, "/connections")
+	b = strings.TrimRight(b, "/")
+	if b == "" {
+		b = "https://omnipulseng.vercel.app"
+	}
+	return b
+}
+
 func NewTeamUseCase(
 	repo domain.IdentityRepository,
 	mailer *utils.Mailer,
 	appBaseURL string,
 	logger *log.Logger,
 ) *TeamUseCase {
-	if appBaseURL == "" {
-		appBaseURL = "https://omnipulseng.vercel.app"
-	}
-	appBaseURL = strings.TrimRight(appBaseURL, "/")
 	return &TeamUseCase{
 		repo:       repo,
 		mailer:     mailer,
-		appBaseURL: appBaseURL,
+		appBaseURL: cleanAppBaseURL(appBaseURL),
 		logger:     logger,
 	}
 }
