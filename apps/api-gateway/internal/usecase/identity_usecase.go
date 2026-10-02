@@ -62,9 +62,22 @@ func (u *IdentityUseCase) SyncUser(ctx context.Context, clerkUserID, email strin
 			return nil, fmt.Errorf("tenant %q referenced by user %q was not found", user.TenantID, clerkUserID)
 		}
 
-		// Ensure active workspace role is accurate
-		if activeRole, err := u.repo.GetMemberRole(ctx, user.TenantID, user.ID); err == nil && activeRole != "" {
+		// Resolve the authoritative workspace role from tenant_members.
+		// If no membership row exists (e.g. legacy accounts provisioned before RBAC was introduced),
+		// fall back to users.role and self-heal by upserting the membership record.
+		activeRole, roleErr := u.repo.GetMemberRole(ctx, user.TenantID, user.ID)
+		if roleErr == nil && activeRole != "" {
 			user.Role = activeRole
+		} else if activeRole == "" {
+			// Self-heal: persist the membership row based on the users.role value so the
+			// mismatch is resolved on first login and every subsequent read returns correctly.
+			healRole := user.Role
+			if healRole == "" {
+				healRole = "member"
+			}
+			if addErr := u.repo.AddMember(ctx, user.TenantID, user.ID, healRole); addErr == nil {
+				user.Role = healRole
+			}
 		}
 
 		return &SyncResult{

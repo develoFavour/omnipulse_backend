@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"omnipulse/apps/api-gateway/internal/usecase"
 	"omnipulse/apps/api-gateway/internal/utils"
@@ -22,6 +23,7 @@ func (h *IdentityHandler) SyncUser(w http.ResponseWriter, r *http.Request) {
 	// 1. Get raw token
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" || len(authHeader) < 8 {
+		log.Printf("[IdentityHandler] SyncUser REJECTED: missing or malformed Authorization header")
 		utils.WriteError(w, http.StatusUnauthorized, "Missing authorization token")
 		return
 	}
@@ -32,17 +34,27 @@ func (h *IdentityHandler) SyncUser(w http.ResponseWriter, r *http.Request) {
 		Token: token,
 	})
 	if err != nil {
+		log.Printf("[IdentityHandler] SyncUser REJECTED: JWT verification failed: %v", err)
 		utils.WriteError(w, http.StatusUnauthorized, "Invalid token")
 		return
 	}
 
-	// 3. JIT Sync
-	syncRes, err := h.useCase.SyncUser(r.Context(), claims.Subject, "clerk-sync@omnipulse.dev")
+	// 3. Extract real user email from the X-User-Email header (injected by ClerkAuthProvider on the frontend)
+	// Fall back to empty string so SyncUser usecase will resolve it via Clerk API if needed
+	userEmail := r.Header.Get("X-User-Email")
+	clerkUserID := claims.Subject
+	log.Printf("[IdentityHandler] SyncUser: resolving identity for clerk_user_id=%s email=%q", clerkUserID, userEmail)
+
+	// 4. JIT Sync — resolves tenant, user record, and workspace role
+	syncRes, err := h.useCase.SyncUser(r.Context(), clerkUserID, userEmail)
 	if err != nil {
+		log.Printf("[IdentityHandler] SyncUser FAILED for clerk_user_id=%s: %v", clerkUserID, err)
 		utils.WriteError(w, http.StatusInternalServerError, "Failed to sync user")
 		return
 	}
 
+	log.Printf("[IdentityHandler] SyncUser SUCCESS: clerk_user_id=%s role=%s tenant=%s",
+		clerkUserID, syncRes.User.Role, syncRes.Tenant.ID)
 	utils.WriteJSON(w, http.StatusOK, syncRes)
 }
 

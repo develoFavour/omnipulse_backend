@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"omnipulse/apps/api-gateway/internal/domain"
@@ -174,7 +175,8 @@ func (r *PostgresIdentityRepository) ListMembers(ctx context.Context, tenantID s
 	return members, nil
 }
 
-// GetMemberRole retrieves the explicit workspace role for a user
+// GetMemberRole retrieves the explicit workspace role for a user from tenant_members.
+// Falls back to the users.role column for backward compatibility with legacy records.
 func (r *PostgresIdentityRepository) GetMemberRole(ctx context.Context, tenantID, userID string) (string, error) {
 	query := `
 		SELECT role 
@@ -185,16 +187,23 @@ func (r *PostgresIdentityRepository) GetMemberRole(ctx context.Context, tenantID
 	err := r.db.QueryRowContext(ctx, query, tenantID, userID).Scan(&role)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			// Fallback to checking users table for legacy backward compatibility
+			// No explicit membership record found — fall back to the users table role column
+			// (supports legacy accounts provisioned before tenant_members was introduced)
+			log.Printf("[GetMemberRole] No tenant_members row for tenant=%s user=%s, checking users table fallback", tenantID, userID)
 			var fallbackRole string
+			// NOTE: users.id IS the Clerk user ID (VARCHAR), so WHERE id = $1 is correct here
 			fErr := r.db.QueryRowContext(ctx, `SELECT role FROM users WHERE id = $1 AND tenant_id = $2::uuid;`, userID, tenantID).Scan(&fallbackRole)
 			if fErr == nil {
+				log.Printf("[GetMemberRole] Resolved role=%q from users table fallback for user=%s", fallbackRole, userID)
 				return fallbackRole, nil
 			}
+			log.Printf("[GetMemberRole] users table fallback also found no row for user=%s tenant=%s: %v", userID, tenantID, fErr)
 			return "", nil
 		}
+		log.Printf("[GetMemberRole] Query error for tenant=%s user=%s: %v", tenantID, userID, err)
 		return "", fmt.Errorf("failed to query member role: %w", err)
 	}
+	log.Printf("[GetMemberRole] Resolved role=%q from tenant_members for tenant=%s user=%s", role, tenantID, userID)
 	return role, nil
 }
 
