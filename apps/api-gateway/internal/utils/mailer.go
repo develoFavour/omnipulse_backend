@@ -127,42 +127,102 @@ func (m *Mailer) SendTeamInvitation(toEmail, inviterName, workspaceName, role, i
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Invitation to join %[2]s</title>
-  <style>
-    body { margin: 0; padding: 0; background-color: #0b0f19; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #f3f4f6; }
-    .container { max-width: 580px; margin: 40px auto; background-color: #111827; border: 1px solid #1f2937; border-radius: 16px; overflow: hidden; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5); }
-    .header { padding: 32px 40px; text-align: center; background: linear-gradient(135deg, #1e1b4b 0%%, #312e81 50%%, #4338ca 100%%); border-bottom: 1px solid #3730a3; }
-    .logo { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; color: #ffffff; text-decoration: none; }
-    .logo-badge { background-color: #6366f1; color: white; padding: 3px 10px; border-radius: 9999px; font-size: 11px; font-weight: 700; text-transform: uppercase; margin-left: 8px; vertical-align: middle; }
-    .content { padding: 40px; text-align: center; }
-    h1 { font-size: 22px; font-weight: 700; color: #ffffff; margin: 0 0 16px 0; line-height: 1.3; }
-    p { font-size: 15px; line-height: 1.6; color: #9ca3af; margin: 0 0 24px 0; }
-    .role-badge { display: inline-block; background-color: #1e1b4b; color: #a5b4fc; border: 1px solid #4338ca; padding: 6px 16px; border-radius: 9999px; font-weight: 600; font-size: 13px; margin-bottom: 28px; }
-    .cta-btn { display: inline-block; background: linear-gradient(135deg, #4f46e5 0%%, #6366f1 100%%); color: #ffffff !important; text-decoration: none; font-weight: 700; font-size: 16px; padding: 14px 36px; border-radius: 10px; box-shadow: 0 10px 15px -3px rgba(79, 70, 229, 0.4); }
-    .notice { font-size: 12px; color: #6b7280; margin-top: 36px; line-height: 1.5; border-top: 1px solid #1f2937; padding-top: 24px; }
-    .footer { padding: 24px 40px; text-align: center; background-color: #0b0f19; font-size: 12px; color: #4b5563; }
-  </style>
 </head>
-<body>
-  <div class="container">
-    <div class="header">
-      <div class="logo">⚡ Omnipulse <span class="logo-badge">Team</span></div>
-    </div>
-    <div class="content">
-      <h1>Collaborate on %[2]s</h1>
-      <p><strong>%[1]s</strong> has invited you to join their workspace on Omnipulse as an official team member.</p>
-      <div class="role-badge">Assigned Role: %[3]s</div>
-      <div>
-        <a href="%[4]s" class="cta-btn" target="_blank">Accept Invitation</a>
-      </div>
-      <div class="notice">
-        This link is secure and will expire in <strong>7 days</strong>.<br>
-        If you weren't expecting this invitation, you can safely ignore this email.
-      </div>
-    </div>
-    <div class="footer">
-      Omnipulse &bull; Intelligent Cross-Platform Messaging &amp; Broadcast Engine
-    </div>
-  </div>
+<body style="margin: 0; padding: 0; background-color: #f9fafb; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased; color: #111827;">
+  <table role="presentation" width="100%%" border="0" cellspacing="0" cellpadding="0" style="background-color: #f9fafb; padding: 48px 16px;">
+    <tr>
+      <td align="center">
+        <!-- Main Card -->
+        <table role="presentation" width="100%%" border="0" cellspacing="0" cellpadding="0" style="max-width: 540px; background-color: #ffffff; border: 1px solid #e5e7eb; border-radius: 12px; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);">
+          <!-- Header -->
+          <tr>
+            <td style="padding: 32px 40px 24px 40px; border-bottom: 1px solid #f3f4f6;">
+              <table role="presentation" width="100%%" border="0" cellspacing="0" cellpadding="0">
+                <tr>
+                  <td align="left">
+                    <span style="display: inline-block; background-color: #4f46e5; color: #ffffff; font-weight: 700; font-size: 14px; padding: 6px 12px; border-radius: 8px; letter-spacing: -0.2px;">⚡ Omnipulse</span>
+                  </td>
+                  <td align="right">
+                    <span style="font-size: 12px; font-weight: 600; color: #6b7280; background-color: #f3f4f6; border: 1px solid #e5e7eb; padding: 4px 10px; border-radius: 9999px;">Team Invite</span>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Content Body -->
+          <tr>
+            <td style="padding: 36px 40px 40px 40px;">
+              <h1 style="margin: 0 0 12px 0; font-size: 22px; font-weight: 700; color: #111827; letter-spacing: -0.4px; line-height: 1.3;">
+                Join %[2]s
+              </h1>
+              <p style="margin: 0 0 24px 0; font-size: 15px; line-height: 24px; color: #4b5563;">
+                <strong>%[1]s</strong> has invited you to collaborate on the <strong>%[2]s</strong> workspace on Omnipulse.
+              </p>
+
+              <!-- Workspace Details Box -->
+              <table role="presentation" width="100%%" border="0" cellspacing="0" cellpadding="0" style="background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; margin-bottom: 28px;">
+                <tr>
+                  <td style="padding: 14px 18px; border-bottom: 1px solid #e5e7eb;">
+                    <table role="presentation" width="100%%" border="0" cellspacing="0" cellpadding="0">
+                      <tr>
+                        <td style="font-size: 13px; color: #6b7280;">Assigned Role</td>
+                        <td align="right">
+                          <span style="display: inline-block; background-color: #eef2ff; color: #4338ca; border: 1px solid #c7d2fe; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 6px;">%[3]s</span>
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding: 14px 18px;">
+                    <table role="presentation" width="100%%" border="0" cellspacing="0" cellpadding="0">
+                      <tr>
+                        <td style="font-size: 13px; color: #6b7280;">Invited By</td>
+                        <td align="right" style="font-size: 13px; font-weight: 600; color: #111827;">%[1]s</td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Call to Action Button -->
+              <table role="presentation" width="100%%" border="0" cellspacing="0" cellpadding="0">
+                <tr>
+                  <td align="center" style="padding: 4px 0 24px 0;">
+                    <a href="%[4]s" target="_blank" style="display: inline-block; background-color: #4f46e5; color: #ffffff !important; text-decoration: none; font-weight: 600; font-size: 15px; padding: 13px 36px; border-radius: 8px; text-align: center;">
+                      Accept Invitation &rarr;
+                    </a>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Security Notice -->
+              <p style="margin: 0; font-size: 13px; line-height: 20px; color: #6b7280; border-top: 1px solid #f3f4f6; padding-top: 20px;">
+                This invitation link is secure and will expire in <strong>7 days</strong>.<br>
+                If you weren't expecting this invitation, you can safely ignore this email.
+              </p>
+
+              <!-- Fallback Link -->
+              <p style="margin: 16px 0 0 0; font-size: 11px; line-height: 18px; color: #9ca3af; word-break: break-all;">
+                Button not working? Copy and paste this URL into your browser:<br>
+                <a href="%[4]s" target="_blank" style="color: #4f46e5; text-decoration: underline;">%[4]s</a>
+              </p>
+            </td>
+          </tr>
+        </table>
+
+        <!-- Footer -->
+        <table role="presentation" width="100%%" border="0" cellspacing="0" cellpadding="0" style="max-width: 540px; margin-top: 24px;">
+          <tr>
+            <td align="center" style="font-size: 12px; color: #9ca3af; line-height: 18px;">
+              Omnipulse &bull; Intelligent Cross-Platform Messaging &amp; Broadcast Engine
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
 </body>
 </html>`, escapedInviter, escapedWorkspace, escapedRole, escapedURL)
 
