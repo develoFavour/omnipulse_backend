@@ -140,7 +140,7 @@ sequenceDiagram
 
 ---
 
-## Senior Engineering Highlights
+## Technical Design Decisions
 
 ### 1. Zero-Allocation Media Pipelining
 Broadcasting attachments (videos, documents, audio) naively leads to memory exhaustion when thousands of goroutines read multi-megabyte files into heap RAM simultaneously. 
