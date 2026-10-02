@@ -67,6 +67,16 @@ func (u *TeamUseCase) ListTeam(ctx context.Context, tenantID string) (*TeamOverv
 		return nil, fmt.Errorf("failed to list team members: %w", err)
 	}
 
+	// Auto-resolve any legacy or missing emails via Clerk API and persist to DB
+	for i := range members {
+		if members[i].Email == "" || strings.Contains(members[i].Email, "@placeholder.com") {
+			if clerkEmail, _ := utils.ResolveClerkUserEmailAndName(ctx, members[i].UserID); clerkEmail != "" {
+				members[i].Email = clerkEmail
+				_ = u.repo.UpdateUserEmail(ctx, members[i].UserID, clerkEmail)
+			}
+		}
+	}
+
 	invitations, err := u.repo.ListInvitations(ctx, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list pending invitations: %w", err)
@@ -154,9 +164,24 @@ func (u *TeamUseCase) InviteMember(
 	}
 
 	inviterUser, _ := u.repo.FindUserByClerkID(ctx, callerID)
-	inviterName := "A teammate"
-	if inviterUser != nil && inviterUser.Email != "" {
+	inviterName := ""
+	if inviterUser != nil && inviterUser.Email != "" && !strings.Contains(inviterUser.Email, "@placeholder.com") {
 		inviterName = inviterUser.Email
+	}
+
+	// If inviter name is empty or placeholder, resolve real name or email from Clerk API
+	if inviterName == "" {
+		cEmail, cName := utils.ResolveClerkUserEmailAndName(ctx, callerID)
+		if cName != "" {
+			inviterName = cName
+		} else if cEmail != "" {
+			inviterName = cEmail
+		} else {
+			inviterName = "A teammate"
+		}
+		if cEmail != "" {
+			_ = u.repo.UpdateUserEmail(ctx, callerID, cEmail)
+		}
 	}
 
 	inviteURL := fmt.Sprintf("%s/invite?token=%s", u.appBaseURL, token)

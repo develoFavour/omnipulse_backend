@@ -69,6 +69,7 @@ type IdentityRepository interface {
 	FindTenantByID(ctx context.Context, tenantID string) (*Tenant, error)
 	CreateTenantWithUser(ctx context.Context, tenant *Tenant, user *User) error
 	UpdateTenantName(ctx context.Context, tenantID string, name string) error
+	UpdateUserEmail(ctx context.Context, userID string, email string) error
 	SetOnboardingCompleted(ctx context.Context, tenantID string) error
 
 	// Multi-workspace & Team Memberships

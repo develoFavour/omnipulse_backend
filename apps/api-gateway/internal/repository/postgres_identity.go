@@ -56,6 +56,16 @@ func (r *PostgresIdentityRepository) FindTenantByID(ctx context.Context, tenantI
 	return &t, nil
 }
 
+func (r *PostgresIdentityRepository) UpdateUserEmail(ctx context.Context, userID, email string) error {
+	query := `
+		UPDATE users
+		SET email = $1, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $2;
+	`
+	_, err := r.db.ExecContext(ctx, query, email, userID)
+	return err
+}
+
 func (r *PostgresIdentityRepository) CreateTenantWithUser(ctx context.Context, tenant *domain.Tenant, user *domain.User) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {

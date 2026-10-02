@@ -87,7 +87,8 @@ func AuthMiddleware(identityUC *usecase.IdentityUseCase) func(http.Handler) http
 					claims, err := jwt.Verify(r.Context(), &jwt.VerifyParams{Token: token})
 					if err == nil {
 						clerkUserID := claims.Subject
-						syncRes, err := identityUC.SyncUser(r.Context(), clerkUserID, clerkUserID+"@placeholder.com")
+						userEmail := r.Header.Get("X-User-Email")
+						syncRes, err := identityUC.SyncUser(r.Context(), clerkUserID, userEmail)
 						if err == nil && syncRes != nil && syncRes.Tenant != nil {
 							ctx := context.WithValue(r.Context(), TenantIDKey, syncRes.Tenant.ID)
 							ctx = context.WithValue(ctx, UserIDKey, syncRes.User.ID)
@@ -127,7 +128,8 @@ func AuthMiddleware(identityUC *usecase.IdentityUseCase) func(http.Handler) http
 
 			// 4. JIT Provisioning & Tenant Resolution
 			clerkUserID := claims.Subject
-			syncRes, err := identityUC.SyncUser(r.Context(), clerkUserID, clerkUserID+"@placeholder.com")
+			userEmail := r.Header.Get("X-User-Email")
+			syncRes, err := identityUC.SyncUser(r.Context(), clerkUserID, userEmail)
 			if err != nil {
 				log.Printf("[AuthMiddleware] tenant resolution failed clerk_user_id=%s error=%v", clerkUserID, err)
 				utils.WriteError(w, http.StatusInternalServerError, "Failed to resolve tenant workspace context")

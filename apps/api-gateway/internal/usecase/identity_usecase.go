@@ -3,8 +3,11 @@ package usecase
 import (
 	"context"
 	"fmt"
-	"omnipulse/apps/api-gateway/internal/domain"
+	"strings"
 	"sync"
+
+	"omnipulse/apps/api-gateway/internal/domain"
+	"omnipulse/apps/api-gateway/internal/utils"
 )
 
 type IdentityUseCase struct {
@@ -30,12 +33,26 @@ func (u *IdentityUseCase) SyncUser(ctx context.Context, clerkUserID, email strin
 	u.provisionMu.Lock()
 	defer u.provisionMu.Unlock()
 
+	// If email is missing or placeholder, resolve verified email directly from Clerk API
+	if email == "" || strings.Contains(email, "@placeholder.com") {
+		if clerkEmail, _ := utils.ResolveClerkUserEmailAndName(ctx, clerkUserID); clerkEmail != "" {
+			email = clerkEmail
+		}
+	}
+
 	user, err := u.repo.FindUserByClerkID(ctx, clerkUserID)
 	if err != nil {
 		return nil, err
 	}
 
 	if user != nil {
+		// If existing user has placeholder email but we now have real email, persist it immediately
+		if email != "" && !strings.Contains(email, "@placeholder.com") && user.Email != email {
+			if updateErr := u.repo.UpdateUserEmail(ctx, user.ID, email); updateErr == nil {
+				user.Email = email
+			}
+		}
+
 		// Existing user, load tenant
 		tenant, err := u.repo.FindTenantByID(ctx, user.TenantID)
 		if err != nil {
@@ -58,6 +75,10 @@ func (u *IdentityUseCase) SyncUser(ctx context.Context, clerkUserID, email strin
 	}
 
 	// JIT Provisioning: New User -> New Tenant
+	if email == "" {
+		email = clerkUserID + "@placeholder.com"
+	}
+
 	newTenant := &domain.Tenant{
 		CompanyName:         "My Workspace",
 		OnboardingCompleted: false,
