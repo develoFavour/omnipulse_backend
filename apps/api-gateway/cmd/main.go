@@ -426,7 +426,7 @@ func main() {
 	c := cors.New(cors.Options{
 		AllowedOrigins:   allowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Authorization", "Content-Type"},
+		AllowedHeaders:   []string{"*"},
 		AllowCredentials: true,
 	})
 	corsHandler := c.Handler(handler.AuthMiddleware(identityUseCase)(mux))

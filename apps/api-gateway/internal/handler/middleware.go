@@ -104,6 +104,7 @@ func AuthMiddleware(identityUC *usecase.IdentityUseCase) func(http.Handler) http
 			// 1. Extract the Authorization header frame
 			authHeader := r.Header.Get("Authorization")
 			if authHeader == "" {
+				log.Printf("[AuthMiddleware] Authorization header MISSING for %s %s from %s\n", r.Method, r.URL.Path, r.RemoteAddr)
 				utils.WriteError(w, http.StatusUnauthorized, "Missing required Authorization identity credentials")
 				return
 			}
@@ -111,6 +112,7 @@ func AuthMiddleware(identityUC *usecase.IdentityUseCase) func(http.Handler) http
 			// 2. Parse the Bearer token scheme format
 			parts := strings.Split(authHeader, " ")
 			if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+				log.Printf("[AuthMiddleware] Invalid Bearer scheme for %s %s (scheme: %s)\n", r.Method, r.URL.Path, parts[0])
 				utils.WriteError(w, http.StatusUnauthorized, "Invalid authorization scheme formatting. Use 'Bearer <token>'")
 				return
 			}
@@ -122,6 +124,7 @@ func AuthMiddleware(identityUC *usecase.IdentityUseCase) func(http.Handler) http
 				Token: token,
 			})
 			if err != nil {
+				log.Printf("[AuthMiddleware] Clerk JWT verification FAILED for %s %s: %v\n", r.Method, r.URL.Path, err)
 				utils.WriteError(w, http.StatusUnauthorized, "Provided identity token is expired or unauthorized")
 				return
 			}
