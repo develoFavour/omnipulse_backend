@@ -446,3 +446,145 @@ func (r *PostgresIdentityRepository) AcceptInvitation(ctx context.Context, token
 	}
 	return &t, nil
 }
+
+// ListUserWorkspaces returns all workspaces the user has access to, ordered by active workspace first
+func (r *PostgresIdentityRepository) ListUserWorkspaces(ctx context.Context, userID string) ([]domain.UserWorkspace, error) {
+	query := `
+		SELECT 
+			t.id::text,
+			t.company_name,
+			COALESCE(tm.role, u.role, 'member') as role,
+			(u.tenant_id = t.id) as is_active,
+			t.onboarding_completed,
+			t.created_at
+		FROM tenants t
+		JOIN users u ON u.id = $1 AND (u.tenant_id = t.id OR t.id IN (SELECT tenant_id FROM tenant_members WHERE user_id = $1))
+		LEFT JOIN tenant_members tm ON tm.tenant_id = t.id AND tm.user_id = $1
+		ORDER BY (u.tenant_id = t.id) DESC, t.created_at ASC;
+	`
+	rows, err := r.db.QueryContext(ctx, query, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query user workspaces: %w", err)
+	}
+	defer rows.Close()
+
+	var workspaces []domain.UserWorkspace
+	for rows.Next() {
+		var w domain.UserWorkspace
+		if err := rows.Scan(&w.ID, &w.CompanyName, &w.Role, &w.IsActive, &w.OnboardingCompleted, &w.CreatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan workspace: %w", err)
+		}
+		workspaces = append(workspaces, w)
+	}
+	return workspaces, nil
+}
+
+// SwitchUserWorkspace validates the user's access to targetTenantID and updates their active workspace in users table
+func (r *PostgresIdentityRepository) SwitchUserWorkspace(ctx context.Context, userID, targetTenantID string) (*domain.Tenant, string, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	defer tx.Rollback()
+
+	// 1. Verify target tenant exists and user has access
+	var t domain.Tenant
+	var role string
+	checkQuery := `
+		SELECT 
+			t.id::text, 
+			t.company_name, 
+			t.onboarding_completed, 
+			t.created_at, 
+			t.updated_at,
+			COALESCE(tm.role, u.role, 'member') as role
+		FROM tenants t
+		JOIN users u ON u.id = $1
+		LEFT JOIN tenant_members tm ON tm.tenant_id = t.id AND tm.user_id = $1
+		WHERE t.id = $2::uuid AND (tm.user_id = $1 OR u.tenant_id = t.id);
+	`
+	err = tx.QueryRowContext(ctx, checkQuery, userID, targetTenantID).Scan(
+		&t.ID, &t.CompanyName, &t.OnboardingCompleted, &t.CreatedAt, &t.UpdatedAt, &role,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, "", fmt.Errorf("workspace not found or access denied")
+		}
+		return nil, "", fmt.Errorf("failed to verify workspace membership: %w", err)
+	}
+
+	// 2. Ensure membership record exists in tenant_members (self-heal)
+	upsertQuery := `
+		INSERT INTO tenant_members (tenant_id, user_id, role)
+		VALUES ($1::uuid, $2, $3)
+		ON CONFLICT (tenant_id, user_id) DO NOTHING;
+	`
+	_, _ = tx.ExecContext(ctx, upsertQuery, targetTenantID, userID, role)
+
+	// 3. Update user's active tenant and role
+	updateQuery := `
+		UPDATE users
+		SET tenant_id = $1::uuid, role = $2, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $3;
+	`
+	if _, err := tx.ExecContext(ctx, updateQuery, targetTenantID, role, userID); err != nil {
+		return nil, "", fmt.Errorf("failed to switch active workspace: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, "", err
+	}
+
+	log.Printf("[SwitchUserWorkspace] Successfully switched user %s to workspace %s (%s) with role %s", userID, t.ID, t.CompanyName, role)
+	return &t, role, nil
+}
+
+// CreateWorkspace creates a new workspace, adds user as owner, and sets it as the active workspace
+func (r *PostgresIdentityRepository) CreateWorkspace(ctx context.Context, userID, companyName string) (*domain.Tenant, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	// 1. Create new tenant
+	var t domain.Tenant
+	t.CompanyName = companyName
+	t.OnboardingCompleted = false
+	tenantQuery := `
+		INSERT INTO tenants (company_name, onboarding_completed)
+		VALUES ($1, FALSE)
+		RETURNING id, created_at, updated_at;
+	`
+	err = tx.QueryRowContext(ctx, tenantQuery, companyName).Scan(&t.ID, &t.CreatedAt, &t.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create tenant: %w", err)
+	}
+
+	// 2. Add user as owner in tenant_members
+	memberQuery := `
+		INSERT INTO tenant_members (tenant_id, user_id, role)
+		VALUES ($1::uuid, $2, 'owner')
+		ON CONFLICT (tenant_id, user_id) DO UPDATE SET role = 'owner';
+	`
+	if _, err := tx.ExecContext(ctx, memberQuery, t.ID, userID); err != nil {
+		return nil, fmt.Errorf("failed to assign workspace owner: %w", err)
+	}
+
+	// 3. Switch user's active tenant to the newly created one
+	updateUserQuery := `
+		UPDATE users
+		SET tenant_id = $1::uuid, role = 'owner', updated_at = CURRENT_TIMESTAMP
+		WHERE id = $2;
+	`
+	if _, err := tx.ExecContext(ctx, updateUserQuery, t.ID, userID); err != nil {
+		return nil, fmt.Errorf("failed to set active workspace for user: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+
+	log.Printf("[CreateWorkspace] User %s created and switched to new workspace %s (%s)", userID, t.ID, companyName)
+	return &t, nil
+}

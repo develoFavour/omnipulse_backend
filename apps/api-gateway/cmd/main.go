@@ -335,6 +335,11 @@ func main() {
 	mux.HandleFunc("PATCH /api/v1/onboarding/brand", identityHandler.UpdateBrand)
 	mux.HandleFunc("POST /api/v1/onboarding/complete", identityHandler.CompleteOnboarding)
 
+	// Multi-Workspace Endpoints
+	mux.HandleFunc("GET /api/v1/workspaces", identityHandler.ListWorkspaces)
+	mux.HandleFunc("POST /api/v1/workspaces/switch", identityHandler.SwitchWorkspace)
+	mux.HandleFunc("POST /api/v1/workspaces", identityHandler.CreateWorkspace)
+
 	// Team Management & Invitation Endpoints
 	mux.HandleFunc("GET /api/v1/team/members", teamHandler.ListTeam)
 	mux.HandleFunc("POST /api/v1/team/invite", teamHandler.InviteMember)

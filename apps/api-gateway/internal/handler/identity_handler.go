@@ -99,3 +99,90 @@ func (h *IdentityHandler) CompleteOnboarding(w http.ResponseWriter, r *http.Requ
 
 	utils.WriteJSON(w, http.StatusOK, map[string]string{"message": "Onboarding completed"})
 }
+
+// ListWorkspaces handles: GET /api/v1/workspaces
+func (h *IdentityHandler) ListWorkspaces(w http.ResponseWriter, r *http.Request) {
+	userID, ok := r.Context().Value(UserIDKey).(string)
+	if !ok || userID == "" {
+		log.Printf("[IdentityHandler] ListWorkspaces REJECTED: missing authenticated user context")
+		utils.WriteError(w, http.StatusUnauthorized, "Missing user context")
+		return
+	}
+
+	workspaces, err := h.useCase.ListWorkspaces(r.Context(), userID)
+	if err != nil {
+		log.Printf("[IdentityHandler] ListWorkspaces FAILED for user=%s: %v", userID, err)
+		utils.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, workspaces)
+}
+
+type switchWorkspaceReq struct {
+	TenantID string `json:"tenant_id"`
+}
+
+// SwitchWorkspace handles: POST /api/v1/workspaces/switch
+func (h *IdentityHandler) SwitchWorkspace(w http.ResponseWriter, r *http.Request) {
+	userID, ok := r.Context().Value(UserIDKey).(string)
+	if !ok || userID == "" {
+		log.Printf("[IdentityHandler] SwitchWorkspace REJECTED: missing authenticated user context")
+		utils.WriteError(w, http.StatusUnauthorized, "Missing user context")
+		return
+	}
+
+	var req switchWorkspaceReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.TenantID == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Invalid request body: tenant_id is required")
+		return
+	}
+
+	tenant, role, err := h.useCase.SwitchWorkspace(r.Context(), userID, req.TenantID)
+	if err != nil {
+		log.Printf("[IdentityHandler] SwitchWorkspace FAILED user=%s target=%s: %v", userID, req.TenantID, err)
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	log.Printf("[IdentityHandler] SwitchWorkspace SUCCESS: user=%s switched to tenant=%s (%s) role=%s", userID, tenant.ID, tenant.CompanyName, role)
+	utils.WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"message": "Switched workspace successfully",
+		"tenant":  tenant,
+		"role":    role,
+	})
+}
+
+type createWorkspaceReq struct {
+	CompanyName string `json:"company_name"`
+}
+
+// CreateWorkspace handles: POST /api/v1/workspaces
+func (h *IdentityHandler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
+	userID, ok := r.Context().Value(UserIDKey).(string)
+	if !ok || userID == "" {
+		log.Printf("[IdentityHandler] CreateWorkspace REJECTED: missing authenticated user context")
+		utils.WriteError(w, http.StatusUnauthorized, "Missing user context")
+		return
+	}
+
+	var req createWorkspaceReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	tenant, err := h.useCase.CreateWorkspace(r.Context(), userID, req.CompanyName)
+	if err != nil {
+		log.Printf("[IdentityHandler] CreateWorkspace FAILED user=%s: %v", userID, err)
+		utils.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	log.Printf("[IdentityHandler] CreateWorkspace SUCCESS: user=%s created tenant=%s (%s)", userID, tenant.ID, tenant.CompanyName)
+	utils.WriteJSON(w, http.StatusCreated, map[string]interface{}{
+		"message": "Workspace created successfully",
+		"tenant":  tenant,
+		"role":    "owner",
+	})
+}

@@ -131,3 +131,31 @@ func (u *IdentityUseCase) CompleteOnboarding(ctx context.Context, tenantID strin
 
 	return u.repo.SetOnboardingCompleted(ctx, tenantID)
 }
+
+func (u *IdentityUseCase) ListWorkspaces(ctx context.Context, userID string) ([]domain.UserWorkspace, error) {
+	if userID == "" {
+		return nil, fmt.Errorf("user ID cannot be empty")
+	}
+	return u.repo.ListUserWorkspaces(ctx, userID)
+}
+
+func (u *IdentityUseCase) SwitchWorkspace(ctx context.Context, userID, targetTenantID string) (*domain.Tenant, string, error) {
+	if userID == "" {
+		return nil, "", fmt.Errorf("user ID cannot be empty")
+	}
+	if targetTenantID == "" {
+		return nil, "", fmt.Errorf("target workspace ID cannot be empty")
+	}
+	return u.repo.SwitchUserWorkspace(ctx, userID, targetTenantID)
+}
+
+func (u *IdentityUseCase) CreateWorkspace(ctx context.Context, userID, companyName string) (*domain.Tenant, error) {
+	if userID == "" {
+		return nil, fmt.Errorf("user ID cannot be empty")
+	}
+	name := strings.TrimSpace(companyName)
+	if name == "" {
+		name = "My Workspace"
+	}
+	return u.repo.CreateWorkspace(ctx, userID, name)
+}

@@ -37,6 +37,16 @@ type TenantChannel struct {
 	UpdatedAt            time.Time       `json:"updated_at"`
 }
 
+// UserWorkspace represents a workspace the user belongs to, with role and active status
+type UserWorkspace struct {
+	ID                  string    `json:"id"`
+	CompanyName         string    `json:"company_name"`
+	Role                string    `json:"role"`
+	IsActive            bool      `json:"is_active"`
+	OnboardingCompleted bool      `json:"onboarding_completed"`
+	CreatedAt           time.Time `json:"created_at"`
+}
+
 // TenantMember represents a user's membership and permissions within a workspace
 type TenantMember struct {
 	ID        string    `json:"id"`
@@ -86,6 +96,11 @@ type IdentityRepository interface {
 	ListInvitations(ctx context.Context, tenantID string) ([]TeamInvitation, error)
 	RevokeInvitation(ctx context.Context, tenantID, invitationID string) error
 	AcceptInvitation(ctx context.Context, token, userID string) (*Tenant, error)
+
+	// Multi-workspace management & switching
+	ListUserWorkspaces(ctx context.Context, userID string) ([]UserWorkspace, error)
+	SwitchUserWorkspace(ctx context.Context, userID, targetTenantID string) (*Tenant, string, error)
+	CreateWorkspace(ctx context.Context, userID, companyName string) (*Tenant, error)
 }
 
 // ChannelRepository defines data access for Workspace channels
