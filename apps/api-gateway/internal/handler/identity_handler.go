@@ -70,6 +70,12 @@ func (h *IdentityHandler) UpdateBrand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	callerRole, _ := r.Context().Value(UserRoleKey).(string)
+	if callerRole != "owner" {
+		utils.WriteError(w, http.StatusForbidden, "Only workspace owners can rename the workspace")
+		return
+	}
+
 	var req updateBrandReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		utils.WriteError(w, http.StatusBadRequest, "Invalid request body")
