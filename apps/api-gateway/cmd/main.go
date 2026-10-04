@@ -342,10 +342,10 @@ func main() {
 
 	// Team Management & Invitation Endpoints
 	mux.HandleFunc("GET /api/v1/team/members", teamHandler.ListTeam)
-	mux.HandleFunc("POST /api/v1/team/invite", teamHandler.InviteMember)
-	mux.HandleFunc("DELETE /api/v1/team/invitations/{id}", teamHandler.RevokeInvitation)
-	mux.HandleFunc("DELETE /api/v1/team/members/{id}", teamHandler.RemoveMember)
-	mux.HandleFunc("PATCH /api/v1/team/members/{id}/role", teamHandler.UpdateMemberRole)
+	mux.Handle("POST /api/v1/team/invite", handler.RequireRole("owner", "admin")(http.HandlerFunc(teamHandler.InviteMember)))
+	mux.Handle("DELETE /api/v1/team/invitations/{id}", handler.RequireRole("owner", "admin")(http.HandlerFunc(teamHandler.RevokeInvitation)))
+	mux.Handle("DELETE /api/v1/team/members/{id}", handler.RequireRole("owner")(http.HandlerFunc(teamHandler.RemoveMember)))
+	mux.Handle("PATCH /api/v1/team/members/{id}/role", handler.RequireRole("owner")(http.HandlerFunc(teamHandler.UpdateMemberRole)))
 
 	// Invitation Acceptance & Preview
 	mux.HandleFunc("GET /api/v1/invitations/preview", teamHandler.GetInvitationPreview)
@@ -357,10 +357,10 @@ func main() {
 	mux.Handle("DELETE /api/v1/channels/{platform}", handler.RequireRole("owner", "admin")(http.HandlerFunc(channelHandler.HandleDisconnectChannel)))
 
 	// WhatsApp Multi-Device QR Endpoints
-	mux.HandleFunc("GET /api/v1/channels/whatsapp/qr", channelHandler.HandleWhatsAppQR)
+	mux.Handle("GET /api/v1/channels/whatsapp/qr", handler.RequireRole("owner", "admin")(http.HandlerFunc(channelHandler.HandleWhatsAppQR)))
 	mux.HandleFunc("GET /api/v1/channels/whatsapp/status", channelHandler.HandleWhatsAppStatus)
 	mux.Handle("POST /api/v1/channels/whatsapp/disconnect", handler.RequireRole("owner", "admin")(http.HandlerFunc(channelHandler.HandleWhatsAppDisconnect)))
-	mux.HandleFunc("POST /api/v1/channels/whatsapp/sync-contacts", channelHandler.HandleWhatsAppSyncContacts)
+	mux.Handle("POST /api/v1/channels/whatsapp/sync-contacts", handler.RequireRole("owner", "admin")(http.HandlerFunc(channelHandler.HandleWhatsAppSyncContacts)))
 
 	// WhatsApp Embedded Signup (1-Click OAuth) Endpoints
 	mux.HandleFunc("GET /api/v1/channels/whatsapp/oauth/config", channelHandler.HandleWhatsAppOAuthConfig)
@@ -368,7 +368,7 @@ func main() {
 
 	// Telegram Destination Endpoints
 	mux.HandleFunc("GET /api/v1/telegram/destinations", destinationHandler.ListDestinations)
-	mux.HandleFunc("POST /api/v1/channels/telegram/sync-contacts", channelHandler.HandleTelegramSyncContacts)
+	mux.Handle("POST /api/v1/channels/telegram/sync-contacts", handler.RequireRole("owner", "admin")(http.HandlerFunc(channelHandler.HandleTelegramSyncContacts)))
 
 	// Contact Subsystem Endpoints
 	mux.HandleFunc("GET /api/v1/contacts/{id}", contactHandler.GetContact)
@@ -378,18 +378,18 @@ func main() {
 	// Audience Tags & Segmentation Endpoints
 	mux.HandleFunc("GET /api/v1/tags", tagHandler.ListTags)
 	mux.HandleFunc("POST /api/v1/tags", tagHandler.CreateTag)
-	mux.HandleFunc("PUT /api/v1/tags/{id}", tagHandler.UpdateTag)
-	mux.HandleFunc("DELETE /api/v1/tags/{id}", tagHandler.DeleteTag)
+	mux.Handle("PUT /api/v1/tags/{id}", handler.RequireRole("owner", "admin")(http.HandlerFunc(tagHandler.UpdateTag)))
+	mux.Handle("DELETE /api/v1/tags/{id}", handler.RequireRole("owner", "admin")(http.HandlerFunc(tagHandler.DeleteTag)))
 	mux.HandleFunc("POST /api/v1/contacts/{id}/tags", tagHandler.TagContact)
 	mux.HandleFunc("DELETE /api/v1/contacts/{id}/tags/{tag_id}", tagHandler.UntagContact)
-	mux.HandleFunc("POST /api/v1/tags/{id}/bulk-assign", tagHandler.BulkTagContacts)
+	mux.Handle("POST /api/v1/tags/{id}/bulk-assign", handler.RequireRole("owner", "admin")(http.HandlerFunc(tagHandler.BulkTagContacts)))
 
 	// Message Templates Subsystem Endpoints
 	mux.HandleFunc("GET /api/v1/templates", templateHandler.ListTemplates)
 	mux.HandleFunc("POST /api/v1/templates", templateHandler.CreateTemplate)
 	mux.HandleFunc("GET /api/v1/templates/{id}", templateHandler.GetTemplate)
 	mux.HandleFunc("PUT /api/v1/templates/{id}", templateHandler.UpdateTemplate)
-	mux.HandleFunc("DELETE /api/v1/templates/{id}", templateHandler.DeleteTemplate)
+	mux.Handle("DELETE /api/v1/templates/{id}", handler.RequireRole("owner", "admin")(http.HandlerFunc(templateHandler.DeleteTemplate)))
 
 	// Campaign Execution Subsystem Endpoints
 	mux.HandleFunc("POST /api/v1/campaigns", campaignHandler.CreateCampaign)
