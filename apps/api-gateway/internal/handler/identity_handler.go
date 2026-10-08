@@ -192,3 +192,28 @@ func (h *IdentityHandler) CreateWorkspace(w http.ResponseWriter, r *http.Request
 		"role":    "owner",
 	})
 }
+
+// DeleteWorkspace handles: DELETE /api/v1/workspaces
+func (h *IdentityHandler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
+	userID, ok := r.Context().Value(UserIDKey).(string)
+	if !ok || userID == "" {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing user context")
+		return
+	}
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok || tenantID == "" {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	if err := h.useCase.DeleteWorkspace(r.Context(), userID, tenantID); err != nil {
+		log.Printf("[IdentityHandler] DeleteWorkspace FAILED user=%s tenant=%s: %v", userID, tenantID, err)
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	log.Printf("[IdentityHandler] DeleteWorkspace SUCCESS: user=%s deleted tenant=%s", userID, tenantID)
+	utils.WriteJSON(w, http.StatusOK, map[string]string{
+		"message": "Workspace deleted successfully",
+	})
+}

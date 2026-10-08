@@ -101,6 +101,7 @@ type IdentityRepository interface {
 	ListUserWorkspaces(ctx context.Context, userID string) ([]UserWorkspace, error)
 	SwitchUserWorkspace(ctx context.Context, userID, targetTenantID string) (*Tenant, string, error)
 	CreateWorkspace(ctx context.Context, userID, companyName string) (*Tenant, error)
+	DeleteWorkspace(ctx context.Context, userID, tenantID string) error
 }
 
 // ChannelRepository defines data access for Workspace channels

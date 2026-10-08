@@ -159,3 +159,13 @@ func (u *IdentityUseCase) CreateWorkspace(ctx context.Context, userID, companyNa
 	}
 	return u.repo.CreateWorkspace(ctx, userID, name)
 }
+
+func (u *IdentityUseCase) DeleteWorkspace(ctx context.Context, userID, tenantID string) error {
+	if userID == "" {
+		return fmt.Errorf("user ID cannot be empty")
+	}
+	if tenantID == "" {
+		return fmt.Errorf("workspace ID cannot be empty")
+	}
+	return u.repo.DeleteWorkspace(ctx, userID, tenantID)
+}

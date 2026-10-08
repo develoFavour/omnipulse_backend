@@ -588,3 +588,50 @@ func (r *PostgresIdentityRepository) CreateWorkspace(ctx context.Context, userID
 	log.Printf("[CreateWorkspace] User %s created and switched to new workspace %s (%s)", userID, t.ID, companyName)
 	return &t, nil
 }
+
+// DeleteWorkspace permanently deletes a tenant workspace and re-assigns user to another workspace if available
+func (r *PostgresIdentityRepository) DeleteWorkspace(ctx context.Context, userID, tenantID string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// 1. Verify caller is owner of this workspace
+	var role string
+	err = tx.QueryRowContext(ctx, `SELECT role FROM tenant_members WHERE tenant_id = $1::uuid AND user_id = $2`, tenantID, userID).Scan(&role)
+	if err != nil {
+		return fmt.Errorf("user is not a member of this workspace: %w", err)
+	}
+	if role != "owner" {
+		return fmt.Errorf("only the workspace owner can delete this workspace")
+	}
+
+	// 2. Find if user has another workspace to switch to
+	var nextTenantID string
+	var nextRole string
+	_ = tx.QueryRowContext(ctx, `
+		SELECT tm.tenant_id, tm.role 
+		FROM tenant_members tm 
+		JOIN tenants t ON t.id = tm.tenant_id 
+		WHERE tm.user_id = $1 AND tm.tenant_id != $2::uuid 
+		ORDER BY tm.created_at ASC LIMIT 1
+	`, userID, tenantID).Scan(&nextTenantID, &nextRole)
+
+	// 3. Delete the tenant (cascades to all child tables)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM tenants WHERE id = $1::uuid`, tenantID); err != nil {
+		return fmt.Errorf("failed to delete tenant: %w", err)
+	}
+
+	// 4. Update user's active tenant
+	if nextTenantID != "" {
+		_, err = tx.ExecContext(ctx, `UPDATE users SET tenant_id = $1::uuid, role = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3`, nextTenantID, nextRole, userID)
+	} else {
+		_, err = tx.ExecContext(ctx, `UPDATE users SET tenant_id = NULL, role = 'member', updated_at = CURRENT_TIMESTAMP WHERE id = $1`, userID)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to update user workspace status: %w", err)
+	}
+
+	return tx.Commit()
+}

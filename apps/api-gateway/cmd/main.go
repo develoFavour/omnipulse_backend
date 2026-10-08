@@ -56,6 +56,7 @@ func main() {
 	} else {
 		logger.Println("[DB-MIGRATE] Successfully ensured users.id is VARCHAR(255).")
 	}
+	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name VARCHAR(100) NOT NULL DEFAULT ''; ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name VARCHAR(100) NOT NULL DEFAULT ''; CREATE TABLE IF NOT EXISTS tenant_settings (tenant_id UUID PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE, notification_preferences JSONB NOT NULL DEFAULT '[]', logo_url TEXT NOT NULL DEFAULT '', timezone VARCHAR(100) NOT NULL DEFAULT 'UTC', language VARCHAR(20) NOT NULL DEFAULT 'en-US', updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()); ALTER TABLE tenant_settings ADD COLUMN IF NOT EXISTS logo_url TEXT NOT NULL DEFAULT ''; CREATE TABLE IF NOT EXISTS api_keys (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, name VARCHAR(100) NOT NULL, prefix VARCHAR(32) NOT NULL, key_hash VARCHAR(128) NOT NULL UNIQUE, created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(), last_used_at TIMESTAMP WITH TIME ZONE, revoked_at TIMESTAMP WITH TIME ZONE); CREATE INDEX IF NOT EXISTS idx_api_keys_tenant_active ON api_keys(tenant_id) WHERE revoked_at IS NULL;`)
 	if _, err := db.Exec(`ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS selected_contact_ids JSONB NOT NULL DEFAULT '[]';`); err != nil {
 		logger.Printf("[DB-MIGRATE] Add selected_contact_ids column: %v\n", err)
 	} else {
@@ -171,6 +172,7 @@ func main() {
 	contactHandler := handler.NewContactHandler(contactUseCase)
 	campaignHandler := handler.NewCampaignHandler(campaignUseCase)
 	identityHandler := handler.NewIdentityHandler(identityUseCase)
+	settingsHandler := handler.NewSettingsHandler(db)
 	notificationHandler := handler.NewNotificationHandler(notificationUseCase)
 	analyticsHandler := handler.NewAnalyticsHandler(analyticsUseCase)
 
@@ -339,6 +341,16 @@ func main() {
 	mux.HandleFunc("GET /api/v1/workspaces", identityHandler.ListWorkspaces)
 	mux.HandleFunc("POST /api/v1/workspaces/switch", identityHandler.SwitchWorkspace)
 	mux.HandleFunc("POST /api/v1/workspaces", identityHandler.CreateWorkspace)
+	mux.Handle("DELETE /api/v1/workspaces", handler.RequireRole("owner")(http.HandlerFunc(identityHandler.DeleteWorkspace)))
+	mux.HandleFunc("GET /api/v1/profile", settingsHandler.GetProfile)
+	mux.HandleFunc("PATCH /api/v1/profile", settingsHandler.UpdateProfile)
+	mux.HandleFunc("GET /api/v1/notification-preferences", settingsHandler.GetPreferences)
+	mux.HandleFunc("PUT /api/v1/notification-preferences", settingsHandler.UpdatePreferences)
+	mux.HandleFunc("GET /api/v1/workspace-settings", settingsHandler.GetWorkspaceSettings)
+	mux.HandleFunc("PATCH /api/v1/workspace-settings", settingsHandler.UpdateWorkspaceSettings)
+	mux.HandleFunc("GET /api/v1/api-keys", settingsHandler.ListAPIKeys)
+	mux.HandleFunc("POST /api/v1/api-keys", settingsHandler.CreateAPIKey)
+	mux.HandleFunc("DELETE /api/v1/api-keys/{id}", settingsHandler.RevokeAPIKey)
 
 	// Team Management & Invitation Endpoints
 	mux.HandleFunc("GET /api/v1/team/members", teamHandler.ListTeam)
