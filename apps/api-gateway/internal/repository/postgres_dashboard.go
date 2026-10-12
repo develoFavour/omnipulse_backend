@@ -116,7 +116,10 @@ func (r *PostgresDashboardRepository) GetStats(ctx context.Context, tenantID str
 			d.platform,
 			d.status,
 			d.error_message,
-			d.created_at
+			d.created_at,
+			d.routing_value,
+			c.id,
+			d.target_type
 		FROM campaign_deliveries d
 		JOIN campaigns c ON d.campaign_id = c.id
 		LEFT JOIN contacts co ON d.contact_id = co.id
@@ -132,13 +135,25 @@ func (r *PostgresDashboardRepository) GetStats(ctx context.Context, tenantID str
 
 	for rRows.Next() {
 		var act domain.DashboardDeliveryActivity
-		var errMsg sql.NullString
+		var errMsg, routingVal, campID, targetType sql.NullString
 
-		if err := rRows.Scan(&act.ID, &act.CampaignName, &act.ContactName, &act.Platform, &act.Status, &errMsg, &act.CreatedAt); err != nil {
+		if err := rRows.Scan(
+			&act.ID, &act.CampaignName, &act.ContactName, &act.Platform, &act.Status, &errMsg, &act.CreatedAt,
+			&routingVal, &campID, &targetType,
+		); err != nil {
 			return nil, err
 		}
 		if errMsg.Valid {
 			act.ErrorMessage = errMsg.String
+		}
+		if routingVal.Valid {
+			act.RoutingValue = routingVal.String
+		}
+		if campID.Valid {
+			act.CampaignID = campID.String
+		}
+		if targetType.Valid {
+			act.TargetType = targetType.String
 		}
 		stats.RecentDeliveries = append(stats.RecentDeliveries, act)
 	}
@@ -291,7 +306,10 @@ func (r *PostgresDashboardRepository) ListDeliveries(ctx context.Context, tenant
 			d.platform,
 			d.status,
 			d.error_message,
-			d.created_at
+			d.created_at,
+			d.routing_value,
+			c.id,
+			d.target_type
 		FROM campaign_deliveries d
 		JOIN campaigns c ON d.campaign_id = c.id
 		LEFT JOIN contacts co ON d.contact_id = co.id
@@ -308,13 +326,25 @@ func (r *PostgresDashboardRepository) ListDeliveries(ctx context.Context, tenant
 	var deliveries []domain.DashboardDeliveryActivity
 	for rows.Next() {
 		var act domain.DashboardDeliveryActivity
-		var errMsg sql.NullString
+		var errMsg, routingVal, campID, targetType sql.NullString
 
-		if err := rows.Scan(&act.ID, &act.CampaignName, &act.ContactName, &act.Platform, &act.Status, &errMsg, &act.CreatedAt); err != nil {
+		if err := rows.Scan(
+			&act.ID, &act.CampaignName, &act.ContactName, &act.Platform, &act.Status, &errMsg, &act.CreatedAt,
+			&routingVal, &campID, &targetType,
+		); err != nil {
 			return nil, err
 		}
 		if errMsg.Valid {
 			act.ErrorMessage = errMsg.String
+		}
+		if routingVal.Valid {
+			act.RoutingValue = routingVal.String
+		}
+		if campID.Valid {
+			act.CampaignID = campID.String
+		}
+		if targetType.Valid {
+			act.TargetType = targetType.String
 		}
 		deliveries = append(deliveries, act)
 	}

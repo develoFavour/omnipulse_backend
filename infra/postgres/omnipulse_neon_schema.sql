@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS telegram_destinations (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_telegram_destinations_unique_chat
 ON telegram_destinations(tenant_id, channel_id, telegram_chat_id);
 
--- 7. CAMPAIGNS (Cross-Posting Broadcast Engine)
+
 CREATE TABLE IF NOT EXISTS campaigns (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
@@ -98,7 +98,7 @@ CREATE TABLE IF NOT EXISTS campaigns (
 
 CREATE INDEX IF NOT EXISTS idx_campaigns_scheduled ON campaigns(status, scheduled_at) WHERE status = 'scheduled';
 
--- 8. CAMPAIGN DISPATCHES & AUDIT LOGS
+
 CREATE TABLE IF NOT EXISTS campaign_dispatches (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     campaign_id UUID REFERENCES campaigns(id) ON DELETE CASCADE NOT NULL,

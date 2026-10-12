@@ -72,8 +72,11 @@ type ChannelStat struct {
 
 type DashboardDeliveryActivity struct {
 	ID           string    `json:"id"`
+	CampaignID   string    `json:"campaign_id,omitempty"`
 	CampaignName string    `json:"campaign_name"`
 	ContactName  string    `json:"contact_name"`
+	RoutingValue string    `json:"routing_value,omitempty"`
+	TargetType   string    `json:"target_type,omitempty"`
 	Platform     string    `json:"platform"`
 	Status       string    `json:"status"` // delivered, failed, sent
 	ErrorMessage string    `json:"error_message,omitempty"`
