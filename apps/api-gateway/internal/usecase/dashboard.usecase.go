@@ -22,3 +22,7 @@ func (u *DashboardUseCase) GetStats(ctx context.Context, tenantID string) (*doma
 func (u *DashboardUseCase) ListDeliveries(ctx context.Context, tenantID string, limit, offset int) ([]domain.DashboardDeliveryActivity, error) {
 	return u.dashboardRepo.ListDeliveries(ctx, tenantID, limit, offset)
 }
+
+func (u *DashboardUseCase) StreamDeliveries(ctx context.Context, tenantID string, statusFilter, platformFilter, search string, yield func(act *domain.DashboardDeliveryActivity) error) error {
+	return u.dashboardRepo.StreamDeliveries(ctx, tenantID, statusFilter, platformFilter, search, yield)
+}

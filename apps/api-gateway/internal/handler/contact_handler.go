@@ -1,10 +1,13 @@
 package handler
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"omnipulse/apps/api-gateway/internal/domain"
 	"omnipulse/apps/api-gateway/internal/utils"
@@ -115,4 +118,93 @@ func (h *ContactHandler) ListContacts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.WriteJSON(w, http.StatusOK, contacts)
+}
+
+// ExportContacts handles: GET /api/v1/contacts/export
+func (h *ContactHandler) ExportContacts(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok || tenantID == "" {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	queryParams := r.URL.Query()
+	channelFilter := queryParams.Get("channel")
+	tagID := queryParams.Get("tagId")
+	if tagID == "" {
+		tagID = queryParams.Get("tag")
+	}
+	search := queryParams.Get("search")
+
+	filter := domain.ContactFilter{
+		Channel: channelFilter,
+		TagID:   tagID,
+		Search:  search,
+	}
+
+	fileName := fmt.Sprintf("messagerail-audience-%s.csv", time.Now().Format("2006-01-02"))
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, fileName))
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	// Prepend UTF-8 BOM for Excel compatibility
+	_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF})
+
+	csvWriter := csv.NewWriter(w)
+
+	headers := []string{
+		"Contact ID",
+		"First Name",
+		"Last Name",
+		"Platform Channel",
+		"Routing Value / Address",
+		"Acquisition Source",
+		"Status",
+		"Assigned Tags",
+		"Date Added (UTC)",
+	}
+	if err := csvWriter.Write(headers); err != nil {
+		return
+	}
+	csvWriter.Flush()
+
+	flusher, hasFlusher := w.(http.Flusher)
+	if hasFlusher {
+		flusher.Flush()
+	}
+
+	rowCount := 0
+	_ = h.useCase.StreamContacts(r.Context(), tenantID, filter, func(c *domain.Contact, tagNames string) error {
+		row := []string{
+			c.ID,
+			c.FirstName,
+			c.LastName,
+			c.Channel,
+			c.RoutingValue,
+			c.Source,
+			c.Status,
+			tagNames,
+			c.CreatedAt.UTC().Format(time.RFC3339),
+		}
+		if err := csvWriter.Write(row); err != nil {
+			return err
+		}
+
+		rowCount++
+		if rowCount%100 == 0 {
+			csvWriter.Flush()
+			if hasFlusher {
+				flusher.Flush()
+			}
+		}
+		return nil
+	})
+
+	csvWriter.Flush()
+	if hasFlusher {
+		flusher.Flush()
+	}
 }

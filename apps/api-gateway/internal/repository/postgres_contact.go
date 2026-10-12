@@ -230,3 +230,86 @@ func (r *PostgresContactRepository) ListWithFilter(ctx context.Context, tenantID
 
 	return contacts, total, nil
 }
+
+func (r *PostgresContactRepository) StreamContacts(ctx context.Context, tenantID string, filter domain.ContactFilter, yield func(c *domain.Contact, tagNames string) error) error {
+	conditions := []string{"c.tenant_id = $1"}
+	args := []interface{}{tenantID}
+	argIdx := 2
+
+	if filter.Channel != "" && !strings.EqualFold(filter.Channel, "all") {
+		conditions = append(conditions, fmt.Sprintf("c.channel = $%d", argIdx))
+		args = append(args, strings.ToLower(filter.Channel))
+		argIdx++
+	}
+
+	if filter.TagID != "" {
+		conditions = append(conditions, fmt.Sprintf("EXISTS (SELECT 1 FROM contact_tags ct WHERE ct.contact_id = c.id AND ct.tag_id = $%d)", argIdx))
+		args = append(args, filter.TagID)
+		argIdx++
+	}
+
+	if strings.TrimSpace(filter.Search) != "" {
+		searchPattern := "%" + strings.TrimSpace(filter.Search) + "%"
+		conditions = append(conditions, fmt.Sprintf(`(
+			c.first_name ILIKE $%d
+			OR COALESCE(c.last_name, '') ILIKE $%d
+			OR (c.first_name || ' ' || COALESCE(c.last_name, '')) ILIKE $%d
+			OR c.routing_value ILIKE $%d
+			OR EXISTS (
+				SELECT 1 FROM contact_tags ct
+				JOIN tags t ON ct.tag_id = t.id
+				WHERE ct.contact_id = c.id AND t.name ILIKE $%d
+			)
+		)`, argIdx, argIdx, argIdx, argIdx, argIdx))
+		args = append(args, searchPattern)
+		argIdx++
+	}
+
+	whereClause := strings.Join(conditions, " AND ")
+
+	query := fmt.Sprintf(`
+		SELECT 
+			c.id, 
+			c.tenant_id, 
+			c.first_name, 
+			COALESCE(c.last_name, ''), 
+			c.channel, 
+			c.routing_value, 
+			c.source, 
+			c.status, 
+			c.created_at, 
+			c.updated_at,
+			COALESCE((
+				SELECT string_agg(t.name, '; ') 
+				FROM contact_tags ct 
+				JOIN tags t ON ct.tag_id = t.id 
+				WHERE ct.contact_id = c.id
+			), '') AS tag_names
+		FROM contacts c
+		WHERE %s
+		ORDER BY c.created_at DESC;
+	`, whereClause)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to execute stream contacts query: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var c domain.Contact
+		var tagNames string
+		err := rows.Scan(
+			&c.ID, &c.TenantID, &c.FirstName, &c.LastName, &c.Channel, &c.RoutingValue, &c.Source, &c.Status, &c.CreatedAt, &c.UpdatedAt,
+			&tagNames,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to scan streaming contact: %w", err)
+		}
+		if err := yield(&c, tagNames); err != nil {
+			return err
+		}
+	}
+
+	return rows.Err()
+}

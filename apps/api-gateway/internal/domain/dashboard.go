@@ -86,4 +86,5 @@ type DashboardDeliveryActivity struct {
 type DashboardRepository interface {
 	GetStats(ctx context.Context, tenantID string) (*DashboardStats, error)
 	ListDeliveries(ctx context.Context, tenantID string, limit int, offset int) ([]DashboardDeliveryActivity, error)
+	StreamDeliveries(ctx context.Context, tenantID string, statusFilter, platformFilter, search string, yield func(act *DashboardDeliveryActivity) error) error
 }

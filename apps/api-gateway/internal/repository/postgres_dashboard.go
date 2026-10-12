@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"omnipulse/apps/api-gateway/internal/domain"
+	"strings"
 	"time"
 )
 
@@ -350,4 +351,98 @@ func (r *PostgresDashboardRepository) ListDeliveries(ctx context.Context, tenant
 	}
 
 	return deliveries, nil
+}
+
+func (r *PostgresDashboardRepository) StreamDeliveries(ctx context.Context, tenantID string, statusFilter, platformFilter, search string, yield func(act *domain.DashboardDeliveryActivity) error) error {
+	conditions := []string{"c.tenant_id = $1"}
+	args := []interface{}{tenantID}
+	argIdx := 2
+
+	if statusFilter != "" && !strings.EqualFold(statusFilter, "all") {
+		if strings.EqualFold(statusFilter, "delivered") {
+			conditions = append(conditions, "(d.status = 'delivered' OR d.status = 'sent')")
+		} else if strings.EqualFold(statusFilter, "failed") {
+			conditions = append(conditions, "d.status = 'failed'")
+		} else {
+			conditions = append(conditions, fmt.Sprintf("d.status = $%d", argIdx))
+			args = append(args, strings.ToLower(statusFilter))
+			argIdx++
+		}
+	}
+
+	if platformFilter != "" && !strings.EqualFold(platformFilter, "all") {
+		conditions = append(conditions, fmt.Sprintf("d.platform = $%d", argIdx))
+		args = append(args, strings.ToLower(platformFilter))
+		argIdx++
+	}
+
+	if strings.TrimSpace(search) != "" {
+		searchPattern := "%" + strings.TrimSpace(search) + "%"
+		conditions = append(conditions, fmt.Sprintf(`(
+			c.title ILIKE $%d
+			OR d.routing_value ILIKE $%d
+			OR COALESCE(co.first_name, '') ILIKE $%d
+			OR COALESCE(d.error_message, '') ILIKE $%d
+			OR d.id::text ILIKE $%d
+		)`, argIdx, argIdx, argIdx, argIdx, argIdx))
+		args = append(args, searchPattern)
+		argIdx++
+	}
+
+	whereClause := strings.Join(conditions, " AND ")
+
+	query := fmt.Sprintf(`
+		SELECT 
+			d.id,
+			c.title,
+			COALESCE(co.first_name, d.routing_value),
+			d.platform,
+			d.status,
+			d.error_message,
+			d.created_at,
+			d.routing_value,
+			c.id,
+			d.target_type
+		FROM campaign_deliveries d
+		JOIN campaigns c ON d.campaign_id = c.id
+		LEFT JOIN contacts co ON d.contact_id = co.id
+		WHERE %s
+		ORDER BY d.created_at DESC;
+	`, whereClause)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to execute stream deliveries query: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var act domain.DashboardDeliveryActivity
+		var errMsg, routingVal, campID, targetType sql.NullString
+
+		if err := rows.Scan(
+			&act.ID, &act.CampaignName, &act.ContactName, &act.Platform, &act.Status, &errMsg, &act.CreatedAt,
+			&routingVal, &campID, &targetType,
+		); err != nil {
+			return fmt.Errorf("failed to scan streaming delivery: %w", err)
+		}
+		if errMsg.Valid {
+			act.ErrorMessage = errMsg.String
+		}
+		if routingVal.Valid {
+			act.RoutingValue = routingVal.String
+		}
+		if campID.Valid {
+			act.CampaignID = campID.String
+		}
+		if targetType.Valid {
+			act.TargetType = targetType.String
+		}
+
+		if err := yield(&act); err != nil {
+			return err
+		}
+	}
+
+	return rows.Err()
 }

@@ -121,3 +121,7 @@ func (u *ContactUseCase) GetAllContacts(ctx context.Context, tenantID string, fi
 		TotalPages: totalPages,
 	}, nil
 }
+
+func (u *ContactUseCase) StreamContacts(ctx context.Context, tenantID string, filter domain.ContactFilter, yield func(c *domain.Contact, tagNames string) error) error {
+	return u.repo.StreamContacts(ctx, tenantID, filter, yield)
+}

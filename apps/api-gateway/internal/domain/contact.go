@@ -55,6 +55,7 @@ type ContactRepository interface {
 	Create(ctx context.Context, contact *Contact) error
 	ListByTenant(ctx context.Context, tenantID, channelFilter string, limit, offset int) ([]*Contact, error)
 	ListWithFilter(ctx context.Context, tenantID string, filter ContactFilter) ([]*Contact, int, error)
+	StreamContacts(ctx context.Context, tenantID string, filter ContactFilter, yield func(c *Contact, tagNames string) error) error
 }
 
 // ContactUseCase defines the business rules orchestration (Driving/Inbound Port)
@@ -62,4 +63,5 @@ type ContactUseCase interface {
 	FetchContact(ctx context.Context, tenantID, id string) (*Contact, error)
 	RegisterContact(ctx context.Context, contact *Contact) error
 	GetAllContacts(ctx context.Context, tenantID string, filter ContactFilter) (*PaginatedContacts, error)
+	StreamContacts(ctx context.Context, tenantID string, filter ContactFilter, yield func(c *Contact, tagNames string) error) error
 }

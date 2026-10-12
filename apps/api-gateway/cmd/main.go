@@ -383,6 +383,7 @@ func main() {
 	mux.Handle("POST /api/v1/channels/telegram/sync-contacts", handler.RequireRole("owner", "admin")(http.HandlerFunc(channelHandler.HandleTelegramSyncContacts)))
 
 	// Contact Subsystem Endpoints
+	mux.Handle("GET /api/v1/contacts/export", handler.RequireRole("owner", "admin")(http.HandlerFunc(contactHandler.ExportContacts)))
 	mux.HandleFunc("GET /api/v1/contacts/{id}", contactHandler.GetContact)
 	mux.HandleFunc("GET /api/v1/contacts", contactHandler.ListContacts)
 	mux.HandleFunc("POST /api/v1/contacts", contactHandler.CreateContact)
@@ -419,6 +420,7 @@ func main() {
 
 	// Dashboard Subsystem Endpoints
 	mux.HandleFunc("GET /api/v1/dashboard/stats", dashboardHandler.GetStats)
+	mux.Handle("GET /api/v1/deliveries/export", handler.RequireRole("owner", "admin")(http.HandlerFunc(dashboardHandler.ExportDeliveries)))
 	mux.HandleFunc("GET /api/v1/deliveries", dashboardHandler.ListDeliveries)
 
 	// Notification Center Endpoints
