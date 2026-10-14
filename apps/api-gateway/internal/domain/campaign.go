@@ -53,6 +53,7 @@ type CampaignRepository interface {
 	ListDeliveriesByCampaign(ctx context.Context, tenantID, campaignID string, limit, offset int) ([]*CampaignDelivery, error)
 	FindDueScheduledCampaigns(ctx context.Context) ([]*Campaign, error)
 	CancelScheduledCampaign(ctx context.Context, tenantID, id string) error
+	CountDeliveriesSince(ctx context.Context, tenantID string, since time.Time) (int, error)
 }
 
 // EventPublisher defines our outbound streaming Port (DIP)

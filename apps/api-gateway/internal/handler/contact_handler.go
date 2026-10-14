@@ -16,11 +16,12 @@ import (
 // ContactHandler wraps our business domain port to handle REST network routing
 type ContactHandler struct {
 	useCase domain.ContactUseCase
+	subRepo domain.SubscriptionRepository
 }
 
 // NewContactHandler is our explicit dependency injection constructor for transport control
-func NewContactHandler(useCase domain.ContactUseCase) *ContactHandler {
-	return &ContactHandler{useCase: useCase}
+func NewContactHandler(useCase domain.ContactUseCase, subRepo domain.SubscriptionRepository) *ContactHandler {
+	return &ContactHandler{useCase: useCase, subRepo: subRepo}
 }
 
 // GetContact handles: GET /api/v1/contacts/{id}
@@ -70,6 +71,10 @@ func (h *ContactHandler) CreateContact(w http.ResponseWriter, r *http.Request) {
 
 	err := h.useCase.RegisterContact(r.Context(), &payload)
 	if err != nil {
+		if errors.Is(err, domain.ErrQuotaExceeded) {
+			utils.WriteError(w, http.StatusPaymentRequired, err.Error())
+			return
+		}
 		if errors.Is(err, domain.ErrInvalidContact) {
 			utils.WriteError(w, http.StatusUnprocessableEntity, err.Error())
 			return
@@ -126,6 +131,15 @@ func (h *ContactHandler) ExportContacts(w http.ResponseWriter, r *http.Request) 
 	if !ok || tenantID == "" {
 		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
 		return
+	}
+
+	// Gate CSV streaming exports for Growth and Agency tiers
+	if h.subRepo != nil {
+		sub, err := h.subRepo.GetByTenantID(r.Context(), tenantID)
+		if err == nil && sub != nil && sub.PlanTier == domain.PlanStarter {
+			utils.WriteError(w, http.StatusPaymentRequired, "CSV streaming exports require a Growth or Agency subscription plan.")
+			return
+		}
 	}
 
 	queryParams := r.URL.Query()

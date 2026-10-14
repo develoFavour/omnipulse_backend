@@ -178,6 +178,7 @@ func main() {
 	}
 	logger.Println("Successfully connected to NATS JetStream fabric.")
 
+	subRepo := repository.NewPostgresSubscriptionRepository(db)
 	contactRepo := repository.NewPostgresContactRepository(db)
 	campaignRepo := repository.NewPostgresCampaignRepository(db)
 	identityRepo := repository.NewPostgresIdentityRepository(db)
@@ -191,16 +192,16 @@ func main() {
 
 	tagUseCase := usecase.NewTagUseCase(tagRepo)
 	templateUseCase := usecase.NewTemplateUseCase(templateRepo)
-	contactUseCase := usecase.NewContactUseCase(contactRepo, tagRepo)
-	campaignUseCase := usecase.NewCampaignUseCase(campaignRepo, contactRepo, destinationRepo, natsPublisher)
-	identityUseCase := usecase.NewIdentityUseCase(identityRepo, channelRepo)
+	contactUseCase := usecase.NewContactUseCase(contactRepo, tagRepo, subRepo)
+	campaignUseCase := usecase.NewCampaignUseCase(campaignRepo, contactRepo, destinationRepo, natsPublisher, subRepo)
+	identityUseCase := usecase.NewIdentityUseCase(identityRepo, channelRepo, subRepo)
 	dashboardUseCase := usecase.NewDashboardUseCase(dashboardRepo)
 	notificationUseCase := usecase.NewNotificationUseCase(notificationRepo)
 	analyticsUseCase := usecase.NewAnalyticsUseCase(analyticsRepo)
 
 	tagHandler := handler.NewTagHandler(tagUseCase)
 	templateHandler := handler.NewTemplateHandler(templateUseCase)
-	contactHandler := handler.NewContactHandler(contactUseCase)
+	contactHandler := handler.NewContactHandler(contactUseCase, subRepo)
 	campaignHandler := handler.NewCampaignHandler(campaignUseCase)
 	identityHandler := handler.NewIdentityHandler(identityUseCase)
 	settingsHandler := handler.NewSettingsHandler(db)
@@ -211,7 +212,6 @@ func main() {
 	teamUseCase := usecase.NewTeamUseCase(identityRepo, mailer, cfg.PublicAppBaseURL, logger)
 	teamHandler := handler.NewTeamHandler(teamUseCase)
 
-	subRepo := repository.NewPostgresSubscriptionRepository(db)
 	stripeSvc := service.NewStripeService(cfg.StripeSecretKey, cfg.StripeWebhookSecret)
 	paystackSvc := service.NewPaystackService(cfg.PaystackSecretKey, cfg.PaystackPublicKey)
 	billingUseCase := usecase.NewBillingUseCase(subRepo, stripeSvc, paystackSvc, cfg.PublicAppBaseURL)
@@ -226,7 +226,7 @@ func main() {
 		logger.Println("Successfully initialized WhatsApp Multi-Device session manager.")
 	}
 
-	channelHandler := handler.NewChannelHandler(channelRepo, contactRepo, cfg.PublicAPIBaseURL, cfg.PublicAppBaseURL, handler.MetaAppConfig{
+	channelHandler := handler.NewChannelHandler(channelRepo, contactRepo, subRepo, cfg.PublicAPIBaseURL, cfg.PublicAppBaseURL, handler.MetaAppConfig{
 		AppID:         cfg.MetaAppID,
 		AppSecret:     cfg.MetaAppSecret,
 		WABAConfigID:  cfg.MetaWABAConfigID,
@@ -234,7 +234,7 @@ func main() {
 		PhoneNumberID: cfg.MetaPhoneNumberID,
 	}, waManager)
 	webhookHandler := handler.NewWebhookHandler(contactUseCase, channelRepo, destinationRepo)
-	dashboardHandler := handler.NewDashboardHandler(dashboardUseCase)
+	dashboardHandler := handler.NewDashboardHandler(dashboardUseCase, subRepo)
 	destinationHandler := handler.NewTelegramDestinationHandler(destinationRepo)
 
 	var mediaService *service.MediaService

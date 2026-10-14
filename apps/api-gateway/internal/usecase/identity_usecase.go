@@ -13,11 +13,12 @@ import (
 type IdentityUseCase struct {
 	repo        domain.IdentityRepository
 	chanRepo    domain.ChannelRepository
+	subRepo     domain.SubscriptionRepository
 	provisionMu sync.Mutex
 }
 
-func NewIdentityUseCase(repo domain.IdentityRepository, chanRepo domain.ChannelRepository) *IdentityUseCase {
-	return &IdentityUseCase{repo: repo, chanRepo: chanRepo}
+func NewIdentityUseCase(repo domain.IdentityRepository, chanRepo domain.ChannelRepository, subRepo domain.SubscriptionRepository) *IdentityUseCase {
+	return &IdentityUseCase{repo: repo, chanRepo: chanRepo, subRepo: subRepo}
 }
 
 type SyncResult struct {
@@ -157,6 +158,42 @@ func (u *IdentityUseCase) CreateWorkspace(ctx context.Context, userID, companyNa
 	if name == "" {
 		name = "My Workspace"
 	}
+
+	if u.subRepo != nil {
+		workspaces, err := u.repo.ListUserWorkspaces(ctx, userID)
+		if err == nil && len(workspaces) > 0 {
+			var activeTenantID string
+			for _, ws := range workspaces {
+				if ws.IsActive {
+					activeTenantID = ws.ID
+					break
+				}
+			}
+			if activeTenantID == "" {
+				activeTenantID = workspaces[0].ID
+			}
+
+			sub, err := u.subRepo.GetByTenantID(ctx, activeTenantID)
+			maxWorkspaces := 1
+			planName := "Starter"
+			if err == nil && sub != nil {
+				planName = string(sub.PlanTier)
+				switch sub.PlanTier {
+				case domain.PlanAgency:
+					maxWorkspaces = -1
+				case domain.PlanGrowth:
+					maxWorkspaces = 3
+				default:
+					maxWorkspaces = 1
+				}
+			}
+
+			if maxWorkspaces != -1 && len(workspaces) >= maxWorkspaces {
+				return nil, fmt.Errorf("%w: workspace capacity limit of %d reached for %s tier. Upgrade to add more workspaces.", domain.ErrQuotaExceeded, maxWorkspaces, planName)
+			}
+		}
+	}
+
 	return u.repo.CreateWorkspace(ctx, userID, name)
 }
 

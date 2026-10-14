@@ -13,13 +13,15 @@ import (
 type ContactUseCase struct {
 	repo    domain.ContactRepository
 	tagRepo domain.TagRepository
+	subRepo domain.SubscriptionRepository
 }
 
-// NewContactUseCase injects our driven database port interface and optional tag repository
-func NewContactUseCase(repo domain.ContactRepository, tagRepo domain.TagRepository) domain.ContactUseCase {
+// NewContactUseCase injects our driven database port interface, tag repository, and subscription repository
+func NewContactUseCase(repo domain.ContactRepository, tagRepo domain.TagRepository, subRepo domain.SubscriptionRepository) domain.ContactUseCase {
 	return &ContactUseCase{
 		repo:    repo,
 		tagRepo: tagRepo,
+		subRepo: subRepo,
 	}
 }
 
@@ -48,7 +50,7 @@ func (u *ContactUseCase) FetchContact(ctx context.Context, tenantID, id string) 
 	return contact, nil
 }
 
-// RegisterContact enforces data validation invariants before saving a user profile
+// RegisterContact enforces data validation invariants and plan capacity limits before saving a user profile
 func (u *ContactUseCase) RegisterContact(ctx context.Context, c *domain.Contact) error {
 	c.FirstName = strings.TrimSpace(c.FirstName)
 	if c.FirstName == "" {
@@ -63,6 +65,17 @@ func (u *ContactUseCase) RegisterContact(ctx context.Context, c *domain.Contact)
 	c.RoutingValue = strings.TrimSpace(c.RoutingValue)
 	if c.RoutingValue == "" {
 		return fmt.Errorf("%w: routing value cannot be empty", domain.ErrInvalidContact)
+	}
+
+	// Enforce Plan Contact Limit
+	if u.subRepo != nil && c.TenantID != "" {
+		sub, err := u.subRepo.GetByTenantID(ctx, c.TenantID)
+		if err == nil && sub != nil && sub.ContactsLimit != -1 {
+			_, total, err := u.repo.ListWithFilter(ctx, c.TenantID, domain.ContactFilter{Page: 1, PageSize: 1, Limit: 1})
+			if err == nil && total >= sub.ContactsLimit {
+				return fmt.Errorf("%w: contact capacity limit of %d reached for %s plan. Upgrade to increase capacity.", domain.ErrQuotaExceeded, sub.ContactsLimit, sub.PlanTier)
+			}
+		}
 	}
 
 	if c.Source == "" {

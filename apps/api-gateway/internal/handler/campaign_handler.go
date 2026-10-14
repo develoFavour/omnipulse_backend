@@ -120,6 +120,10 @@ func (h *CampaignHandler) DispatchCampaign(w http.ResponseWriter, r *http.Reques
 	err := h.useCase.TriggerDispatch(r.Context(), tenantID, campaignID)
 	if err != nil {
 		log.Printf("[DISPATCH-TRACE] ❌ TriggerDispatch returned error: %v\n", err)
+		if errors.Is(err, domain.ErrQuotaExceeded) {
+			utils.WriteError(w, http.StatusPaymentRequired, err.Error())
+			return
+		}
 		if errors.Is(err, repository.ErrCampaignNotFound) {
 			utils.WriteError(w, http.StatusNotFound, "Target distribution campaign tracking context missing")
 			return

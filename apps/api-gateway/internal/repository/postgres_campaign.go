@@ -376,3 +376,21 @@ func normalizedTargetType(targetType string) string {
 	}
 	return "contact"
 }
+
+func (r *PostgresCampaignRepository) CountDeliveriesSince(ctx context.Context, tenantID string, since time.Time) (int, error) {
+	query := `
+		SELECT count(*)
+		FROM campaign_deliveries d
+		JOIN campaigns c ON d.campaign_id = c.id
+		WHERE c.tenant_id = $1 AND d.created_at >= $2
+	`
+	var count sql.NullInt64
+	err := r.db.QueryRowContext(ctx, query, tenantID, since).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count deliveries since timestamp: %w", err)
+	}
+	if count.Valid {
+		return int(count.Int64), nil
+	}
+	return 0, nil
+}

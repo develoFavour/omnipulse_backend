@@ -14,10 +14,11 @@ import (
 
 type DashboardHandler struct {
 	useCase *usecase.DashboardUseCase
+	subRepo domain.SubscriptionRepository
 }
 
-func NewDashboardHandler(useCase *usecase.DashboardUseCase) *DashboardHandler {
-	return &DashboardHandler{useCase: useCase}
+func NewDashboardHandler(useCase *usecase.DashboardUseCase, subRepo domain.SubscriptionRepository) *DashboardHandler {
+	return &DashboardHandler{useCase: useCase, subRepo: subRepo}
 }
 
 func (h *DashboardHandler) GetStats(w http.ResponseWriter, r *http.Request) {
@@ -76,6 +77,15 @@ func (h *DashboardHandler) ExportDeliveries(w http.ResponseWriter, r *http.Reque
 	if !ok || tenantID == "" {
 		http.Error(w, "Unauthorized: Missing Tenant ID", http.StatusUnauthorized)
 		return
+	}
+
+	// Gate CSV streaming exports for Growth and Agency tiers
+	if h.subRepo != nil {
+		sub, err := h.subRepo.GetByTenantID(r.Context(), tenantID)
+		if err == nil && sub != nil && sub.PlanTier == domain.PlanStarter {
+			http.Error(w, "CSV streaming exports require a Growth or Agency subscription plan.", http.StatusPaymentRequired)
+			return
+		}
 	}
 
 	queryParams := r.URL.Query()

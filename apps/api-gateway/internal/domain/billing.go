@@ -2,8 +2,11 @@ package domain
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+var ErrQuotaExceeded = errors.New("plan resource quota exceeded")
 
 type PlanTier string
 type BillingProvider string

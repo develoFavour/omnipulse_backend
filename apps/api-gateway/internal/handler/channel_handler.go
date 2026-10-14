@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -143,16 +144,18 @@ type MetaAppConfig struct {
 type ChannelHandler struct {
 	repo             domain.ChannelRepository
 	contactRepo      domain.ContactRepository
+	subRepo          domain.SubscriptionRepository
 	publicAPIBaseURL string
 	publicAppBaseURL string
 	metaConfig       MetaAppConfig
 	waManager        *service.WhatsAppManager
 }
 
-func NewChannelHandler(repo domain.ChannelRepository, contactRepo domain.ContactRepository, publicAPIBaseURL, publicAppBaseURL string, metaConfig MetaAppConfig, waManager *service.WhatsAppManager) *ChannelHandler {
+func NewChannelHandler(repo domain.ChannelRepository, contactRepo domain.ContactRepository, subRepo domain.SubscriptionRepository, publicAPIBaseURL, publicAppBaseURL string, metaConfig MetaAppConfig, waManager *service.WhatsAppManager) *ChannelHandler {
 	return &ChannelHandler{
 		repo:             repo,
 		contactRepo:      contactRepo,
+		subRepo:          subRepo,
 		publicAPIBaseURL: publicAPIBaseURL,
 		publicAppBaseURL: publicAppBaseURL,
 		metaConfig:       metaConfig,
@@ -160,10 +163,39 @@ func NewChannelHandler(repo domain.ChannelRepository, contactRepo domain.Contact
 	}
 }
 
+func (h *ChannelHandler) checkChannelQuota(ctx context.Context, tenantID string) error {
+	if h.subRepo == nil {
+		return nil
+	}
+	sub, err := h.subRepo.GetByTenantID(ctx, tenantID)
+	if err != nil || sub == nil || sub.ChannelsLimit == -1 {
+		return nil
+	}
+	channels, err := h.repo.ListByTenant(ctx, tenantID)
+	if err != nil {
+		return nil
+	}
+	activeCount := 0
+	for _, ch := range channels {
+		if ch.Status != "disconnected" {
+			activeCount++
+		}
+	}
+	if activeCount >= sub.ChannelsLimit {
+		return fmt.Errorf("%w: channel limit of %d reached for %s tier. Upgrade to Growth for unlimited channels.", domain.ErrQuotaExceeded, sub.ChannelsLimit, sub.PlanTier)
+	}
+	return nil
+}
+
 func (h *ChannelHandler) CreateChannel(w http.ResponseWriter, r *http.Request) {
 	tenantID, ok := r.Context().Value(TenantIDKey).(string)
 	if !ok {
 		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	if err := h.checkChannelQuota(r.Context(), tenantID); err != nil {
+		utils.WriteError(w, http.StatusPaymentRequired, err.Error())
 		return
 	}
 
@@ -706,6 +738,11 @@ func (h *ChannelHandler) HandleWhatsAppQR(w http.ResponseWriter, r *http.Request
 	tenantID, ok := r.Context().Value(TenantIDKey).(string)
 	if !ok {
 		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	if err := h.checkChannelQuota(r.Context(), tenantID); err != nil {
+		utils.WriteError(w, http.StatusPaymentRequired, err.Error())
 		return
 	}
 

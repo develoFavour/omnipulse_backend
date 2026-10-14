@@ -283,16 +283,46 @@ func (r *PostgresDashboardRepository) GetStats(ctx context.Context, tenantID str
 		msgsThisMonth = int(monthlyMsgs.Int64)
 	}
 
+	var planTier sql.NullString
+	var msgLimit, contactLimit, channelLimit sql.NullInt64
+	_ = r.db.QueryRowContext(ctx, `
+		SELECT plan_tier, monthly_message_limit, contacts_limit, channels_limit
+		FROM subscriptions
+		WHERE tenant_id = $1
+	`, tenantID).Scan(&planTier, &msgLimit, &contactLimit, &channelLimit)
+
+	tier := "starter"
+	if planTier.Valid && planTier.String != "" {
+		tier = planTier.String
+	}
+
+	mLimit := 1000
+	cLimit := 500
+	chLimit := 2
+
+	if msgLimit.Valid {
+		mLimit = int(msgLimit.Int64)
+	}
+	if contactLimit.Valid {
+		cLimit = int(contactLimit.Int64)
+	}
+	if channelLimit.Valid {
+		chLimit = int(channelLimit.Int64)
+	}
+
+	badge := strings.ToUpper(tier)
+	isUnl := mLimit == -1 && cLimit == -1 && chLimit == -1
+
 	stats.PlanUsage = domain.PlanUsageInfo{
-		PlanTier:              "Free Public Beta",
-		PlanBadge:             "FREE BETA",
-		MonthlyMessageLimit:   -1,
+		PlanTier:              tier,
+		PlanBadge:             badge,
+		MonthlyMessageLimit:   mLimit,
 		MessagesSentThisMonth: msgsThisMonth,
 		ContactsStored:        stats.TotalAudience,
-		ContactsLimit:         -1,
+		ContactsLimit:         cLimit,
 		ChannelsConnected:     stats.ActiveChannels,
-		ChannelsLimit:         -1,
-		IsUnlimited:           true,
+		ChannelsLimit:         chLimit,
+		IsUnlimited:           isUnl,
 	}
 
 	return stats, nil

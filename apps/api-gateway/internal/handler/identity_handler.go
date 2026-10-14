@@ -2,8 +2,10 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
+	"omnipulse/apps/api-gateway/internal/domain"
 	"omnipulse/apps/api-gateway/internal/usecase"
 	"omnipulse/apps/api-gateway/internal/utils"
 
@@ -181,6 +183,10 @@ func (h *IdentityHandler) CreateWorkspace(w http.ResponseWriter, r *http.Request
 	tenant, err := h.useCase.CreateWorkspace(r.Context(), userID, req.CompanyName)
 	if err != nil {
 		log.Printf("[IdentityHandler] CreateWorkspace FAILED user=%s: %v", userID, err)
+		if errors.Is(err, domain.ErrQuotaExceeded) {
+			utils.WriteError(w, http.StatusPaymentRequired, err.Error())
+			return
+		}
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

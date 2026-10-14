@@ -17,14 +17,16 @@ type CampaignUseCase struct {
 	contactRepo     domain.ContactRepository
 	destinationRepo domain.TelegramDestinationRepository
 	publisher       domain.EventPublisher
+	subRepo         domain.SubscriptionRepository
 }
 
-func NewCampaignUseCase(camRepo domain.CampaignRepository, conRepo domain.ContactRepository, destRepo domain.TelegramDestinationRepository, pub domain.EventPublisher) *CampaignUseCase {
+func NewCampaignUseCase(camRepo domain.CampaignRepository, conRepo domain.ContactRepository, destRepo domain.TelegramDestinationRepository, pub domain.EventPublisher, subRepo domain.SubscriptionRepository) *CampaignUseCase {
 	return &CampaignUseCase{
 		campaignRepo:    camRepo,
 		contactRepo:     conRepo,
 		destinationRepo: destRepo,
 		publisher:       pub,
+		subRepo:         subRepo,
 	}
 }
 
@@ -110,6 +112,23 @@ func (u *CampaignUseCase) TriggerDispatch(ctx context.Context, tenantID, campaig
 	if campaign.Status == "processing" || campaign.Status == "completed" {
 		log.Printf("[DISPATCH-TRACE] ❌ Rejected: status already %s\n", campaign.Status)
 		return fmt.Errorf("campaign execution rejected: status is already %s", campaign.Status)
+	}
+
+	// Enforce Plan Monthly Message Quota
+	if u.subRepo != nil {
+		sub, err := u.subRepo.GetByTenantID(ctx, tenantID)
+		if err == nil && sub != nil && sub.MonthlyMessageLimit != -1 {
+			since := sub.CurrentPeriodStart
+			if since.IsZero() {
+				now := time.Now()
+				since = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+			}
+			sentCount, err := u.campaignRepo.CountDeliveriesSince(ctx, tenantID, since)
+			if err == nil && sentCount >= sub.MonthlyMessageLimit {
+				log.Printf("[DISPATCH-TRACE] ❌ Rejected: monthly limit %d reached (sent: %d)\n", sub.MonthlyMessageLimit, sentCount)
+				return fmt.Errorf("%w: monthly broadcast limit of %d messages reached for %s tier (dispatched: %d). Upgrade to Growth or Agency to dispatch.", domain.ErrQuotaExceeded, sub.MonthlyMessageLimit, sub.PlanTier, sentCount)
+			}
+		}
 	}
 
 	selectedChannels := parseStringList(campaign.SelectedChannels)
