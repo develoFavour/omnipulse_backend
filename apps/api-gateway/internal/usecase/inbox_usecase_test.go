@@ -12,14 +12,15 @@ import (
 // ─── Mock Repositories ───────────────────────────────────────────────────────
 
 type mockInboxRepo struct {
-	listConversationsFunc        func(ctx context.Context, tenantID string, filter domain.ConversationFilter) ([]domain.Conversation, int, error)
-	getConversationFunc          func(ctx context.Context, tenantID, conversationID string) (*domain.Conversation, error)
-	getOrCreateConversationFunc  func(ctx context.Context, tenantID, contactID, channel string) (*domain.Conversation, error)
-	updateConversationStatusFunc func(ctx context.Context, tenantID, conversationID string, status domain.ConversationStatus) error
-	assignConversationFunc       func(ctx context.Context, tenantID, conversationID string, userID *string) error
-	markConversationAsReadFunc   func(ctx context.Context, tenantID, conversationID string) error
-	listMessagesFunc             func(ctx context.Context, tenantID, conversationID string, limit, offset int) ([]domain.Message, error)
-	createMessageFunc            func(ctx context.Context, msg *domain.Message) error
+	listConversationsFunc               func(ctx context.Context, tenantID string, filter domain.ConversationFilter) ([]domain.Conversation, int, error)
+	getConversationFunc                 func(ctx context.Context, tenantID, conversationID string) (*domain.Conversation, error)
+	getOrCreateConversationFunc         func(ctx context.Context, tenantID, contactID, channel string) (*domain.Conversation, error)
+	updateConversationStatusFunc        func(ctx context.Context, tenantID, conversationID string, status domain.ConversationStatus) error
+	assignConversationFunc              func(ctx context.Context, tenantID, conversationID string, userID *string) error
+	markConversationAsReadFunc          func(ctx context.Context, tenantID, conversationID string) error
+	listMessagesFunc                    func(ctx context.Context, tenantID, conversationID string, limit, offset int) ([]domain.Message, error)
+	createMessageFunc                   func(ctx context.Context, msg *domain.Message) error
+	updateMessageStatusByPlatformIDFunc func(ctx context.Context, tenantID, platformMessageID, status string) (*domain.Message, error)
 }
 
 func (m *mockInboxRepo) ListConversations(ctx context.Context, tenantID string, filter domain.ConversationFilter) ([]domain.Conversation, int, error) {
@@ -76,6 +77,13 @@ func (m *mockInboxRepo) CreateMessage(ctx context.Context, msg *domain.Message) 
 		return m.createMessageFunc(ctx, msg)
 	}
 	return nil
+}
+
+func (m *mockInboxRepo) UpdateMessageStatusByPlatformID(ctx context.Context, tenantID, platformMessageID, status string) (*domain.Message, error) {
+	if m.updateMessageStatusByPlatformIDFunc != nil {
+		return m.updateMessageStatusByPlatformIDFunc(ctx, tenantID, platformMessageID, status)
+	}
+	return nil, nil
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────

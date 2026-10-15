@@ -451,6 +451,10 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 						}
 
 						msgID := evt.Info.ID
+						initialStatus := "sent"
+						if direction == domain.MessageDirectionInbound {
+							initialStatus = "delivered" // inbound messages are implicitly delivered to us
+						}
 						newMsg := &domain.Message{
 							TenantID:          tenantID,
 							ConversationID:    conv.ID,
@@ -458,7 +462,7 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 							SenderType:        senderType,
 							Body:              text,
 							PlatformMessageID: &msgID,
-							Status:            "delivered",
+							Status:            initialStatus,
 						}
 						_ = m.inboxRepo.CreateMessage(ctx, newMsg)
 						if m.inboxHub != nil {
@@ -477,7 +481,41 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 					evt.Info.Chat.String(), evt.Info.Sender.String(), evt.Info.IsGroup)
 			}
 
+		case *events.Receipt:
+			// WhatsApp receipt event: fired when messages are delivered or read.
+			// ReceiptType "" (empty string) = delivered (grey double-tick)
+			// ReceiptType "read"            = read (blue/sky double-tick)
+			var newStatus string
+			switch evt.Type {
+			case types.ReceiptTypeRead, types.ReceiptTypeReadSelf:
+				newStatus = "read"
+			default:
+				// covers ReceiptTypeDelivered ("") and any other delivery variants
+				newStatus = "delivered"
+			}
+
+			if m.inboxRepo == nil || len(evt.MessageIDs) == 0 {
+				break
+			}
+
+			ctx, rCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer rCancel()
+
+			for _, msgID := range evt.MessageIDs {
+				updated, err := m.inboxRepo.UpdateMessageStatusByPlatformID(ctx, tenantID, msgID, newStatus)
+				if err != nil {
+					// Message may not be in our DB (e.g. sent from phone before integration)
+					log.Printf("[WhatsAppManager] ℹ️ Receipt for unknown msg %s (tenant %s): %v\n", msgID, tenantID, err)
+					continue
+				}
+				log.Printf("[WhatsAppManager] ✅ Receipt: msg %s → %s (conv %s, tenant %s)\n", msgID, newStatus, updated.ConversationID, tenantID)
+				if m.inboxHub != nil {
+					m.inboxHub.BroadcastStatusUpdate(tenantID, updated.ConversationID, updated.ID, newStatus)
+				}
+			}
+
 		case *events.LoggedOut:
+
 			log.Printf("[WhatsAppManager] ⚠️ Tenant %s was logged out: %v\n", tenantID, evt.Reason)
 			sess.mu.Lock()
 			sess.status = "disconnected"

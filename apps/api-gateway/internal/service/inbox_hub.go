@@ -157,3 +157,50 @@ func (h *InboxHub) BroadcastMessage(tenantID string, conv *domain.Conversation, 
 	}
 	h.mu.RUnlock()
 }
+
+// BroadcastStatusUpdate pushes a STATUS_UPDATE event to all connected clients of a tenant.
+// The frontend uses this to update the message tick (sent → delivered → read) in real time.
+func (h *InboxHub) BroadcastStatusUpdate(tenantID, conversationID, messageID, status string) {
+	if h == nil {
+		return
+	}
+	h.mu.RLock()
+	clients, ok := h.subscribers[tenantID]
+	if !ok || len(clients) == 0 {
+		h.mu.RUnlock()
+		return
+	}
+
+	type statusPayload struct {
+		Type           string `json:"type"`
+		TenantID       string `json:"tenant_id"`
+		ConversationID string `json:"conversation_id"`
+		MessageID      string `json:"message_id"`
+		Status         string `json:"status"`
+		Timestamp      string `json:"timestamp"`
+	}
+
+	evt := statusPayload{
+		Type:           "STATUS_UPDATE",
+		TenantID:       tenantID,
+		ConversationID: conversationID,
+		MessageID:      messageID,
+		Status:         status,
+		Timestamp:      time.Now().UTC().Format(time.RFC3339),
+	}
+
+	payload, err := json.Marshal(evt)
+	if err != nil {
+		h.mu.RUnlock()
+		return
+	}
+
+	for client := range clients {
+		select {
+		case client.send <- payload:
+		default:
+			log.Printf("[INBOX-WS] ⚠️ Buffer full for tenant %s client, dropping STATUS_UPDATE frame\n", tenantID)
+		}
+	}
+	h.mu.RUnlock()
+}

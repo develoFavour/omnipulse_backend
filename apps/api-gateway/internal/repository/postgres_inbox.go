@@ -337,3 +337,30 @@ func (r *PostgresInboxRepository) CreateMessage(ctx context.Context, msg *domain
 
 	return nil
 }
+
+// UpdateMessageStatusByPlatformID updates a message's delivery/read status using
+// the platform-assigned message ID (e.g. WhatsApp message ID from a Receipt event).
+// Returns the updated message so the caller can broadcast the status change.
+func (r *PostgresInboxRepository) UpdateMessageStatusByPlatformID(ctx context.Context, tenantID, platformMessageID, status string) (*domain.Message, error) {
+	query := `
+		UPDATE messages
+		SET status = $1
+		WHERE tenant_id = $2 AND platform_message_id = $3
+		RETURNING id, tenant_id, conversation_id, direction, sender_type, sender_id,
+		          body, media_url, media_type, platform_message_id, status, error_message, created_at;
+	`
+
+	var m domain.Message
+	err := r.db.QueryRowContext(ctx, query, status, tenantID, platformMessageID).Scan(
+		&m.ID, &m.TenantID, &m.ConversationID, &m.Direction, &m.SenderType, &m.SenderID,
+		&m.Body, &m.MediaURL, &m.MediaType, &m.PlatformMessageID, &m.Status, &m.ErrorMessage, &m.CreatedAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("message not found for platform_message_id=%s", platformMessageID)
+		}
+		return nil, fmt.Errorf("failed to update message status: %w", err)
+	}
+
+	return &m, nil
+}

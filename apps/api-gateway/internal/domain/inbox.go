@@ -82,6 +82,7 @@ type InboxRepository interface {
 
 	ListMessages(ctx context.Context, tenantID, conversationID string, limit, offset int) ([]Message, error)
 	CreateMessage(ctx context.Context, msg *Message) error
+	UpdateMessageStatusByPlatformID(ctx context.Context, tenantID, platformMessageID, status string) (*Message, error)
 }
 
 type SendReplyRequest struct {
@@ -91,4 +92,5 @@ type SendReplyRequest struct {
 
 type InboxBroadcaster interface {
 	BroadcastMessage(tenantID string, conv *Conversation, msg *Message)
+	BroadcastStatusUpdate(tenantID, conversationID, messageID, status string)
 }
