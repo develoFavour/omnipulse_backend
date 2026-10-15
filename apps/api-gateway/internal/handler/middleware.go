@@ -1,8 +1,11 @@
 package handler
 
 import (
+	"bufio"
 	"context"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -42,6 +45,23 @@ func (rw *statusResponseWriter) Write(b []byte) (int, error) {
 		rw.WriteHeader(http.StatusOK)
 	}
 	return rw.ResponseWriter.Write(b)
+}
+
+func (rw *statusResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if hj, ok := rw.ResponseWriter.(http.Hijacker); ok {
+		return hj.Hijack()
+	}
+	return nil, nil, fmt.Errorf("underlying ResponseWriter does not implement http.Hijacker")
+}
+
+func (rw *statusResponseWriter) Flush() {
+	if fl, ok := rw.ResponseWriter.(http.Flusher); ok {
+		fl.Flush()
+	}
+}
+
+func (rw *statusResponseWriter) Unwrap() http.ResponseWriter {
+	return rw.ResponseWriter
 }
 
 // RequestLoggerMiddleware logs Gin/Fiber style HTTP requests with method, path, status, and duration

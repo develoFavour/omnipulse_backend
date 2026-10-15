@@ -386,16 +386,44 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 					contactPhone = evt.Info.Chat.User
 					direction = domain.MessageDirectionOutbound
 					senderType = domain.MessageSenderTypeAgent
+				} else if evt.Info.Chat.Server == types.HiddenUserServer && evt.Info.Chat.User != "" {
+					contactPhone = evt.Info.Chat.User
+					direction = domain.MessageDirectionOutbound
+					senderType = domain.MessageSenderTypeAgent
 				}
 			} else {
 				// Inbound message received from contact (1-on-1 chats)
 				if !evt.Info.IsGroup {
+					pushName = evt.Info.PushName
+					// 1. Check for standard phone number on s.whatsapp.net
 					if evt.Info.Chat.Server == types.DefaultUserServer && evt.Info.Chat.User != "" {
 						contactPhone = evt.Info.Chat.User
 					} else if evt.Info.Sender.Server == types.DefaultUserServer && evt.Info.Sender.User != "" {
 						contactPhone = evt.Info.Sender.User
+					} else if sess.client != nil && sess.client.Store != nil {
+						// 2. Try resolving phone number from LID store
+						queryCtx, qCancel := context.WithTimeout(context.Background(), 2*time.Second)
+						if pn, err := sess.client.Store.GetAltJID(queryCtx, evt.Info.Chat); err == nil && pn.Server == types.DefaultUserServer && pn.User != "" {
+							contactPhone = pn.User
+							log.Printf("[WhatsAppManager] 🔀 Resolved LID %s to phone %s via AltJID\n", evt.Info.Chat.String(), pn.User)
+						} else if sess.client.Store.LIDs != nil {
+							if pn, err := sess.client.Store.LIDs.GetPNForLID(queryCtx, evt.Info.Chat); err == nil && pn.Server == types.DefaultUserServer && pn.User != "" {
+								contactPhone = pn.User
+								log.Printf("[WhatsAppManager] 🔀 Resolved LID %s to phone %s via LIDStore\n", evt.Info.Chat.String(), pn.User)
+							}
+						}
+						qCancel()
 					}
-					pushName = evt.Info.PushName
+
+					// 3. If phone number could not be resolved from LID store, use the LID identifier directly
+					if contactPhone == "" {
+						if evt.Info.Chat.User != "" {
+							contactPhone = evt.Info.Chat.User
+						} else if evt.Info.Sender.User != "" {
+							contactPhone = evt.Info.Sender.User
+						}
+						log.Printf("[WhatsAppManager] ℹ️ Using LID user as contact identifier: %s (name: %q)\n", contactPhone, pushName)
+					}
 				}
 			}
 
@@ -717,13 +745,28 @@ func (m *WhatsAppManager) SendMessage(ctx context.Context, tenantID string, reci
 	phoneClean := strings.TrimPrefix(strings.TrimSpace(recipientPhone), "+")
 	targetJID := types.NewJID(phoneClean, types.DefaultUserServer)
 
+	// If phoneClean was stored from an LID, check if it maps to an alt JID
+	if sess.client != nil && sess.client.Store != nil {
+		lidJID := types.NewJID(phoneClean, types.HiddenUserServer)
+		if alt, err := sess.client.Store.GetAltJID(ctx, lidJID); err == nil && !alt.IsEmpty() {
+			targetJID = alt
+		}
+	}
+
+	foundOnWA := false
 	if onWaResp, err := sess.client.IsOnWhatsApp(ctx, []string{phoneClean, recipientPhone}); err == nil && len(onWaResp) > 0 {
 		for _, r := range onWaResp {
 			if r.IsIn {
 				targetJID = r.JID
+				foundOnWA = true
 				break
 			}
 		}
+	}
+
+	// If not found on standard WhatsApp and identifier has 15+ digits (LID format), use LID server
+	if !foundOnWA && len(phoneClean) >= 15 && targetJID.Server != types.HiddenUserServer {
+		targetJID = types.NewJID(phoneClean, types.HiddenUserServer)
 	}
 
 	msg := &waE2E.Message{
