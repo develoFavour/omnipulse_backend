@@ -41,7 +41,8 @@ func (r *PostgresContactRepository) Create(ctx context.Context, c *domain.Contac
 	query := `
 		INSERT INTO contacts (tenant_id, first_name, last_name, channel, routing_value, source, status)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		ON CONFLICT (tenant_id, channel, routing_value) DO NOTHING
+		ON CONFLICT (tenant_id, channel, routing_value)
+		DO UPDATE SET updated_at = NOW()
 		RETURNING id, created_at, updated_at;
 	`
 	err := r.db.QueryRowContext(ctx, query,
@@ -49,12 +50,7 @@ func (r *PostgresContactRepository) Create(ctx context.Context, c *domain.Contac
 	).Scan(&c.ID, &c.CreatedAt, &c.UpdatedAt)
 
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			// This means ON CONFLICT DO NOTHING caught a duplicate, so no row was returned.
-			// We can safely return nil or a domain error indicating a duplicate.
-			return nil
-		}
-		return fmt.Errorf("failed to insert contact: %w", err)
+		return fmt.Errorf("failed to insert/update contact: %w", err)
 	}
 	return nil
 }

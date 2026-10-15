@@ -268,6 +268,7 @@ func main() {
 		logger.Printf("[WA-WARN] WhatsApp Multi-Device manager initialization deferred: %v\n", waErr)
 	} else {
 		logger.Println("Successfully initialized WhatsApp Multi-Device session manager.")
+		waManager.SetInboxRepo(inboxRepo)
 	}
 
 	channelHandler := handler.NewChannelHandler(channelRepo, contactRepo, subRepo, cfg.PublicAPIBaseURL, cfg.PublicAppBaseURL, handler.MetaAppConfig{

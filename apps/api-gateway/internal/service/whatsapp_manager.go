@@ -29,6 +29,7 @@ type WhatsAppManager struct {
 	db            *sql.DB
 	container     *sqlstore.Container
 	encryptionKey string
+	inboxRepo     domain.InboxRepository
 	clients       sync.Map // map[string]*tenantSession (key: tenantID)
 	mu            sync.Mutex
 }
@@ -64,6 +65,12 @@ func NewWhatsAppManager(db *sql.DB, encryptionKey string) (*WhatsAppManager, err
 	go mgr.restoreExistingSessions()
 
 	return mgr, nil
+}
+
+func (m *WhatsAppManager) SetInboxRepo(repo domain.InboxRepository) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.inboxRepo = repo
 }
 
 func (m *WhatsAppManager) restoreExistingSessions() {
@@ -313,7 +320,28 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 		case *events.Message:
 			senderJID := evt.Info.Sender
 			if !evt.Info.IsFromMe && senderJID.Server == types.DefaultUserServer && senderJID.User != "" {
-				m.saveContact(tenantID, senderJID.User, evt.Info.PushName, "whatsapp_inbound")
+				contactID := m.saveContact(tenantID, senderJID.User, evt.Info.PushName, "whatsapp_inbound")
+				text := extractMessageText(evt.Message)
+				if text != "" && contactID != "" && m.inboxRepo != nil {
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					conv, cErr := m.inboxRepo.GetOrCreateConversation(ctx, tenantID, contactID, "whatsapp")
+					if cErr == nil && conv != nil {
+						msgID := evt.Info.ID
+						_ = m.inboxRepo.CreateMessage(ctx, &domain.Message{
+							TenantID:          tenantID,
+							ConversationID:    conv.ID,
+							Direction:         domain.MessageDirectionInbound,
+							SenderType:        domain.MessageSenderTypeContact,
+							Body:              text,
+							PlatformMessageID: &msgID,
+							Status:            "delivered",
+						})
+						log.Printf("[WhatsAppManager] 💬 Inbound message from %s captured in Unified Inbox for tenant %s\n", senderJID.User, tenantID)
+					} else {
+						log.Printf("[WhatsAppManager] ⚠️ Failed to create/find conversation for contact %s: %v\n", contactID, cErr)
+					}
+				}
 			}
 
 		case *events.LoggedOut:
@@ -332,10 +360,32 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 	})
 }
 
-func (m *WhatsAppManager) saveContact(tenantID, rawPhone, name, source string) {
+func extractMessageText(msg *waE2E.Message) string {
+	if msg == nil {
+		return ""
+	}
+	if msg.Conversation != nil && *msg.Conversation != "" {
+		return *msg.Conversation
+	}
+	if msg.ExtendedTextMessage != nil && msg.ExtendedTextMessage.Text != nil {
+		return *msg.ExtendedTextMessage.Text
+	}
+	if msg.ImageMessage != nil && msg.ImageMessage.Caption != nil {
+		return *msg.ImageMessage.Caption
+	}
+	if msg.VideoMessage != nil && msg.VideoMessage.Caption != nil {
+		return *msg.VideoMessage.Caption
+	}
+	if msg.DocumentMessage != nil && msg.DocumentMessage.Caption != nil {
+		return *msg.DocumentMessage.Caption
+	}
+	return ""
+}
+
+func (m *WhatsAppManager) saveContact(tenantID, rawPhone, name, source string) string {
 	phone := strings.TrimPrefix(strings.TrimSpace(rawPhone), "+")
 	if len(phone) < 7 {
-		return
+		return ""
 	}
 
 	// Skip saving the tenant's own phone number as an audience contact
@@ -345,7 +395,7 @@ func (m *WhatsAppManager) saveContact(tenantID, rawPhone, name, source string) {
 		selfPhone := strings.TrimPrefix(strings.TrimSpace(sess.phone), "+")
 		sess.mu.RUnlock()
 		if selfPhone != "" && selfPhone == phone {
-			return
+			return ""
 		}
 	}
 
@@ -365,7 +415,8 @@ func (m *WhatsAppManager) saveContact(tenantID, rawPhone, name, source string) {
 	execCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := m.db.ExecContext(execCtx, `
+	var contactID string
+	err := m.db.QueryRowContext(execCtx, `
 		INSERT INTO contacts (tenant_id, first_name, last_name, channel, routing_value, source, status, created_at, updated_at)
 		VALUES ($1, $2, $3, 'whatsapp', $4, $5, 'active', NOW(), NOW())
 		ON CONFLICT (tenant_id, channel, routing_value)
@@ -373,10 +424,13 @@ func (m *WhatsAppManager) saveContact(tenantID, rawPhone, name, source string) {
 			first_name = CASE WHEN contacts.first_name IN ('WhatsApp User', 'WhatsApp Contact') AND EXCLUDED.first_name NOT IN ('WhatsApp User', 'WhatsApp Contact') THEN EXCLUDED.first_name ELSE contacts.first_name END,
 			last_name = CASE WHEN contacts.last_name = '' AND EXCLUDED.last_name != '' THEN EXCLUDED.last_name ELSE contacts.last_name END,
 			updated_at = NOW()
-	`, tenantID, fn, ln, routingValue, source)
+		RETURNING id;
+	`, tenantID, fn, ln, routingValue, source).Scan(&contactID)
 	if err != nil {
 		log.Printf("[WhatsAppManager] Warning: failed to save contact %s (%s): %v\n", name, routingValue, err)
+		return ""
 	}
+	return contactID
 }
 
 // ensureSession guarantees an active, connected WhatsApp client session for the tenant,
