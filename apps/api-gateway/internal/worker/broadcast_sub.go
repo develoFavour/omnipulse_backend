@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"omnipulse/apps/api-gateway/internal/service"
+	"omnipulse/apps/api-gateway/internal/utils"
 	"omnipulse/shared/contracts"
 
 	"github.com/nats-io/nats.go"
@@ -19,23 +20,25 @@ import (
 
 // BroadcastConsumer manages delivery tasks consumed directly from NATS JetStream.
 type BroadcastConsumer struct {
-	nc        *nats.Conn
-	js        nats.JetStreamContext
-	sub       *nats.Subscription
-	db        *sql.DB
-	waManager *service.WhatsAppManager
+	nc            *nats.Conn
+	js            nats.JetStreamContext
+	sub           *nats.Subscription
+	db            *sql.DB
+	waManager     *service.WhatsAppManager
+	encryptionKey string
 }
 
 // NewBroadcastConsumer creates a new broadcast delivery worker reusing existing NATS and DB connections.
-func NewBroadcastConsumer(nc *nats.Conn, js nats.JetStreamContext, db *sql.DB, waManager *service.WhatsAppManager) (*BroadcastConsumer, error) {
+func NewBroadcastConsumer(nc *nats.Conn, js nats.JetStreamContext, db *sql.DB, waManager *service.WhatsAppManager, encryptionKey string) (*BroadcastConsumer, error) {
 	if nc == nil || js == nil {
 		return nil, fmt.Errorf("nats connection or jetstream context is nil")
 	}
 	return &BroadcastConsumer{
-		nc:        nc,
-		js:        js,
-		db:        db,
-		waManager: waManager,
+		nc:            nc,
+		js:            js,
+		db:            db,
+		waManager:     waManager,
+		encryptionKey: encryptionKey,
 	}, nil
 }
 
@@ -87,11 +90,40 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 	log.Printf("[BROADCAST-WORKER] 📨 Received dispatch task: campaign=%s contact=%s (%s) platform=%s\n",
 		task.CampaignID, task.ContactID, task.RoutingValue, task.TargetPlatform)
 
+	// Guard 0: Compliance Opt-Out Guard.
+	// MessageRail compliance guarantee: check if recipient has opted out or is blacklisted for this workspace.
+	var isOptedOut bool
+	err := c.db.QueryRowContext(msgCtx, `
+		SELECT EXISTS(
+			SELECT 1 FROM contacts 
+			WHERE tenant_id = $1 AND (id::text = $2 OR routing_value = $3) AND status = 'opted_out'
+		)`, task.TenantID, task.ContactID, task.RoutingValue).Scan(&isOptedOut)
+	if err == nil && isOptedOut {
+		reason := "Recipient has explicitly opted out — message suppressed by MessageRail compliance engine"
+		log.Printf("[🛡️ COMPLIANCE SUPPRESSED] Blocked message to %s (%s) on %s for tenant %s: Explicit Opt-Out detected.\n",
+			task.FirstName, task.RoutingValue, task.TargetPlatform, task.TenantID)
+
+		suppressedResult := contracts.TargetDeliveryResult{
+			CampaignID:   task.CampaignID,
+			ContactID:    task.ContactID,
+			TargetType:   deliveryNormalizedTargetType(task.TargetType),
+			Platform:     task.TargetPlatform,
+			RoutingValue: task.RoutingValue,
+			Status:       "suppressed",
+			ErrorMessage: &reason,
+		}
+		if resultBytes, mErr := json.Marshal(suppressedResult); mErr == nil {
+			_, _ = c.js.Publish("dispatch.result", resultBytes)
+		}
+		_ = msg.Ack()
+		return
+	}
+
 	// Guard 1: Check Database Campaign State.
 	// If the campaign is already marked 'completed' or 'failed', NEVER dispatch again.
 	var campaignStatus string
 	var campaignCreatedAt time.Time
-	err := c.db.QueryRowContext(msgCtx, "SELECT status, created_at FROM campaigns WHERE id = $1", task.CampaignID).Scan(&campaignStatus, &campaignCreatedAt)
+	err = c.db.QueryRowContext(msgCtx, "SELECT status, created_at FROM campaigns WHERE id = $1", task.CampaignID).Scan(&campaignStatus, &campaignCreatedAt)
 	if err != nil {
 		log.Printf("[BROADCAST-WORKER] 🛑 Campaign %s not found in DB — dropping task\n", task.CampaignID)
 		_ = msg.Ack()
@@ -173,6 +205,10 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 			errMsg = &reason
 			log.Printf("[❌ TELEGRAM -> ERROR] %s\n", reason)
 		} else {
+			// Decrypt credentials in memory — supports both encrypted (enc:v1:) and legacy plaintext records
+			if decrypted, decErr := utils.DecryptBytes(tokenData, c.encryptionKey); decErr == nil {
+				tokenData = decrypted
+			}
 			var creds struct {
 				BotToken string `json:"bot_token"`
 			}
@@ -257,6 +293,10 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 				errMsg = &reason
 				log.Printf("[❌ WHATSAPP -> ERROR] %s\n", reason)
 			} else {
+				// Decrypt credentials in memory — supports both encrypted (enc:v1:) and legacy plaintext records
+				if decrypted, decErr := utils.DecryptBytes(tokenData, c.encryptionKey); decErr == nil {
+					tokenData = decrypted
+				}
 				var creds map[string]interface{}
 				_ = json.Unmarshal(tokenData, &creds)
 				phoneID, _ := creds["phone_number_id"].(string)

@@ -59,7 +59,7 @@ func (m *Mailer) SendEmail(to, subject, htmlBody string) {
 			senderName = m.cfg.SenderName
 		}
 		if senderName == "" {
-			senderName = "Omnipulseng"
+			senderName = "MessageRail"
 		}
 
 		if m.cfg.BrevoAPIKey == "" {
@@ -114,7 +114,7 @@ func (m *Mailer) SendEmail(to, subject, htmlBody string) {
 // SendTeamInvitation builds a branded responsive template and dispatches via SendEmail
 func (m *Mailer) SendTeamInvitation(toEmail, inviterName, workspaceName, role, inviteURL string) {
 	roleDisplay := strings.ToUpper(role[:1]) + strings.ToLower(role[1:])
-	subject := fmt.Sprintf("You've been invited to join %s on Omnipulse", workspaceName)
+	subject := fmt.Sprintf("You've been invited to join %s on MessageRail", workspaceName)
 
 	escapedInviter := html.EscapeString(inviterName)
 	escapedWorkspace := html.EscapeString(workspaceName)
@@ -140,7 +140,7 @@ func (m *Mailer) SendTeamInvitation(toEmail, inviterName, workspaceName, role, i
               <table role="presentation" width="100%%" border="0" cellspacing="0" cellpadding="0">
                 <tr>
                   <td align="left">
-                    <span style="display: inline-block; background-color: #4f46e5; color: #ffffff; font-weight: 700; font-size: 14px; padding: 6px 12px; border-radius: 8px; letter-spacing: -0.2px;">⚡ Omnipulse</span>
+                    <span style="display: inline-block; background-color: #4f46e5; color: #ffffff; font-weight: 700; font-size: 14px; padding: 6px 12px; border-radius: 8px; letter-spacing: -0.2px;">⚡ MessageRail</span>
                   </td>
                   <td align="right">
                     <span style="font-size: 12px; font-weight: 600; color: #6b7280; background-color: #f3f4f6; border: 1px solid #e5e7eb; padding: 4px 10px; border-radius: 9999px;">Team Invite</span>
@@ -157,7 +157,7 @@ func (m *Mailer) SendTeamInvitation(toEmail, inviterName, workspaceName, role, i
                 Join %[2]s
               </h1>
               <p style="margin: 0 0 24px 0; font-size: 15px; line-height: 24px; color: #4b5563;">
-                <strong>%[1]s</strong> has invited you to collaborate on the <strong>%[2]s</strong> workspace on Omnipulse.
+                <strong>%[1]s</strong> has invited you to collaborate on the <strong>%[2]s</strong> workspace on MessageRail.
               </p>
 
               <!-- Workspace Details Box -->
@@ -216,7 +216,7 @@ func (m *Mailer) SendTeamInvitation(toEmail, inviterName, workspaceName, role, i
         <table role="presentation" width="100%%" border="0" cellspacing="0" cellpadding="0" style="max-width: 540px; margin-top: 24px;">
           <tr>
             <td align="center" style="font-size: 12px; color: #9ca3af; line-height: 18px;">
-              Omnipulse &bull; Intelligent Cross-Platform Messaging &amp; Broadcast Engine
+              MessageRail &bull; Intelligent Cross-Platform Messaging &amp; Broadcast Engine
             </td>
           </tr>
         </table>

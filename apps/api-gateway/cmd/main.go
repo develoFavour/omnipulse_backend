@@ -182,7 +182,7 @@ func main() {
 	contactRepo := repository.NewPostgresContactRepository(db)
 	campaignRepo := repository.NewPostgresCampaignRepository(db)
 	identityRepo := repository.NewPostgresIdentityRepository(db)
-	channelRepo := repository.NewPostgresChannelRepository(db)
+	channelRepo := repository.NewPostgresChannelRepository(db, cfg.EncryptionKey)
 	dashboardRepo := repository.NewPostgresDashboardRepository(db)
 	destinationRepo := repository.NewPostgresTelegramDestinationRepository(db)
 	tagRepo := repository.NewPostgresTagRepository(db)
@@ -219,7 +219,7 @@ func main() {
 
 	var waManager *service.WhatsAppManager
 	var waErr error
-	waManager, waErr = service.NewWhatsAppManager(db)
+	waManager, waErr = service.NewWhatsAppManager(db, cfg.EncryptionKey)
 	if waErr != nil {
 		logger.Printf("[WA-WARN] WhatsApp Multi-Device manager initialization deferred: %v\n", waErr)
 	} else {
@@ -233,7 +233,7 @@ func main() {
 		WABAID:        cfg.MetaWABAID,
 		PhoneNumberID: cfg.MetaPhoneNumberID,
 	}, waManager)
-	webhookHandler := handler.NewWebhookHandler(contactUseCase, channelRepo, destinationRepo)
+	webhookHandler := handler.NewWebhookHandler(contactUseCase, channelRepo, destinationRepo, cfg.MetaAppSecret, cfg.TelegramWebhookSecret)
 	dashboardHandler := handler.NewDashboardHandler(dashboardUseCase, subRepo)
 	destinationHandler := handler.NewTelegramDestinationHandler(destinationRepo)
 
@@ -273,7 +273,7 @@ func main() {
 	}
 
 	var broadcastWorker *worker.BroadcastConsumer
-	bw, err := worker.NewBroadcastConsumer(natsConn, natsJS, db, waManager)
+	bw, err := worker.NewBroadcastConsumer(natsConn, natsJS, db, waManager, cfg.EncryptionKey)
 	if err != nil {
 		logger.Printf("[NATS-WARN] Broadcast delivery worker initialization deferred: %v\n", err)
 	} else {

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"omnipulse/apps/api-gateway/internal/domain"
+	"omnipulse/apps/api-gateway/internal/utils"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
@@ -25,10 +26,11 @@ import (
 )
 
 type WhatsAppManager struct {
-	db        *sql.DB
-	container *sqlstore.Container
-	clients   sync.Map // map[string]*tenantSession (key: tenantID)
-	mu        sync.Mutex
+	db            *sql.DB
+	container     *sqlstore.Container
+	encryptionKey string
+	clients       sync.Map // map[string]*tenantSession (key: tenantID)
+	mu            sync.Mutex
 }
 
 type tenantSession struct {
@@ -41,7 +43,7 @@ type tenantSession struct {
 	mu         sync.RWMutex
 }
 
-func NewWhatsAppManager(db *sql.DB) (*WhatsAppManager, error) {
+func NewWhatsAppManager(db *sql.DB, encryptionKey string) (*WhatsAppManager, error) {
 	// Set official companion OS properties for WhatsApp Web protocol
 	store.SetOSInfo("Chrome (Windows)", [3]uint32{128, 0, 0})
 
@@ -53,8 +55,9 @@ func NewWhatsAppManager(db *sql.DB) (*WhatsAppManager, error) {
 	}
 
 	mgr := &WhatsAppManager{
-		db:        db,
-		container: container,
+		db:            db,
+		container:     container,
+		encryptionKey: encryptionKey,
 	}
 
 	// Restore all existing connected devices on startup
@@ -77,8 +80,8 @@ func (m *WhatsAppManager) restoreExistingSessions() {
 		// Look up tenant for this device JID
 		var tenantID, senderIdentity, status string
 		err := m.db.QueryRow(
-			`SELECT tenant_id, sender_identity, status FROM tenant_channels WHERE platform_name = 'whatsapp' AND encrypted_credentials->>'jid' = $1`,
-			dev.ID.String(),
+			`SELECT tenant_id, sender_identity, status FROM tenant_channels WHERE platform_name = 'whatsapp' AND (encrypted_credentials->>'jid' = $1 OR sender_identity = $2)`,
+			dev.ID.String(), dev.ID.User,
 		).Scan(&tenantID, &senderIdentity, &status)
 
 		if err != nil || tenantID == "" {
@@ -241,6 +244,11 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 				"paired_at":  time.Now().UTC().Format(time.RFC3339),
 				"connection": "multi_device_qr",
 			})
+
+			// Encrypt credentials at rest
+			if encCreds, encErr := utils.EncryptBytes(creds, m.encryptionKey); encErr == nil {
+				creds = encCreds
+			}
 
 			_, err := m.db.Exec(`
 				INSERT INTO tenant_channels (tenant_id, platform_name, sender_identity, encrypted_credentials, status, updated_at)
@@ -407,6 +415,10 @@ func (m *WhatsAppManager) ensureSession(ctx context.Context, tenantID string) (*
 		return nil, fmt.Errorf("no active WhatsApp session for tenant %s. Please connect WhatsApp first", tenantID)
 	}
 
+	if decrypted, decErr := utils.DecryptBytes(credsJSON, m.encryptionKey); decErr == nil {
+		credsJSON = decrypted
+	}
+
 	var creds map[string]interface{}
 	_ = json.Unmarshal(credsJSON, &creds)
 	jidStr, _ := creds["jid"].(string)
@@ -467,6 +479,10 @@ func (m *WhatsAppManager) GetStatus(ctx context.Context, tenantID string) (statu
 
 	if err != nil {
 		return "disconnected", "", "", nil
+	}
+
+	if decrypted, decErr := utils.DecryptBytes(credsJSON, m.encryptionKey); decErr == nil {
+		credsJSON = decrypted
 	}
 
 	var creds map[string]interface{}

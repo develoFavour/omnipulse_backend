@@ -1,8 +1,13 @@
 package handler
 
 import (
+	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -12,13 +17,27 @@ import (
 )
 
 type WebhookHandler struct {
-	contactUC       domain.ContactUseCase
-	channelRepo     domain.ChannelRepository
-	destinationRepo domain.TelegramDestinationRepository
+	contactUC             domain.ContactUseCase
+	channelRepo           domain.ChannelRepository
+	destinationRepo       domain.TelegramDestinationRepository
+	metaAppSecret         string
+	telegramWebhookSecret string
 }
 
-func NewWebhookHandler(contactUC domain.ContactUseCase, channelRepo domain.ChannelRepository, destinationRepo domain.TelegramDestinationRepository) *WebhookHandler {
-	return &WebhookHandler{contactUC: contactUC, channelRepo: channelRepo, destinationRepo: destinationRepo}
+func NewWebhookHandler(
+	contactUC domain.ContactUseCase,
+	channelRepo domain.ChannelRepository,
+	destinationRepo domain.TelegramDestinationRepository,
+	metaAppSecret string,
+	telegramWebhookSecret string,
+) *WebhookHandler {
+	return &WebhookHandler{
+		contactUC:             contactUC,
+		channelRepo:           channelRepo,
+		destinationRepo:       destinationRepo,
+		metaAppSecret:         metaAppSecret,
+		telegramWebhookSecret: telegramWebhookSecret,
+	}
 }
 
 type TelegramWebhookPayload struct {
@@ -68,21 +87,51 @@ type WhatsAppWebhookPayload struct {
 				Messages []struct {
 					From string `json:"from"`
 					ID   string `json:"id"`
+					Type string `json:"type"`
 					Text struct {
 						Body string `json:"body"`
 					} `json:"text"`
 				} `json:"messages"`
 			} `json:"value"`
-			Field string `json:"field"`
 		} `json:"changes"`
 	} `json:"entry"`
 }
 
+// verifyMetaSignature checks the X-Hub-Signature-256 header against the request body
+// using the Meta App Secret. Returns true if the signature is valid.
+func verifyMetaSignature(body []byte, signatureHeader, appSecret string) bool {
+	if appSecret == "" {
+		// If no secret configured, allow through (dev/test mode) but log a warning
+		log.Println("[Webhook/WhatsApp] ⚠️  META_APP_SECRET not set — skipping signature verification (insecure)")
+		return true
+	}
+	if len(signatureHeader) < 8 || signatureHeader[:7] != "sha256=" {
+		return false
+	}
+	expectedSig := signatureHeader[7:]
+	mac := hmac.New(sha256.New, []byte(appSecret))
+	mac.Write(body)
+	computed := hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(computed), []byte(expectedSig))
+}
+
+// HandleTelegram handles POST /api/v1/webhooks/telegram/{tenant_id}
 func (h *WebhookHandler) HandleTelegram(w http.ResponseWriter, r *http.Request) {
 	tenantID := r.PathValue("tenant_id")
 	if tenantID == "" {
 		utils.WriteError(w, http.StatusBadRequest, "Missing tenant_id in webhook URL")
 		return
+	}
+
+	// Telegram secret token verification.
+	// When setWebhook is called with secret_token, Telegram sends it in X-Telegram-Bot-Api-Secret-Token.
+	if h.telegramWebhookSecret != "" {
+		incomingSecret := r.Header.Get("X-Telegram-Bot-Api-Secret-Token")
+		if incomingSecret != h.telegramWebhookSecret {
+			log.Printf("[Webhook/Telegram] ⛔ Rejected request for tenant %s — invalid or missing X-Telegram-Bot-Api-Secret-Token\n", tenantID)
+			utils.WriteError(w, http.StatusForbidden, "Invalid webhook secret")
+			return
+		}
 	}
 
 	var payload TelegramWebhookPayload
@@ -111,10 +160,7 @@ func (h *WebhookHandler) HandleTelegram(w http.ResponseWriter, r *http.Request) 
 	chatIDStr := strconv.FormatInt(payload.Message.Chat.ID, 10)
 	firstName := payload.Message.From.FirstName
 	if firstName == "" {
-		firstName = payload.Message.From.Username
-	}
-	if firstName == "" {
-		firstName = "Unknown Telegram User"
+		firstName = "Telegram User"
 	}
 
 	contact := &domain.Contact{
@@ -159,19 +205,17 @@ func (h *WebhookHandler) VerifyWhatsApp(w http.ResponseWriter, r *http.Request) 
 
 	var creds map[string]string
 	if err := json.Unmarshal(channel.EncryptedCredentials, &creds); err != nil {
-		log.Printf("[Webhook/WhatsApp] Failed to parse credentials for tenant %s: %v\n", tenantID, err)
-		utils.WriteError(w, http.StatusForbidden, "Invalid channel configuration")
+		utils.WriteError(w, http.StatusInternalServerError, "Failed to read channel credentials")
 		return
 	}
 
-	storedVerifyToken := creds["verify_token"]
-	if storedVerifyToken == "" || storedVerifyToken != token {
-		log.Printf("[Webhook/WhatsApp] Verify token mismatch for tenant %s\n", tenantID)
-		utils.WriteError(w, http.StatusForbidden, "Verify token does not match")
+	storedToken := creds["verify_token"]
+	if storedToken == "" || storedToken != token {
+		log.Printf("[Webhook/WhatsApp] ⛔ Verification token mismatch for tenant %s\n", tenantID)
+		utils.WriteError(w, http.StatusForbidden, "Verification token mismatch")
 		return
 	}
 
-	log.Printf("[Webhook/WhatsApp] Verified webhook challenge for tenant %s\n", tenantID)
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(challenge))
 }
@@ -184,8 +228,24 @@ func (h *WebhookHandler) HandleWhatsApp(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Read body into buffer so we can both verify the signature AND decode JSON
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "Failed to read request body")
+		return
+	}
+	defer r.Body.Close()
+
+	// Verify Meta X-Hub-Signature-256
+	sigHeader := r.Header.Get("X-Hub-Signature-256")
+	if !verifyMetaSignature(body, sigHeader, h.metaAppSecret) {
+		log.Printf("[Webhook/WhatsApp] ⛔ Rejected forged/unsigned request for tenant %s\n", tenantID)
+		utils.WriteError(w, http.StatusForbidden, "Invalid webhook signature")
+		return
+	}
+
 	var payload WhatsAppWebhookPayload
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&payload); err != nil {
 		utils.WriteError(w, http.StatusBadRequest, "Invalid whatsapp webhook payload")
 		return
 	}

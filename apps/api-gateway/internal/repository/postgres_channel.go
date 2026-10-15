@@ -4,18 +4,30 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+
 	"omnipulse/apps/api-gateway/internal/domain"
+	"omnipulse/apps/api-gateway/internal/utils"
 )
 
 type PostgresChannelRepository struct {
-	db *sql.DB
+	db            *sql.DB
+	encryptionKey string
 }
 
-func NewPostgresChannelRepository(db *sql.DB) domain.ChannelRepository {
-	return &PostgresChannelRepository{db: db}
+func NewPostgresChannelRepository(db *sql.DB, encryptionKey string) domain.ChannelRepository {
+	return &PostgresChannelRepository{
+		db:            db,
+		encryptionKey: encryptionKey,
+	}
 }
 
 func (r *PostgresChannelRepository) CreateChannel(ctx context.Context, channel *domain.TenantChannel) error {
+	// Encrypt credentials at rest using AES-256-GCM before writing to database
+	encryptedCreds, err := utils.EncryptBytes(channel.EncryptedCredentials, r.encryptionKey)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt channel credentials: %w", err)
+	}
+
 	query := `
 		INSERT INTO tenant_channels (tenant_id, platform_name, sender_identity, encrypted_credentials, status)
 		VALUES ($1, $2, $3, $4, $5)
@@ -26,8 +38,8 @@ func (r *PostgresChannelRepository) CreateChannel(ctx context.Context, channel *
 		    updated_at = CURRENT_TIMESTAMP
 		RETURNING id, created_at, updated_at;
 	`
-	err := r.db.QueryRowContext(ctx, query,
-		channel.TenantID, channel.PlatformName, channel.SenderIdentity, channel.EncryptedCredentials, channel.Status,
+	err = r.db.QueryRowContext(ctx, query,
+		channel.TenantID, channel.PlatformName, channel.SenderIdentity, encryptedCreds, channel.Status,
 	).Scan(&channel.ID, &channel.CreatedAt, &channel.UpdatedAt)
 
 	if err != nil {
@@ -58,6 +70,12 @@ func (r *PostgresChannelRepository) ListByTenant(ctx context.Context, tenantID s
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan row into channel domain: %w", err)
 		}
+
+		// Decrypt credentials in memory. If legacy unencrypted, DecryptBytes safely preserves plain JSON
+		if decrypted, decErr := utils.DecryptBytes(c.EncryptedCredentials, r.encryptionKey); decErr == nil {
+			c.EncryptedCredentials = decrypted
+		}
+
 		channels = append(channels, c)
 	}
 
@@ -100,6 +118,12 @@ func (r *PostgresChannelRepository) FindActiveByPlatform(ctx context.Context, te
 		}
 		return nil, fmt.Errorf("failed to fetch active channel: %w", err)
 	}
+
+	// Decrypt credentials in memory
+	if decrypted, decErr := utils.DecryptBytes(c.EncryptedCredentials, r.encryptionKey); decErr == nil {
+		c.EncryptedCredentials = decrypted
+	}
+
 	return &c, nil
 }
 
