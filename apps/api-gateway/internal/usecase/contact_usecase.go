@@ -50,6 +50,11 @@ func (u *ContactUseCase) FetchContact(ctx context.Context, tenantID, id string) 
 	return contact, nil
 }
 
+// GetContactByRoutingValue retrieves a contact by tenant, channel, and destination routing value
+func (u *ContactUseCase) GetContactByRoutingValue(ctx context.Context, tenantID, channel, routingValue string) (*domain.Contact, error) {
+	return u.repo.GetByRoutingValue(ctx, tenantID, channel, routingValue)
+}
+
 // RegisterContact enforces data validation invariants and plan capacity limits before saving a user profile
 func (u *ContactUseCase) RegisterContact(ctx context.Context, c *domain.Contact) error {
 	c.FirstName = strings.TrimSpace(c.FirstName)
@@ -67,8 +72,12 @@ func (u *ContactUseCase) RegisterContact(ctx context.Context, c *domain.Contact)
 		return fmt.Errorf("%w: routing value cannot be empty", domain.ErrInvalidContact)
 	}
 
-	// Enforce Plan Contact Limit
-	if u.subRepo != nil && c.TenantID != "" {
+	// Check if contact already exists before enforcing new contact capacity limit
+	existing, _ := u.repo.GetByRoutingValue(ctx, c.TenantID, c.Channel, c.RoutingValue)
+	if existing != nil {
+		c.ID = existing.ID
+	} else if u.subRepo != nil && c.TenantID != "" {
+		// Enforce Plan Contact Limit only for brand new contacts
 		sub, err := u.subRepo.GetByTenantID(ctx, c.TenantID)
 		if err == nil && sub != nil && sub.ContactsLimit != -1 {
 			_, total, err := u.repo.ListWithFilter(ctx, c.TenantID, domain.ContactFilter{Page: 1, PageSize: 1, Limit: 1})

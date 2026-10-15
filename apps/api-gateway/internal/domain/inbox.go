@@ -88,3 +88,7 @@ type SendReplyRequest struct {
 	Body     string  `json:"body"`
 	MediaURL *string `json:"media_url,omitempty"`
 }
+
+type InboxBroadcaster interface {
+	BroadcastMessage(tenantID string, conv *Conversation, msg *Message)
+}

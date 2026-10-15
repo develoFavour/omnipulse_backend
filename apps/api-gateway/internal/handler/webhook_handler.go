@@ -23,6 +23,11 @@ type WebhookHandler struct {
 	inboxRepo             domain.InboxRepository
 	metaAppSecret         string
 	telegramWebhookSecret string
+	broadcaster           domain.InboxBroadcaster
+}
+
+func (h *WebhookHandler) SetBroadcaster(b domain.InboxBroadcaster) {
+	h.broadcaster = b
 }
 
 func NewWebhookHandler(
@@ -180,20 +185,34 @@ func (h *WebhookHandler) HandleTelegram(w http.ResponseWriter, r *http.Request) 
 		log.Printf("[Webhook/Telegram] Failed to save inbound contact %s for tenant %s: %v\n", chatIDStr, tenantID, err)
 	} else {
 		log.Printf("[Webhook/Telegram] Synced inbound contact %s (%s) for tenant %s\n", chatIDStr, firstName, tenantID)
+	}
 
-		// Record in Unified Team Inbox
-		if h.inboxRepo != nil && payload.Message.Text != "" && contact.ID != "" {
-			conv, cErr := h.inboxRepo.GetOrCreateConversation(r.Context(), tenantID, contact.ID, "telegram")
-			if cErr == nil && conv != nil {
-				_ = h.inboxRepo.CreateMessage(r.Context(), &domain.Message{
-					TenantID:       tenantID,
-					ConversationID: conv.ID,
-					Direction:      domain.MessageDirectionInbound,
-					SenderType:     domain.MessageSenderTypeContact,
-					Body:           payload.Message.Text,
-					Status:         "delivered",
-				})
+	// Ensure contact.ID is populated for inbox recording
+	if contact.ID == "" {
+		if existing, err := h.contactUC.GetContactByRoutingValue(r.Context(), tenantID, "telegram", chatIDStr); err == nil && existing != nil {
+			contact.ID = existing.ID
+		}
+	}
+
+	// Record in Unified Team Inbox
+	if h.inboxRepo != nil && payload.Message.Text != "" && contact.ID != "" {
+		conv, cErr := h.inboxRepo.GetOrCreateConversation(r.Context(), tenantID, contact.ID, "telegram")
+		if cErr == nil && conv != nil {
+			newMsg := &domain.Message{
+				TenantID:       tenantID,
+				ConversationID: conv.ID,
+				Direction:      domain.MessageDirectionInbound,
+				SenderType:     domain.MessageSenderTypeContact,
+				Body:           payload.Message.Text,
+				Status:         "delivered",
 			}
+			_ = h.inboxRepo.CreateMessage(r.Context(), newMsg)
+			if h.broadcaster != nil {
+				h.broadcaster.BroadcastMessage(tenantID, conv, newMsg)
+			}
+			log.Printf("[Webhook/Telegram] 💬 Recorded inbound message for tenant %s conversation %s: %q\n", tenantID, conv.ID, payload.Message.Text)
+		} else {
+			log.Printf("[Webhook/Telegram] ⚠️ Failed to get/create conversation for contact %s: %v\n", contact.ID, cErr)
 		}
 	}
 
@@ -295,26 +314,40 @@ func (h *WebhookHandler) HandleWhatsApp(w http.ResponseWriter, r *http.Request) 
 					log.Printf("[Webhook/WhatsApp] Failed to save contact %s for tenant %s: %v\n", waID, tenantID, err)
 				} else {
 					log.Printf("[Webhook/WhatsApp] Synced inbound contact %s (%s) for tenant %s\n", waID, name, tenantID)
+				}
 
-					// Record in Unified Team Inbox
-					if h.inboxRepo != nil && contact.ID != "" {
-						bodyText := msg.Text.Body
-						if bodyText == "" && msg.Type != "" {
-							bodyText = "[" + msg.Type + " message]"
-						}
-						if bodyText != "" {
-							conv, cErr := h.inboxRepo.GetOrCreateConversation(r.Context(), tenantID, contact.ID, "whatsapp")
-							if cErr == nil && conv != nil {
-								_ = h.inboxRepo.CreateMessage(r.Context(), &domain.Message{
-									TenantID:          tenantID,
-									ConversationID:    conv.ID,
-									Direction:         domain.MessageDirectionInbound,
-									SenderType:        domain.MessageSenderTypeContact,
-									Body:              bodyText,
-									PlatformMessageID: &msg.ID,
-									Status:            "delivered",
-								})
+				// Ensure contact.ID is populated for inbox recording
+				if contact.ID == "" {
+					if existing, err := h.contactUC.GetContactByRoutingValue(r.Context(), tenantID, "whatsapp", waID); err == nil && existing != nil {
+						contact.ID = existing.ID
+					}
+				}
+
+				// Record in Unified Team Inbox
+				if h.inboxRepo != nil && contact.ID != "" {
+					bodyText := msg.Text.Body
+					if bodyText == "" && msg.Type != "" {
+						bodyText = "[" + msg.Type + " message]"
+					}
+					if bodyText != "" {
+						conv, cErr := h.inboxRepo.GetOrCreateConversation(r.Context(), tenantID, contact.ID, "whatsapp")
+						if cErr == nil && conv != nil {
+							newMsg := &domain.Message{
+								TenantID:          tenantID,
+								ConversationID:    conv.ID,
+								Direction:         domain.MessageDirectionInbound,
+								SenderType:        domain.MessageSenderTypeContact,
+								Body:              bodyText,
+								PlatformMessageID: &msg.ID,
+								Status:            "delivered",
 							}
+							_ = h.inboxRepo.CreateMessage(r.Context(), newMsg)
+							if h.broadcaster != nil {
+								h.broadcaster.BroadcastMessage(tenantID, conv, newMsg)
+							}
+							log.Printf("[Webhook/WhatsApp] 💬 Recorded inbound message for tenant %s conversation %s: %q\n", tenantID, conv.ID, bodyText)
+						} else {
+							log.Printf("[Webhook/WhatsApp] ⚠️ Failed to get/create conversation for contact %s: %v\n", contact.ID, cErr)
 						}
 					}
 				}

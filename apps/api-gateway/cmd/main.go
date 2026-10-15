@@ -284,6 +284,13 @@ func main() {
 	inboxUseCase := usecase.NewInboxUseCase(inboxRepo, contactRepo, channelRepo, waManager)
 	inboxHandler := handler.NewInboxHandler(inboxUseCase)
 
+	inboxHub := service.NewInboxHub()
+	if waManager != nil {
+		waManager.SetInboxHub(inboxHub)
+	}
+	webhookHandler.SetBroadcaster(inboxHub)
+	inboxUseCase.SetBroadcaster(inboxHub)
+
 	var mediaService *service.MediaService
 	if cfg.CloudinaryURL != "" {
 		ms, err := service.NewMediaService(cfg.CloudinaryURL)
@@ -521,7 +528,9 @@ func main() {
 	mux.HandleFunc("GET /api/v1/inbox/conversations/{id}/messages", inboxHandler.ListMessages)
 	mux.HandleFunc("POST /api/v1/inbox/conversations/{id}/reply", inboxHandler.SendReply)
 	mux.HandleFunc("PATCH /api/v1/inbox/conversations/{id}", inboxHandler.UpdateConversation)
+	mux.HandleFunc("PUT /api/v1/inbox/conversations/{id}", inboxHandler.UpdateConversation)
 	mux.HandleFunc("POST /api/v1/inbox/conversations/{id}/read", inboxHandler.MarkAsRead)
+	mux.HandleFunc("GET /api/v1/ws/inbox", inboxHub.HandleWebSocket)
 
 	// Webhook Subsystem Endpoints (Inbound Event Flywheel)
 	mux.HandleFunc("POST /api/v1/webhooks/telegram/{tenant_id}", webhookHandler.HandleTelegram)

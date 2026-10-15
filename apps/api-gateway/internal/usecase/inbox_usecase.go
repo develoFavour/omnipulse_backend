@@ -21,6 +21,7 @@ type InboxUseCase interface {
 	AssignConversation(ctx context.Context, tenantID, conversationID string, userID *string) error
 	MarkConversationAsRead(ctx context.Context, tenantID, conversationID string) error
 	SendReply(ctx context.Context, tenantID, userID, conversationID string, req domain.SendReplyRequest) (*domain.Message, error)
+	SetBroadcaster(b domain.InboxBroadcaster)
 }
 
 type inboxUseCase struct {
@@ -28,6 +29,11 @@ type inboxUseCase struct {
 	contactRepo domain.ContactRepository
 	channelRepo domain.ChannelRepository
 	waManager   *service.WhatsAppManager
+	broadcaster domain.InboxBroadcaster
+}
+
+func (u *inboxUseCase) SetBroadcaster(b domain.InboxBroadcaster) {
+	u.broadcaster = b
 }
 
 func NewInboxUseCase(
@@ -234,6 +240,10 @@ func (u *inboxUseCase) SendReply(ctx context.Context, tenantID, userID, conversa
 
 	if err := u.inboxRepo.CreateMessage(ctx, msg); err != nil {
 		return nil, fmt.Errorf("message was sent to recipient but failed to record in database: %w", err)
+	}
+
+	if u.broadcaster != nil {
+		u.broadcaster.BroadcastMessage(tenantID, conv, msg)
 	}
 
 	return msg, nil

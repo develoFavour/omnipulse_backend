@@ -30,6 +30,7 @@ type WhatsAppManager struct {
 	container     *sqlstore.Container
 	encryptionKey string
 	inboxRepo     domain.InboxRepository
+	inboxHub      *InboxHub
 	clients       sync.Map // map[string]*tenantSession (key: tenantID)
 	mu            sync.Mutex
 }
@@ -71,6 +72,12 @@ func (m *WhatsAppManager) SetInboxRepo(repo domain.InboxRepository) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.inboxRepo = repo
+}
+
+func (m *WhatsAppManager) SetInboxHub(hub *InboxHub) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.inboxHub = hub
 }
 
 func (m *WhatsAppManager) restoreExistingSessions() {
@@ -365,6 +372,9 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 			}
 
 		case *events.Message:
+			log.Printf("[WhatsAppManager] 📩 Received events.Message for tenant %s: IsFromMe=%v, Chat=%s, Sender=%s, PushName=%q, MediaType=%s\n",
+				tenantID, evt.Info.IsFromMe, evt.Info.Chat.String(), evt.Info.Sender.String(), evt.Info.PushName, evt.Info.MediaType)
+
 			var contactPhone string
 			var pushName string
 			direction := domain.MessageDirectionInbound
@@ -378,10 +388,13 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 					senderType = domain.MessageSenderTypeAgent
 				}
 			} else {
-				// Inbound message received from contact
-				senderJID := evt.Info.Sender
-				if senderJID.Server == types.DefaultUserServer && senderJID.User != "" {
-					contactPhone = senderJID.User
+				// Inbound message received from contact (1-on-1 chats)
+				if !evt.Info.IsGroup {
+					if evt.Info.Chat.Server == types.DefaultUserServer && evt.Info.Chat.User != "" {
+						contactPhone = evt.Info.Chat.User
+					} else if evt.Info.Sender.Server == types.DefaultUserServer && evt.Info.Sender.User != "" {
+						contactPhone = evt.Info.Sender.User
+					}
 					pushName = evt.Info.PushName
 				}
 			}
@@ -395,7 +408,7 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 					conv, cErr := m.inboxRepo.GetOrCreateConversation(ctx, tenantID, contactID, "whatsapp")
 					if cErr == nil && conv != nil {
 						msgID := evt.Info.ID
-						_ = m.inboxRepo.CreateMessage(ctx, &domain.Message{
+						newMsg := &domain.Message{
 							TenantID:          tenantID,
 							ConversationID:    conv.ID,
 							Direction:         direction,
@@ -403,12 +416,22 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 							Body:              text,
 							PlatformMessageID: &msgID,
 							Status:            "delivered",
-						})
-						log.Printf("[WhatsAppManager] 💬 Synced %s message for tenant %s with %s: %q\n", direction, tenantID, contactPhone, text)
+						}
+						_ = m.inboxRepo.CreateMessage(ctx, newMsg)
+						if m.inboxHub != nil {
+							m.inboxHub.BroadcastMessage(tenantID, conv, newMsg)
+						}
+						log.Printf("[WhatsAppManager] 💬 Synced %s message for tenant %s with %s (conv %s): %q\n", direction, tenantID, contactPhone, conv.ID, text)
 					} else {
 						log.Printf("[WhatsAppManager] ⚠️ Failed to create/find conversation for contact %s: %v\n", contactID, cErr)
 					}
+				} else {
+					log.Printf("[WhatsAppManager] ⚠️ Message skipped: text_empty=%v (len=%d), contactID_empty=%v, inboxRepo_nil=%v (phone=%s)\n",
+						text == "", len(text), contactID == "", m.inboxRepo == nil, contactPhone)
 				}
+			} else {
+				log.Printf("[WhatsAppManager] ℹ️ Message ignored (no 1-on-1 contact phone resolved: Chat=%s, Sender=%s, IsGroup=%v)\n",
+					evt.Info.Chat.String(), evt.Info.Sender.String(), evt.Info.IsGroup)
 			}
 
 		case *events.LoggedOut:
@@ -434,17 +457,41 @@ func extractMessageText(msg *waE2E.Message) string {
 	if msg.Conversation != nil && *msg.Conversation != "" {
 		return *msg.Conversation
 	}
-	if msg.ExtendedTextMessage != nil && msg.ExtendedTextMessage.Text != nil {
+	if msg.ExtendedTextMessage != nil && msg.ExtendedTextMessage.Text != nil && *msg.ExtendedTextMessage.Text != "" {
 		return *msg.ExtendedTextMessage.Text
 	}
-	if msg.ImageMessage != nil && msg.ImageMessage.Caption != nil {
-		return *msg.ImageMessage.Caption
+	if msg.ImageMessage != nil {
+		if msg.ImageMessage.Caption != nil && *msg.ImageMessage.Caption != "" {
+			return *msg.ImageMessage.Caption
+		}
+		return "[Photo]"
 	}
-	if msg.VideoMessage != nil && msg.VideoMessage.Caption != nil {
-		return *msg.VideoMessage.Caption
+	if msg.VideoMessage != nil {
+		if msg.VideoMessage.Caption != nil && *msg.VideoMessage.Caption != "" {
+			return *msg.VideoMessage.Caption
+		}
+		return "[Video]"
 	}
-	if msg.DocumentMessage != nil && msg.DocumentMessage.Caption != nil {
-		return *msg.DocumentMessage.Caption
+	if msg.AudioMessage != nil {
+		return "[Voice message]"
+	}
+	if msg.DocumentMessage != nil {
+		if msg.DocumentMessage.Caption != nil && *msg.DocumentMessage.Caption != "" {
+			return *msg.DocumentMessage.Caption
+		}
+		if msg.DocumentMessage.FileName != nil && *msg.DocumentMessage.FileName != "" {
+			return "[" + *msg.DocumentMessage.FileName + "]"
+		}
+		return "[Document]"
+	}
+	if msg.StickerMessage != nil {
+		return "[Sticker]"
+	}
+	if msg.ContactMessage != nil {
+		return "[Contact card]"
+	}
+	if msg.LocationMessage != nil {
+		return "[Location]"
 	}
 	return ""
 }
@@ -455,18 +502,28 @@ func (m *WhatsAppManager) saveContact(tenantID, rawPhone, name, source string) s
 		return ""
 	}
 
-	// Skip saving the tenant's own phone number as an audience contact
+	routingValue := "+" + phone
+
+	// Skip saving the tenant's own phone number as an audience contact,
+	// UNLESS it was already explicitly added to contacts (e.g. for developer/owner testing)
 	if val, ok := m.clients.Load(tenantID); ok {
 		sess := val.(*tenantSession)
 		sess.mu.RLock()
 		selfPhone := strings.TrimPrefix(strings.TrimSpace(sess.phone), "+")
 		sess.mu.RUnlock()
 		if selfPhone != "" && selfPhone == phone {
+			var existingID string
+			execCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			err := m.db.QueryRowContext(execCtx, `
+				SELECT id FROM contacts WHERE tenant_id = $1 AND channel = 'whatsapp' AND routing_value = $2
+			`, tenantID, routingValue).Scan(&existingID)
+			cancel()
+			if err == nil && existingID != "" {
+				return existingID
+			}
 			return ""
 		}
 	}
-
-	routingValue := "+" + phone
 
 	name = strings.TrimSpace(name)
 	if name == "" {

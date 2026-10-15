@@ -74,6 +74,8 @@ func (m *mockInboxUseCase) SendReply(ctx context.Context, tenantID, userID, conv
 	return nil, nil
 }
 
+func (m *mockInboxUseCase) SetBroadcaster(b domain.InboxBroadcaster) {}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 func TestInboxHandler_UnauthorizedWithoutTenant(t *testing.T) {

@@ -7,19 +7,20 @@ import (
 	"strings"
 	"time"
 
+	"omnipulse/apps/api-gateway/internal/ctxkeys"
 	"omnipulse/apps/api-gateway/internal/usecase"
 	"omnipulse/apps/api-gateway/internal/utils"
 
 	"github.com/clerk/clerk-sdk-go/v2/jwt"
 )
 
-// Define an unexported type for context keys to guarantee zero collision space
-type contextKey string
-
+// Re-export shared context keys from ctxkeys so all handlers in this package
+// can use them unqualified, while service/worker packages import ctxkeys directly
+// to avoid an import cycle.
 const (
-	TenantIDKey contextKey = "tenant_id"
-	UserIDKey   contextKey = "user_id"
-	UserRoleKey contextKey = "user_role"
+	TenantIDKey = ctxkeys.TenantIDKey
+	UserIDKey   = ctxkeys.UserIDKey
+	UserRoleKey = ctxkeys.UserRoleKey
 )
 
 type statusResponseWriter struct {

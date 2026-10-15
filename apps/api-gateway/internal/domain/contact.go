@@ -52,6 +52,7 @@ type PaginatedContacts struct {
 // ContactRepository defines the storage operations (Driven/Outbound Port)
 type ContactRepository interface {
 	GetByID(ctx context.Context, tenantID, id string) (*Contact, error)
+	GetByRoutingValue(ctx context.Context, tenantID, channel, routingValue string) (*Contact, error)
 	Create(ctx context.Context, contact *Contact) error
 	ListByTenant(ctx context.Context, tenantID, channelFilter string, limit, offset int) ([]*Contact, error)
 	ListWithFilter(ctx context.Context, tenantID string, filter ContactFilter) ([]*Contact, int, error)
@@ -61,6 +62,7 @@ type ContactRepository interface {
 // ContactUseCase defines the business rules orchestration (Driving/Inbound Port)
 type ContactUseCase interface {
 	FetchContact(ctx context.Context, tenantID, id string) (*Contact, error)
+	GetContactByRoutingValue(ctx context.Context, tenantID, channel, routingValue string) (*Contact, error)
 	RegisterContact(ctx context.Context, contact *Contact) error
 	GetAllContacts(ctx context.Context, tenantID string, filter ContactFilter) (*PaginatedContacts, error)
 	StreamContacts(ctx context.Context, tenantID string, filter ContactFilter, yield func(c *Contact, tagNames string) error) error

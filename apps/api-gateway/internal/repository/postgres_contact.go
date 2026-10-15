@@ -37,6 +37,25 @@ func (r *PostgresContactRepository) GetByID(ctx context.Context, tenantID, id st
 	return &c, nil
 }
 
+func (r *PostgresContactRepository) GetByRoutingValue(ctx context.Context, tenantID, channel, routingValue string) (*domain.Contact, error) {
+	query := `
+		SELECT id, tenant_id, first_name, last_name, channel, routing_value, source, status, created_at, updated_at
+		FROM contacts
+		WHERE tenant_id = $1 AND channel = $2 AND routing_value = $3;
+	`
+	var c domain.Contact
+	err := r.db.QueryRowContext(ctx, query, tenantID, channel, routingValue).Scan(
+		&c.ID, &c.TenantID, &c.FirstName, &c.LastName, &c.Channel, &c.RoutingValue, &c.Source, &c.Status, &c.CreatedAt, &c.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, domain.ErrContactNotFound
+		}
+		return nil, fmt.Errorf("failed to fetch contact by routing value: %w", err)
+	}
+	return &c, nil
+}
+
 func (r *PostgresContactRepository) Create(ctx context.Context, c *domain.Contact) error {
 	query := `
 		INSERT INTO contacts (tenant_id, first_name, last_name, channel, routing_value, source, status)
