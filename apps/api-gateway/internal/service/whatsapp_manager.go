@@ -80,36 +80,83 @@ func (m *WhatsAppManager) restoreExistingSessions() {
 		return
 	}
 
+	rows, err := m.db.Query(
+		`SELECT tenant_id, sender_identity, encrypted_credentials, status FROM tenant_channels WHERE platform_name = 'whatsapp' AND status = 'active'`,
+	)
+	if err != nil {
+		log.Printf("[WhatsAppManager] Warning: failed to query tenant_channels: %v\n", err)
+		return
+	}
+	defer rows.Close()
+
+	type chRecord struct {
+		tenantID       string
+		senderIdentity string
+		encCreds       []byte
+		status         string
+	}
+	var channels []chRecord
+	for rows.Next() {
+		var ch chRecord
+		if err := rows.Scan(&ch.tenantID, &ch.senderIdentity, &ch.encCreds, &ch.status); err == nil {
+			channels = append(channels, ch)
+		}
+	}
+
 	for _, dev := range devices {
 		if dev.ID == nil {
 			continue
 		}
-		// Look up tenant for this device JID
-		var tenantID, senderIdentity, status string
-		err := m.db.QueryRow(
-			`SELECT tenant_id, sender_identity, status FROM tenant_channels WHERE platform_name = 'whatsapp' AND (encrypted_credentials->>'jid' = $1 OR sender_identity = $2)`,
-			dev.ID.String(), dev.ID.User,
-		).Scan(&tenantID, &senderIdentity, &status)
 
-		if err != nil || tenantID == "" {
+		var matchedTenantID, matchedIdentity string
+		phone := dev.ID.User
+
+		for _, ch := range channels {
+			if strings.Contains(ch.senderIdentity, phone) {
+				matchedTenantID = ch.tenantID
+				matchedIdentity = ch.senderIdentity
+				break
+			}
+			if len(ch.encCreds) > 0 {
+				plain, decErr := utils.DecryptBytes(ch.encCreds, m.encryptionKey)
+				if decErr == nil {
+					var creds map[string]interface{}
+					if json.Unmarshal(plain, &creds) == nil {
+						if jidStr, _ := creds["jid"].(string); jidStr == dev.ID.String() {
+							matchedTenantID = ch.tenantID
+							matchedIdentity = ch.senderIdentity
+							break
+						}
+						if credPhone, _ := creds["phone"].(string); credPhone == phone {
+							matchedTenantID = ch.tenantID
+							matchedIdentity = ch.senderIdentity
+							break
+						}
+					}
+				}
+			}
+		}
+
+		if matchedTenantID == "" {
+			log.Printf("[WhatsAppManager] No matching tenant found for device JID %s\n", dev.ID.String())
 			continue
 		}
 
-		clientLog := waLog.Stdout(fmt.Sprintf("WA-%s", tenantID[:8]), "WARN", true)
+		clientLog := waLog.Stdout(fmt.Sprintf("WA-%s", matchedTenantID[:8]), "WARN", true)
 		client := whatsmeow.NewClient(dev, clientLog)
 		sess := &tenantSession{
 			client: client,
 			status: "connected",
-			phone:  dev.ID.User,
-			name:   senderIdentity,
+			phone:  phone,
+			name:   matchedIdentity,
 		}
 
-		m.setupEventHandler(sess, tenantID)
+		m.setupEventHandler(sess, matchedTenantID)
 		if err := client.Connect(); err != nil {
-			log.Printf("[WhatsAppManager] Failed to auto-connect session for tenant %s: %v\n", tenantID, err)
+			log.Printf("[WhatsAppManager] Failed to auto-connect session for tenant %s: %v\n", matchedTenantID, err)
 		} else {
-			log.Printf("[WhatsAppManager] Restored WhatsApp session for tenant %s (JID: %s)\n", tenantID, dev.ID.String())
-			m.clients.Store(tenantID, sess)
+			log.Printf("[WhatsAppManager] Restored WhatsApp session for tenant %s (JID: %s)\n", matchedTenantID, dev.ID.String())
+			m.clients.Store(matchedTenantID, sess)
 		}
 	}
 }
@@ -318,9 +365,29 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 			}
 
 		case *events.Message:
-			senderJID := evt.Info.Sender
-			if !evt.Info.IsFromMe && senderJID.Server == types.DefaultUserServer && senderJID.User != "" {
-				contactID := m.saveContact(tenantID, senderJID.User, evt.Info.PushName, "whatsapp_inbound")
+			var contactPhone string
+			var pushName string
+			direction := domain.MessageDirectionInbound
+			senderType := domain.MessageSenderTypeContact
+
+			if evt.Info.IsFromMe {
+				// Message was sent from this connected WhatsApp account (phone or web)
+				if evt.Info.Chat.Server == types.DefaultUserServer && evt.Info.Chat.User != "" {
+					contactPhone = evt.Info.Chat.User
+					direction = domain.MessageDirectionOutbound
+					senderType = domain.MessageSenderTypeAgent
+				}
+			} else {
+				// Inbound message received from contact
+				senderJID := evt.Info.Sender
+				if senderJID.Server == types.DefaultUserServer && senderJID.User != "" {
+					contactPhone = senderJID.User
+					pushName = evt.Info.PushName
+				}
+			}
+
+			if contactPhone != "" {
+				contactID := m.saveContact(tenantID, contactPhone, pushName, "whatsapp_sync")
 				text := extractMessageText(evt.Message)
 				if text != "" && contactID != "" && m.inboxRepo != nil {
 					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -331,13 +398,13 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 						_ = m.inboxRepo.CreateMessage(ctx, &domain.Message{
 							TenantID:          tenantID,
 							ConversationID:    conv.ID,
-							Direction:         domain.MessageDirectionInbound,
-							SenderType:        domain.MessageSenderTypeContact,
+							Direction:         direction,
+							SenderType:        senderType,
 							Body:              text,
 							PlatformMessageID: &msgID,
 							Status:            "delivered",
 						})
-						log.Printf("[WhatsAppManager] 💬 Inbound message from %s captured in Unified Inbox for tenant %s\n", senderJID.User, tenantID)
+						log.Printf("[WhatsAppManager] 💬 Synced %s message for tenant %s with %s: %q\n", direction, tenantID, contactPhone, text)
 					} else {
 						log.Printf("[WhatsAppManager] ⚠️ Failed to create/find conversation for contact %s: %v\n", contactID, cErr)
 					}
