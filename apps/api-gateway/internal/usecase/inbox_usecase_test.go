@@ -21,6 +21,8 @@ type mockInboxRepo struct {
 	listMessagesFunc                    func(ctx context.Context, tenantID, conversationID string, limit, offset int) ([]domain.Message, error)
 	createMessageFunc                   func(ctx context.Context, msg *domain.Message) error
 	updateMessageStatusByPlatformIDFunc func(ctx context.Context, tenantID, platformMessageID, status string) (*domain.Message, error)
+	editMessageFunc                     func(ctx context.Context, tenantID, messageID, newBody string) (*domain.Message, error)
+	deleteMessageFunc                   func(ctx context.Context, tenantID, messageID string) (*domain.Message, error)
 }
 
 func (m *mockInboxRepo) ListConversations(ctx context.Context, tenantID string, filter domain.ConversationFilter) ([]domain.Conversation, int, error) {
@@ -82,6 +84,20 @@ func (m *mockInboxRepo) CreateMessage(ctx context.Context, msg *domain.Message) 
 func (m *mockInboxRepo) UpdateMessageStatusByPlatformID(ctx context.Context, tenantID, platformMessageID, status string) (*domain.Message, error) {
 	if m.updateMessageStatusByPlatformIDFunc != nil {
 		return m.updateMessageStatusByPlatformIDFunc(ctx, tenantID, platformMessageID, status)
+	}
+	return nil, nil
+}
+
+func (m *mockInboxRepo) EditMessage(ctx context.Context, tenantID, messageID, newBody string) (*domain.Message, error) {
+	if m.editMessageFunc != nil {
+		return m.editMessageFunc(ctx, tenantID, messageID, newBody)
+	}
+	return nil, nil
+}
+
+func (m *mockInboxRepo) DeleteMessage(ctx context.Context, tenantID, messageID string) (*domain.Message, error) {
+	if m.deleteMessageFunc != nil {
+		return m.deleteMessageFunc(ctx, tenantID, messageID)
 	}
 	return nil, nil
 }

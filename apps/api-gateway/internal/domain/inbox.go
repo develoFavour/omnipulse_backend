@@ -60,6 +60,8 @@ type Message struct {
 	PlatformMessageID *string           `json:"platform_message_id,omitempty"`
 	Status            string            `json:"status"`
 	ErrorMessage      *string           `json:"error_message,omitempty"`
+	IsDeleted         bool              `json:"is_deleted"`
+	EditedAt          *time.Time        `json:"edited_at,omitempty"`
 	CreatedAt         time.Time         `json:"created_at"`
 }
 
@@ -83,6 +85,8 @@ type InboxRepository interface {
 	ListMessages(ctx context.Context, tenantID, conversationID string, limit, offset int) ([]Message, error)
 	CreateMessage(ctx context.Context, msg *Message) error
 	UpdateMessageStatusByPlatformID(ctx context.Context, tenantID, platformMessageID, status string) (*Message, error)
+	EditMessage(ctx context.Context, tenantID, messageID, newBody string) (*Message, error)
+	DeleteMessage(ctx context.Context, tenantID, messageID string) (*Message, error)
 }
 
 type SendReplyRequest struct {
@@ -93,4 +97,6 @@ type SendReplyRequest struct {
 type InboxBroadcaster interface {
 	BroadcastMessage(tenantID string, conv *Conversation, msg *Message)
 	BroadcastStatusUpdate(tenantID, conversationID, messageID, status string)
+	BroadcastMessageEdit(tenantID, conversationID, messageID, newBody string)
+	BroadcastMessageDelete(tenantID, conversationID, messageID string)
 }

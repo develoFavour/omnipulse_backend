@@ -267,7 +267,8 @@ func (r *PostgresInboxRepository) ListMessages(ctx context.Context, tenantID, co
 	query := `
 		SELECT 
 			id, tenant_id, conversation_id, direction, sender_type, sender_id,
-			body, media_url, media_type, platform_message_id, status, error_message, created_at
+			body, media_url, media_type, platform_message_id, status, error_message,
+			COALESCE(is_deleted, false), edited_at, created_at
 		FROM messages
 		WHERE conversation_id = $1 AND tenant_id = $2
 		ORDER BY created_at ASC
@@ -285,7 +286,8 @@ func (r *PostgresInboxRepository) ListMessages(ctx context.Context, tenantID, co
 		var m domain.Message
 		err := rows.Scan(
 			&m.ID, &m.TenantID, &m.ConversationID, &m.Direction, &m.SenderType, &m.SenderID,
-			&m.Body, &m.MediaURL, &m.MediaType, &m.PlatformMessageID, &m.Status, &m.ErrorMessage, &m.CreatedAt,
+			&m.Body, &m.MediaURL, &m.MediaType, &m.PlatformMessageID, &m.Status, &m.ErrorMessage,
+			&m.IsDeleted, &m.EditedAt, &m.CreatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan message: %w", err)
@@ -347,19 +349,77 @@ func (r *PostgresInboxRepository) UpdateMessageStatusByPlatformID(ctx context.Co
 		SET status = $1
 		WHERE tenant_id = $2 AND platform_message_id = $3
 		RETURNING id, tenant_id, conversation_id, direction, sender_type, sender_id,
-		          body, media_url, media_type, platform_message_id, status, error_message, created_at;
+		          body, media_url, media_type, platform_message_id, status, error_message,
+		          COALESCE(is_deleted, false), edited_at, created_at;
 	`
 
 	var m domain.Message
 	err := r.db.QueryRowContext(ctx, query, status, tenantID, platformMessageID).Scan(
 		&m.ID, &m.TenantID, &m.ConversationID, &m.Direction, &m.SenderType, &m.SenderID,
-		&m.Body, &m.MediaURL, &m.MediaType, &m.PlatformMessageID, &m.Status, &m.ErrorMessage, &m.CreatedAt,
+		&m.Body, &m.MediaURL, &m.MediaType, &m.PlatformMessageID, &m.Status, &m.ErrorMessage,
+		&m.IsDeleted, &m.EditedAt, &m.CreatedAt,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("message not found for platform_message_id=%s", platformMessageID)
 		}
 		return nil, fmt.Errorf("failed to update message status: %w", err)
+	}
+
+	return &m, nil
+}
+
+// EditMessage updates the body of a message and marks it as edited.
+// Only outbound (agent-sent) messages may be edited.
+func (r *PostgresInboxRepository) EditMessage(ctx context.Context, tenantID, messageID, newBody string) (*domain.Message, error) {
+	query := `
+		UPDATE messages
+		SET body = $1, edited_at = NOW()
+		WHERE id = $2 AND tenant_id = $3 AND direction = 'outbound' AND COALESCE(is_deleted, false) = false
+		RETURNING id, tenant_id, conversation_id, direction, sender_type, sender_id,
+		          body, media_url, media_type, platform_message_id, status, error_message,
+		          COALESCE(is_deleted, false), edited_at, created_at;
+	`
+
+	var m domain.Message
+	err := r.db.QueryRowContext(ctx, query, newBody, messageID, tenantID).Scan(
+		&m.ID, &m.TenantID, &m.ConversationID, &m.Direction, &m.SenderType, &m.SenderID,
+		&m.Body, &m.MediaURL, &m.MediaType, &m.PlatformMessageID, &m.Status, &m.ErrorMessage,
+		&m.IsDeleted, &m.EditedAt, &m.CreatedAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("message not found or cannot be edited (must be outbound and not deleted)")
+		}
+		return nil, fmt.Errorf("failed to edit message: %w", err)
+	}
+
+	return &m, nil
+}
+
+// DeleteMessage soft-deletes a message by setting is_deleted=true and clearing the body.
+// Works for outbound messages only; inbound messages are never deleted from the platform side.
+func (r *PostgresInboxRepository) DeleteMessage(ctx context.Context, tenantID, messageID string) (*domain.Message, error) {
+	query := `
+		UPDATE messages
+		SET is_deleted = true, body = ''
+		WHERE id = $1 AND tenant_id = $2 AND direction = 'outbound' AND COALESCE(is_deleted, false) = false
+		RETURNING id, tenant_id, conversation_id, direction, sender_type, sender_id,
+		          body, media_url, media_type, platform_message_id, status, error_message,
+		          COALESCE(is_deleted, false), edited_at, created_at;
+	`
+
+	var m domain.Message
+	err := r.db.QueryRowContext(ctx, query, messageID, tenantID).Scan(
+		&m.ID, &m.TenantID, &m.ConversationID, &m.Direction, &m.SenderType, &m.SenderID,
+		&m.Body, &m.MediaURL, &m.MediaType, &m.PlatformMessageID, &m.Status, &m.ErrorMessage,
+		&m.IsDeleted, &m.EditedAt, &m.CreatedAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("message not found or already deleted")
+		}
+		return nil, fmt.Errorf("failed to delete message: %w", err)
 	}
 
 	return &m, nil

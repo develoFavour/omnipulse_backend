@@ -204,3 +204,91 @@ func (h *InboxHub) BroadcastStatusUpdate(tenantID, conversationID, messageID, st
 	}
 	h.mu.RUnlock()
 }
+
+// BroadcastMessageEdit pushes a MESSAGE_EDITED event so all connected clients update
+// the message body in real time without a page refresh.
+func (h *InboxHub) BroadcastMessageEdit(tenantID, conversationID, messageID, newBody string) {
+	if h == nil {
+		return
+	}
+	h.mu.RLock()
+	clients, ok := h.subscribers[tenantID]
+	if !ok || len(clients) == 0 {
+		h.mu.RUnlock()
+		return
+	}
+
+	evt := struct {
+		Type           string `json:"type"`
+		TenantID       string `json:"tenant_id"`
+		ConversationID string `json:"conversation_id"`
+		MessageID      string `json:"message_id"`
+		NewBody        string `json:"new_body"`
+		Timestamp      string `json:"timestamp"`
+	}{
+		Type:           "MESSAGE_EDITED",
+		TenantID:       tenantID,
+		ConversationID: conversationID,
+		MessageID:      messageID,
+		NewBody:        newBody,
+		Timestamp:      time.Now().UTC().Format(time.RFC3339),
+	}
+
+	payload, err := json.Marshal(evt)
+	if err != nil {
+		h.mu.RUnlock()
+		return
+	}
+
+	for client := range clients {
+		select {
+		case client.send <- payload:
+		default:
+			log.Printf("[INBOX-WS] ⚠️ Buffer full for tenant %s client, dropping MESSAGE_EDITED frame\n", tenantID)
+		}
+	}
+	h.mu.RUnlock()
+}
+
+// BroadcastMessageDelete pushes a MESSAGE_DELETED event so all connected clients
+// soft-remove the message from the thread in real time.
+func (h *InboxHub) BroadcastMessageDelete(tenantID, conversationID, messageID string) {
+	if h == nil {
+		return
+	}
+	h.mu.RLock()
+	clients, ok := h.subscribers[tenantID]
+	if !ok || len(clients) == 0 {
+		h.mu.RUnlock()
+		return
+	}
+
+	evt := struct {
+		Type           string `json:"type"`
+		TenantID       string `json:"tenant_id"`
+		ConversationID string `json:"conversation_id"`
+		MessageID      string `json:"message_id"`
+		Timestamp      string `json:"timestamp"`
+	}{
+		Type:           "MESSAGE_DELETED",
+		TenantID:       tenantID,
+		ConversationID: conversationID,
+		MessageID:      messageID,
+		Timestamp:      time.Now().UTC().Format(time.RFC3339),
+	}
+
+	payload, err := json.Marshal(evt)
+	if err != nil {
+		h.mu.RUnlock()
+		return
+	}
+
+	for client := range clients {
+		select {
+		case client.send <- payload:
+		default:
+			log.Printf("[INBOX-WS] ⚠️ Buffer full for tenant %s client, dropping MESSAGE_DELETED frame\n", tenantID)
+		}
+	}
+	h.mu.RUnlock()
+}

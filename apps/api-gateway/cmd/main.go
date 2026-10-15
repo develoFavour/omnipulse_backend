@@ -140,6 +140,16 @@ func main() {
 		logger.Println("[DB-MIGRATE] Successfully ensured conversations and messages tables exist.")
 	}
 
+	// Idempotent: add is_deleted and edited_at columns for edit/delete message support
+	for _, col := range []string{
+		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN NOT NULL DEFAULT false`,
+		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMP WITH TIME ZONE`,
+	} {
+		if _, err := db.Exec(col); err != nil {
+			logger.Printf("[DB-MIGRATE] messages column migration: %v\n", err)
+		}
+	}
+
 	// Idempotent index for fast aggregate time-series queries
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_campaign_deliveries_created ON campaign_deliveries(created_at DESC);`)
 
@@ -530,6 +540,8 @@ func main() {
 	mux.HandleFunc("PATCH /api/v1/inbox/conversations/{id}", inboxHandler.UpdateConversation)
 	mux.HandleFunc("PUT /api/v1/inbox/conversations/{id}", inboxHandler.UpdateConversation)
 	mux.HandleFunc("POST /api/v1/inbox/conversations/{id}/read", inboxHandler.MarkAsRead)
+	mux.HandleFunc("PATCH /api/v1/inbox/messages/{msgID}", inboxHandler.EditMessage)
+	mux.HandleFunc("DELETE /api/v1/inbox/messages/{msgID}", inboxHandler.DeleteMessage)
 	mux.HandleFunc("GET /api/v1/ws/inbox", inboxHub.HandleWebSocket)
 
 	// Webhook Subsystem Endpoints (Inbound Event Flywheel)

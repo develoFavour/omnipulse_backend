@@ -197,3 +197,54 @@ func (h *InboxHandler) MarkAsRead(w http.ResponseWriter, r *http.Request) {
 
 	utils.WriteJSON(w, http.StatusOK, map[string]string{"status": "marked_as_read"})
 }
+
+func (h *InboxHandler) EditMessage(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok || tenantID == "" {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	messageID := r.PathValue("msgID")
+	if messageID == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Missing message id")
+		return
+	}
+
+	var req struct {
+		Body string `json:"body"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Body == "" {
+		utils.WriteError(w, http.StatusBadRequest, "body field is required")
+		return
+	}
+
+	updated, err := h.inboxUseCase.EditMessage(r.Context(), tenantID, messageID, req.Body)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, updated)
+}
+
+func (h *InboxHandler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok || tenantID == "" {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	messageID := r.PathValue("msgID")
+	if messageID == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Missing message id")
+		return
+	}
+
+	if err := h.inboxUseCase.DeleteMessage(r.Context(), tenantID, messageID); err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
