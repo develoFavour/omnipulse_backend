@@ -435,6 +435,21 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 					defer cancel()
 					conv, cErr := m.inboxRepo.GetOrCreateConversation(ctx, tenantID, contactID, "whatsapp")
 					if cErr == nil && conv != nil {
+						// For outbound messages (echoed back when sent from this device/session):
+						// Check if Omnipulse already recorded this exact message in the last 10 seconds (avoids doubling messages sent from dashboard)
+						if direction == domain.MessageDirectionOutbound {
+							var existingCount int
+							_ = m.db.QueryRowContext(ctx, `
+								SELECT COUNT(*) FROM messages 
+								WHERE tenant_id = $1 AND conversation_id = $2 AND direction = 'outbound' AND body = $3 
+								  AND created_at >= NOW() - INTERVAL '10 seconds'
+							`, tenantID, conv.ID, text).Scan(&existingCount)
+							if existingCount > 0 {
+								log.Printf("[WhatsAppManager] ⏩ Skipping duplicate outbound message echo for tenant %s (already recorded in dashboard)\n", tenantID)
+								return
+							}
+						}
+
 						msgID := evt.Info.ID
 						newMsg := &domain.Message{
 							TenantID:          tenantID,
