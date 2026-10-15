@@ -20,6 +20,7 @@ type WebhookHandler struct {
 	contactUC             domain.ContactUseCase
 	channelRepo           domain.ChannelRepository
 	destinationRepo       domain.TelegramDestinationRepository
+	inboxRepo             domain.InboxRepository
 	metaAppSecret         string
 	telegramWebhookSecret string
 }
@@ -28,6 +29,7 @@ func NewWebhookHandler(
 	contactUC domain.ContactUseCase,
 	channelRepo domain.ChannelRepository,
 	destinationRepo domain.TelegramDestinationRepository,
+	inboxRepo domain.InboxRepository,
 	metaAppSecret string,
 	telegramWebhookSecret string,
 ) *WebhookHandler {
@@ -35,6 +37,7 @@ func NewWebhookHandler(
 		contactUC:             contactUC,
 		channelRepo:           channelRepo,
 		destinationRepo:       destinationRepo,
+		inboxRepo:             inboxRepo,
 		metaAppSecret:         metaAppSecret,
 		telegramWebhookSecret: telegramWebhookSecret,
 	}
@@ -177,6 +180,21 @@ func (h *WebhookHandler) HandleTelegram(w http.ResponseWriter, r *http.Request) 
 		log.Printf("[Webhook/Telegram] Failed to save inbound contact %s for tenant %s: %v\n", chatIDStr, tenantID, err)
 	} else {
 		log.Printf("[Webhook/Telegram] Synced inbound contact %s (%s) for tenant %s\n", chatIDStr, firstName, tenantID)
+
+		// Record in Unified Team Inbox
+		if h.inboxRepo != nil && payload.Message.Text != "" && contact.ID != "" {
+			conv, cErr := h.inboxRepo.GetOrCreateConversation(r.Context(), tenantID, contact.ID, "telegram")
+			if cErr == nil && conv != nil {
+				_ = h.inboxRepo.CreateMessage(r.Context(), &domain.Message{
+					TenantID:       tenantID,
+					ConversationID: conv.ID,
+					Direction:      domain.MessageDirectionInbound,
+					SenderType:     domain.MessageSenderTypeContact,
+					Body:           payload.Message.Text,
+					Status:         "delivered",
+				})
+			}
+		}
 	}
 
 	utils.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -277,6 +295,28 @@ func (h *WebhookHandler) HandleWhatsApp(w http.ResponseWriter, r *http.Request) 
 					log.Printf("[Webhook/WhatsApp] Failed to save contact %s for tenant %s: %v\n", waID, tenantID, err)
 				} else {
 					log.Printf("[Webhook/WhatsApp] Synced inbound contact %s (%s) for tenant %s\n", waID, name, tenantID)
+
+					// Record in Unified Team Inbox
+					if h.inboxRepo != nil && contact.ID != "" {
+						bodyText := msg.Text.Body
+						if bodyText == "" && msg.Type != "" {
+							bodyText = "[" + msg.Type + " message]"
+						}
+						if bodyText != "" {
+							conv, cErr := h.inboxRepo.GetOrCreateConversation(r.Context(), tenantID, contact.ID, "whatsapp")
+							if cErr == nil && conv != nil {
+								_ = h.inboxRepo.CreateMessage(r.Context(), &domain.Message{
+									TenantID:          tenantID,
+									ConversationID:    conv.ID,
+									Direction:         domain.MessageDirectionInbound,
+									SenderType:        domain.MessageSenderTypeContact,
+									Body:              bodyText,
+									PlatformMessageID: &msg.ID,
+									Status:            "delivered",
+								})
+							}
+						}
+					}
 				}
 			}
 		}

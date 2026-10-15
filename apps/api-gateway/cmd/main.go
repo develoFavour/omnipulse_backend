@@ -97,6 +97,49 @@ func main() {
 		logger.Println("[DB-MIGRATE] Successfully ensured notifications table and indexes exist.")
 	}
 
+	// Idempotent schema migrations: Unified Team Inbox (conversations & messages)
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS conversations (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+			contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+			channel VARCHAR(50) NOT NULL CHECK (channel IN ('whatsapp', 'telegram', 'instagram', 'x')),
+			status VARCHAR(50) NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed', 'waiting')),
+			assigned_to VARCHAR(255) REFERENCES users(id) ON DELETE SET NULL,
+			last_message_text TEXT,
+			last_message_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			unread_count INT NOT NULL DEFAULT 0,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			CONSTRAINT uq_tenant_contact_channel UNIQUE (tenant_id, contact_id, channel)
+		);
+		CREATE INDEX IF NOT EXISTS idx_conversations_tenant_status ON conversations(tenant_id, status, last_message_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_conversations_contact ON conversations(contact_id);
+		CREATE INDEX IF NOT EXISTS idx_conversations_assigned ON conversations(assigned_to);
+
+		CREATE TABLE IF NOT EXISTS messages (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+			conversation_id UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+			direction VARCHAR(20) NOT NULL CHECK (direction IN ('inbound', 'outbound')),
+			sender_type VARCHAR(20) NOT NULL DEFAULT 'contact' CHECK (sender_type IN ('contact', 'agent', 'bot', 'system')),
+			sender_id VARCHAR(255),
+			body TEXT NOT NULL,
+			media_url TEXT,
+			media_type VARCHAR(50),
+			platform_message_id VARCHAR(255),
+			status VARCHAR(50) NOT NULL DEFAULT 'sent' CHECK (status IN ('sent', 'delivered', 'read', 'failed')),
+			error_message TEXT,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, created_at ASC);
+		CREATE INDEX IF NOT EXISTS idx_messages_tenant ON messages(tenant_id, created_at DESC);
+	`); err != nil {
+		logger.Printf("[DB-MIGRATE] conversations & messages tables create: %v\n", err)
+	} else {
+		logger.Println("[DB-MIGRATE] Successfully ensured conversations and messages tables exist.")
+	}
+
 	// Idempotent index for fast aggregate time-series queries
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_campaign_deliveries_created ON campaign_deliveries(created_at DESC);`)
 
@@ -189,6 +232,7 @@ func main() {
 	templateRepo := repository.NewPostgresTemplateRepository(db)
 	notificationRepo := repository.NewPostgresNotificationRepository(db)
 	analyticsRepo := repository.NewPostgresAnalyticsRepository(db)
+	inboxRepo := repository.NewPostgresInboxRepository(db)
 
 	tagUseCase := usecase.NewTagUseCase(tagRepo)
 	templateUseCase := usecase.NewTemplateUseCase(templateRepo)
@@ -233,9 +277,11 @@ func main() {
 		WABAID:        cfg.MetaWABAID,
 		PhoneNumberID: cfg.MetaPhoneNumberID,
 	}, waManager)
-	webhookHandler := handler.NewWebhookHandler(contactUseCase, channelRepo, destinationRepo, cfg.MetaAppSecret, cfg.TelegramWebhookSecret)
+	webhookHandler := handler.NewWebhookHandler(contactUseCase, channelRepo, destinationRepo, inboxRepo, cfg.MetaAppSecret, cfg.TelegramWebhookSecret)
 	dashboardHandler := handler.NewDashboardHandler(dashboardUseCase, subRepo)
 	destinationHandler := handler.NewTelegramDestinationHandler(destinationRepo)
+	inboxUseCase := usecase.NewInboxUseCase(inboxRepo, contactRepo, channelRepo, waManager)
+	inboxHandler := handler.NewInboxHandler(inboxUseCase)
 
 	var mediaService *service.MediaService
 	if cfg.CloudinaryURL != "" {
@@ -468,6 +514,14 @@ func main() {
 	// Campaign Analytics Aggregate Subsystem Endpoints
 	mux.HandleFunc("GET /api/v1/analytics", analyticsHandler.GetReport)
 
+	// Unified Team Inbox Endpoints
+	mux.HandleFunc("GET /api/v1/inbox/conversations", inboxHandler.ListConversations)
+	mux.HandleFunc("GET /api/v1/inbox/conversations/{id}", inboxHandler.GetConversation)
+	mux.HandleFunc("GET /api/v1/inbox/conversations/{id}/messages", inboxHandler.ListMessages)
+	mux.HandleFunc("POST /api/v1/inbox/conversations/{id}/reply", inboxHandler.SendReply)
+	mux.HandleFunc("PATCH /api/v1/inbox/conversations/{id}", inboxHandler.UpdateConversation)
+	mux.HandleFunc("POST /api/v1/inbox/conversations/{id}/read", inboxHandler.MarkAsRead)
+
 	// Webhook Subsystem Endpoints (Inbound Event Flywheel)
 	mux.HandleFunc("POST /api/v1/webhooks/telegram/{tenant_id}", webhookHandler.HandleTelegram)
 	mux.HandleFunc("GET /api/v1/webhooks/whatsapp/{tenant_id}", webhookHandler.VerifyWhatsApp)
@@ -488,7 +542,7 @@ func main() {
 
 	c := cors.New(cors.Options{
 		AllowedOrigins:   allowedOrigins,
-		AllowedMethods:   []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"},
+		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"*"},
 		AllowCredentials: true,
 	})

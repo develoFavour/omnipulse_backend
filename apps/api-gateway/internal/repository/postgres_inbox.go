@@ -1,0 +1,339 @@
+package repository
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"strings"
+	"time"
+
+	"omnipulse/apps/api-gateway/internal/domain"
+)
+
+type PostgresInboxRepository struct {
+	db *sql.DB
+}
+
+func NewPostgresInboxRepository(db *sql.DB) domain.InboxRepository {
+	return &PostgresInboxRepository{db: db}
+}
+
+func (r *PostgresInboxRepository) ListConversations(ctx context.Context, tenantID string, filter domain.ConversationFilter) ([]domain.Conversation, int, error) {
+	var conditions []string
+	var args []interface{}
+	argIdx := 1
+
+	conditions = append(conditions, fmt.Sprintf("c.tenant_id = $%d", argIdx))
+	args = append(args, tenantID)
+	argIdx++
+
+	if filter.Channel != "" && filter.Channel != "all" {
+		conditions = append(conditions, fmt.Sprintf("c.channel = $%d", argIdx))
+		args = append(args, filter.Channel)
+		argIdx++
+	}
+
+	if filter.Status != "" && filter.Status != "all" {
+		conditions = append(conditions, fmt.Sprintf("c.status = $%d", argIdx))
+		args = append(args, filter.Status)
+		argIdx++
+	}
+
+	if filter.AssignedTo != "" {
+		conditions = append(conditions, fmt.Sprintf("c.assigned_to = $%d", argIdx))
+		args = append(args, filter.AssignedTo)
+		argIdx++
+	}
+
+	if filter.Search != "" {
+		searchPattern := "%" + strings.ToLower(filter.Search) + "%"
+		conditions = append(conditions, fmt.Sprintf(
+			"(LOWER(ct.first_name) LIKE $%d OR LOWER(COALESCE(ct.last_name, '')) LIKE $%d OR LOWER(ct.routing_value) LIKE $%d OR LOWER(COALESCE(c.last_message_text, '')) LIKE $%d)",
+			argIdx, argIdx, argIdx, argIdx,
+		))
+		args = append(args, searchPattern)
+		argIdx++
+	}
+
+	whereClause := strings.Join(conditions, " AND ")
+
+	// Count total matching conversations
+	countQuery := fmt.Sprintf(`
+		SELECT COUNT(*)
+		FROM conversations c
+		JOIN contacts ct ON c.contact_id = ct.id
+		WHERE %s
+	`, whereClause)
+
+	var total int
+	if err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("failed to count conversations: %w", err)
+	}
+
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 30
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	query := fmt.Sprintf(`
+		SELECT 
+			c.id, c.tenant_id, c.contact_id, c.channel, c.status, c.assigned_to, 
+			c.last_message_text, c.last_message_at, c.unread_count, c.created_at, c.updated_at,
+			ct.first_name, ct.last_name, ct.channel, ct.routing_value, ct.status,
+			u.id, u.email, u.role
+		FROM conversations c
+		JOIN contacts ct ON c.contact_id = ct.id
+		LEFT JOIN users u ON c.assigned_to = u.id
+		WHERE %s
+		ORDER BY c.last_message_at DESC
+		LIMIT $%d OFFSET $%d
+	`, whereClause, argIdx, argIdx+1)
+
+	args = append(args, limit, offset)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to query conversations: %w", err)
+	}
+	defer rows.Close()
+
+	var conversations []domain.Conversation
+	for rows.Next() {
+		var conv domain.Conversation
+		var contact domain.Contact
+		var ctLastName sql.NullString
+		var uID, uEmail, uRole sql.NullString
+
+		err := rows.Scan(
+			&conv.ID, &conv.TenantID, &conv.ContactID, &conv.Channel, &conv.Status, &conv.AssignedTo,
+			&conv.LastMessageText, &conv.LastMessageAt, &conv.UnreadCount, &conv.CreatedAt, &conv.UpdatedAt,
+			&contact.FirstName, &ctLastName, &contact.Channel, &contact.RoutingValue, &contact.Status,
+			&uID, &uEmail, &uRole,
+		)
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to scan conversation: %w", err)
+		}
+
+		contact.ID = conv.ContactID
+		contact.TenantID = conv.TenantID
+		if ctLastName.Valid {
+			contact.LastName = ctLastName.String
+		}
+		conv.Contact = &contact
+
+		if uID.Valid {
+			conv.AssignedUser = &domain.User{
+				ID:    uID.String,
+				Email: uEmail.String,
+				Role:  uRole.String,
+			}
+		}
+
+		conversations = append(conversations, conv)
+	}
+
+	return conversations, total, nil
+}
+
+func (r *PostgresInboxRepository) GetConversation(ctx context.Context, tenantID, conversationID string) (*domain.Conversation, error) {
+	query := `
+		SELECT 
+			c.id, c.tenant_id, c.contact_id, c.channel, c.status, c.assigned_to, 
+			c.last_message_text, c.last_message_at, c.unread_count, c.created_at, c.updated_at,
+			ct.first_name, ct.last_name, ct.channel, ct.routing_value, ct.status,
+			u.id, u.email, u.role
+		FROM conversations c
+		JOIN contacts ct ON c.contact_id = ct.id
+		LEFT JOIN users u ON c.assigned_to = u.id
+		WHERE c.id = $1 AND c.tenant_id = $2
+	`
+
+	var conv domain.Conversation
+	var contact domain.Contact
+	var ctLastName sql.NullString
+	var uID, uEmail, uRole sql.NullString
+
+	err := r.db.QueryRowContext(ctx, query, conversationID, tenantID).Scan(
+		&conv.ID, &conv.TenantID, &conv.ContactID, &conv.Channel, &conv.Status, &conv.AssignedTo,
+		&conv.LastMessageText, &conv.LastMessageAt, &conv.UnreadCount, &conv.CreatedAt, &conv.UpdatedAt,
+		&contact.FirstName, &ctLastName, &contact.Channel, &contact.RoutingValue, &contact.Status,
+		&uID, &uEmail, &uRole,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("conversation not found")
+		}
+		return nil, fmt.Errorf("failed to get conversation: %w", err)
+	}
+
+	contact.ID = conv.ContactID
+	contact.TenantID = conv.TenantID
+	if ctLastName.Valid {
+		contact.LastName = ctLastName.String
+	}
+	conv.Contact = &contact
+
+	if uID.Valid {
+		conv.AssignedUser = &domain.User{
+			ID:    uID.String,
+			Email: uEmail.String,
+			Role:  uRole.String,
+		}
+	}
+
+	return &conv, nil
+}
+
+func (r *PostgresInboxRepository) GetOrCreateConversation(ctx context.Context, tenantID, contactID, channel string) (*domain.Conversation, error) {
+	query := `
+		INSERT INTO conversations (tenant_id, contact_id, channel, status, last_message_at)
+		VALUES ($1, $2, $3, 'open', NOW())
+		ON CONFLICT (tenant_id, contact_id, channel) DO UPDATE
+		SET updated_at = NOW()
+		RETURNING id, tenant_id, contact_id, channel, status, assigned_to, last_message_text, last_message_at, unread_count, created_at, updated_at;
+	`
+
+	var conv domain.Conversation
+	err := r.db.QueryRowContext(ctx, query, tenantID, contactID, channel).Scan(
+		&conv.ID, &conv.TenantID, &conv.ContactID, &conv.Channel, &conv.Status, &conv.AssignedTo,
+		&conv.LastMessageText, &conv.LastMessageAt, &conv.UnreadCount, &conv.CreatedAt, &conv.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get or create conversation: %w", err)
+	}
+
+	return &conv, nil
+}
+
+func (r *PostgresInboxRepository) UpdateConversationStatus(ctx context.Context, tenantID, conversationID string, status domain.ConversationStatus) error {
+	query := `
+		UPDATE conversations
+		SET status = $1, updated_at = NOW()
+		WHERE id = $2 AND tenant_id = $3
+	`
+	res, err := r.db.ExecContext(ctx, query, status, conversationID, tenantID)
+	if err != nil {
+		return fmt.Errorf("failed to update conversation status: %w", err)
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("conversation not found")
+	}
+	return nil
+}
+
+func (r *PostgresInboxRepository) AssignConversation(ctx context.Context, tenantID, conversationID string, userID *string) error {
+	query := `
+		UPDATE conversations
+		SET assigned_to = $1, updated_at = NOW()
+		WHERE id = $2 AND tenant_id = $3
+	`
+	res, err := r.db.ExecContext(ctx, query, userID, conversationID, tenantID)
+	if err != nil {
+		return fmt.Errorf("failed to assign conversation: %w", err)
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("conversation not found")
+	}
+	return nil
+}
+
+func (r *PostgresInboxRepository) MarkConversationAsRead(ctx context.Context, tenantID, conversationID string) error {
+	query := `
+		UPDATE conversations
+		SET unread_count = 0, updated_at = NOW()
+		WHERE id = $1 AND tenant_id = $2
+	`
+	_, err := r.db.ExecContext(ctx, query, conversationID, tenantID)
+	if err != nil {
+		return fmt.Errorf("failed to mark conversation as read: %w", err)
+	}
+	return nil
+}
+
+func (r *PostgresInboxRepository) ListMessages(ctx context.Context, tenantID, conversationID string, limit, offset int) ([]domain.Message, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	query := `
+		SELECT 
+			id, tenant_id, conversation_id, direction, sender_type, sender_id,
+			body, media_url, media_type, platform_message_id, status, error_message, created_at
+		FROM messages
+		WHERE conversation_id = $1 AND tenant_id = $2
+		ORDER BY created_at ASC
+		LIMIT $3 OFFSET $4
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, conversationID, tenantID, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query messages: %w", err)
+	}
+	defer rows.Close()
+
+	var messages []domain.Message
+	for rows.Next() {
+		var m domain.Message
+		err := rows.Scan(
+			&m.ID, &m.TenantID, &m.ConversationID, &m.Direction, &m.SenderType, &m.SenderID,
+			&m.Body, &m.MediaURL, &m.MediaType, &m.PlatformMessageID, &m.Status, &m.ErrorMessage, &m.CreatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan message: %w", err)
+		}
+		messages = append(messages, m)
+	}
+
+	return messages, nil
+}
+
+func (r *PostgresInboxRepository) CreateMessage(ctx context.Context, msg *domain.Message) error {
+	if msg.CreatedAt.IsZero() {
+		msg.CreatedAt = time.Now().UTC()
+	}
+
+	query := `
+		INSERT INTO messages (
+			tenant_id, conversation_id, direction, sender_type, sender_id,
+			body, media_url, media_type, platform_message_id, status, error_message, created_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		RETURNING id;
+	`
+
+	err := r.db.QueryRowContext(ctx, query,
+		msg.TenantID, msg.ConversationID, msg.Direction, msg.SenderType, msg.SenderID,
+		msg.Body, msg.MediaURL, msg.MediaType, msg.PlatformMessageID, msg.Status, msg.ErrorMessage, msg.CreatedAt,
+	).Scan(&msg.ID)
+
+	if err != nil {
+		return fmt.Errorf("failed to insert message: %w", err)
+	}
+
+	// Update conversation metadata
+	unreadIncrement := 0
+	if msg.Direction == domain.MessageDirectionInbound {
+		unreadIncrement = 1
+	}
+
+	updateConvQuery := `
+		UPDATE conversations
+		SET last_message_text = $1,
+		    last_message_at = $2,
+		    unread_count = unread_count + $3,
+		    updated_at = NOW()
+		WHERE id = $4 AND tenant_id = $5
+	`
+	_, _ = r.db.ExecContext(ctx, updateConvQuery, msg.Body, msg.CreatedAt, unreadIncrement, msg.ConversationID, msg.TenantID)
+
+	return nil
+}

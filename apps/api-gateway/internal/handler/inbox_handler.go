@@ -1,0 +1,199 @@
+package handler
+
+import (
+	"encoding/json"
+	"net/http"
+	"strconv"
+
+	"omnipulse/apps/api-gateway/internal/domain"
+	"omnipulse/apps/api-gateway/internal/usecase"
+	"omnipulse/apps/api-gateway/internal/utils"
+)
+
+type InboxHandler struct {
+	inboxUseCase usecase.InboxUseCase
+}
+
+func NewInboxHandler(inboxUseCase usecase.InboxUseCase) *InboxHandler {
+	return &InboxHandler{inboxUseCase: inboxUseCase}
+}
+
+func (h *InboxHandler) ListConversations(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok || tenantID == "" {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	query := r.URL.Query()
+	limit, _ := strconv.Atoi(query.Get("limit"))
+	offset, _ := strconv.Atoi(query.Get("offset"))
+
+	filter := domain.ConversationFilter{
+		Channel:    query.Get("channel"),
+		Status:     query.Get("status"),
+		Search:     query.Get("search"),
+		AssignedTo: query.Get("assigned_to"),
+		Limit:      limit,
+		Offset:     offset,
+	}
+
+	conversations, total, err := h.inboxUseCase.ListConversations(r.Context(), tenantID, filter)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"conversations": conversations,
+		"total":         total,
+		"limit":         filter.Limit,
+		"offset":        filter.Offset,
+	})
+}
+
+func (h *InboxHandler) GetConversation(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok || tenantID == "" {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	conversationID := r.PathValue("id")
+	if conversationID == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Missing conversation id")
+		return
+	}
+
+	conv, err := h.inboxUseCase.GetConversation(r.Context(), tenantID, conversationID)
+	if err != nil {
+		utils.WriteError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, conv)
+}
+
+func (h *InboxHandler) ListMessages(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok || tenantID == "" {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	conversationID := r.PathValue("id")
+	if conversationID == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Missing conversation id")
+		return
+	}
+
+	query := r.URL.Query()
+	limit, _ := strconv.Atoi(query.Get("limit"))
+	offset, _ := strconv.Atoi(query.Get("offset"))
+
+	messages, err := h.inboxUseCase.ListMessages(r.Context(), tenantID, conversationID, limit, offset)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"messages": messages,
+	})
+}
+
+func (h *InboxHandler) SendReply(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok || tenantID == "" {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	userID, _ := r.Context().Value(UserIDKey).(string)
+
+	conversationID := r.PathValue("id")
+	if conversationID == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Missing conversation id")
+		return
+	}
+
+	var req domain.SendReplyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if req.Body == "" && (req.MediaURL == nil || *req.MediaURL == "") {
+		utils.WriteError(w, http.StatusBadRequest, "Message body or media URL is required")
+		return
+	}
+
+	msg, err := h.inboxUseCase.SendReply(r.Context(), tenantID, userID, conversationID, req)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusCreated, msg)
+}
+
+func (h *InboxHandler) UpdateConversation(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok || tenantID == "" {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	conversationID := r.PathValue("id")
+	if conversationID == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Missing conversation id")
+		return
+	}
+
+	var req struct {
+		Status     *domain.ConversationStatus `json:"status,omitempty"`
+		AssignedTo *string                    `json:"assigned_to,omitempty"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if req.Status != nil {
+		if err := h.inboxUseCase.UpdateConversationStatus(r.Context(), tenantID, conversationID, *req.Status); err != nil {
+			utils.WriteError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+
+	if req.AssignedTo != nil {
+		if err := h.inboxUseCase.AssignConversation(r.Context(), tenantID, conversationID, req.AssignedTo); err != nil {
+			utils.WriteError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
+func (h *InboxHandler) MarkAsRead(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok || tenantID == "" {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	conversationID := r.PathValue("id")
+	if conversationID == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Missing conversation id")
+		return
+	}
+
+	if err := h.inboxUseCase.MarkConversationAsRead(r.Context(), tenantID, conversationID); err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]string{"status": "marked_as_read"})
+}
