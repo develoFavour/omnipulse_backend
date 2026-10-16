@@ -399,6 +399,21 @@ func (r *PostgresInboxRepository) EditMessage(ctx context.Context, tenantID, mes
 		return nil, fmt.Errorf("failed to edit message: %w", err)
 	}
 
+	// Update conversation's last_message_text if the edited message is the latest message
+	updateConvQuery := `
+		UPDATE conversations c
+		SET last_message_text = COALESCE(
+			(SELECT CASE WHEN is_deleted THEN '🚫 This message was deleted' ELSE body END 
+			 FROM messages 
+			 WHERE conversation_id = c.id AND tenant_id = c.tenant_id 
+			 ORDER BY created_at DESC LIMIT 1),
+			$1
+		),
+		updated_at = NOW()
+		WHERE c.id = $2 AND c.tenant_id = $3;
+	`
+	_, _ = r.db.ExecContext(ctx, updateConvQuery, newBody, m.ConversationID, m.TenantID)
+
 	return &m, nil
 }
 
@@ -426,6 +441,21 @@ func (r *PostgresInboxRepository) DeleteMessage(ctx context.Context, tenantID, m
 		}
 		return nil, fmt.Errorf("failed to delete message: %w", err)
 	}
+
+	// Update conversation's last_message_text to match the latest message state
+	updateConvQuery := `
+		UPDATE conversations c
+		SET last_message_text = COALESCE(
+			(SELECT CASE WHEN is_deleted THEN '🚫 This message was deleted' ELSE body END 
+			 FROM messages 
+			 WHERE conversation_id = c.id AND tenant_id = c.tenant_id 
+			 ORDER BY created_at DESC LIMIT 1),
+			'🚫 This message was deleted'
+		),
+		updated_at = NOW()
+		WHERE c.id = $1 AND c.tenant_id = $2;
+	`
+	_, _ = r.db.ExecContext(ctx, updateConvQuery, m.ConversationID, m.TenantID)
 
 	return &m, nil
 }

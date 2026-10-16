@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -430,7 +431,46 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 			if contactPhone != "" {
 				contactID := m.saveContact(tenantID, contactPhone, pushName, "whatsapp_sync")
 				text := extractMessageText(evt.Message)
-				if text != "" && contactID != "" && m.inboxRepo != nil {
+
+				var mediaURL *string
+				var mediaType *string
+
+				// Extract and download media attachments (voicenotes, audio, photos)
+				if audioMsg := evt.Message.GetAudioMessage(); audioMsg != nil && sess.client != nil {
+					dlCtx, dlCancel := context.WithTimeout(context.Background(), 15*time.Second)
+					audioBytes, dlErr := sess.client.Download(dlCtx, audioMsg)
+					dlCancel()
+					if dlErr == nil && len(audioBytes) > 0 {
+						mime := audioMsg.GetMimetype()
+						if mime == "" {
+							mime = "audio/ogg; codecs=opus"
+						}
+						dataURI := fmt.Sprintf("data:%s;base64,%s", mime, base64.StdEncoding.EncodeToString(audioBytes))
+						mediaURL = &dataURI
+						mType := "audio"
+						mediaType = &mType
+						log.Printf("[WhatsAppManager] 🎙️ Downloaded voicenote (%d bytes, %s) for tenant %s\n", len(audioBytes), mime, tenantID)
+					} else {
+						log.Printf("[WhatsAppManager] ⚠️ Voicenote download failed: %v\n", dlErr)
+					}
+				} else if imgMsg := evt.Message.GetImageMessage(); imgMsg != nil && sess.client != nil {
+					dlCtx, dlCancel := context.WithTimeout(context.Background(), 15*time.Second)
+					imgBytes, dlErr := sess.client.Download(dlCtx, imgMsg)
+					dlCancel()
+					if dlErr == nil && len(imgBytes) > 0 {
+						mime := imgMsg.GetMimetype()
+						if mime == "" {
+							mime = "image/jpeg"
+						}
+						dataURI := fmt.Sprintf("data:%s;base64,%s", mime, base64.StdEncoding.EncodeToString(imgBytes))
+						mediaURL = &dataURI
+						mType := "image"
+						mediaType = &mType
+						log.Printf("[WhatsAppManager] 🖼️ Downloaded image attachment (%d bytes) for tenant %s\n", len(imgBytes), tenantID)
+					}
+				}
+
+				if (text != "" || mediaURL != nil) && contactID != "" && m.inboxRepo != nil {
 					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancel()
 					conv, cErr := m.inboxRepo.GetOrCreateConversation(ctx, tenantID, contactID, "whatsapp")
@@ -461,6 +501,8 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 							Direction:         direction,
 							SenderType:        senderType,
 							Body:              text,
+							MediaURL:          mediaURL,
+							MediaType:         mediaType,
 							PlatformMessageID: &msgID,
 							Status:            initialStatus,
 						}
@@ -468,7 +510,7 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 						if m.inboxHub != nil {
 							m.inboxHub.BroadcastMessage(tenantID, conv, newMsg)
 						}
-						log.Printf("[WhatsAppManager] 💬 Synced %s message for tenant %s with %s (conv %s): %q\n", direction, tenantID, contactPhone, conv.ID, text)
+						log.Printf("[WhatsAppManager] 💬 Synced %s message for tenant %s with %s (conv %s, media=%v): %q\n", direction, tenantID, contactPhone, conv.ID, mediaType != nil, text)
 					} else {
 						log.Printf("[WhatsAppManager] ⚠️ Failed to create/find conversation for contact %s: %v\n", contactID, cErr)
 					}
