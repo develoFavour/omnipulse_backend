@@ -23,6 +23,8 @@ type mockInboxUseCase struct {
 	assignConversationFunc       func(ctx context.Context, tenantID, conversationID string, userID *string) error
 	markConversationAsReadFunc   func(ctx context.Context, tenantID, conversationID string) error
 	sendReplyFunc                func(ctx context.Context, tenantID, userID, conversationID string, req domain.SendReplyRequest) (*domain.Message, error)
+	editMessageFunc              func(ctx context.Context, tenantID, messageID, newBody string) (*domain.Message, error)
+	deleteMessageFunc            func(ctx context.Context, tenantID, messageID string) error
 }
 
 func (m *mockInboxUseCase) ListConversations(ctx context.Context, tenantID string, filter domain.ConversationFilter) ([]domain.Conversation, int, error) {
@@ -72,6 +74,20 @@ func (m *mockInboxUseCase) SendReply(ctx context.Context, tenantID, userID, conv
 		return m.sendReplyFunc(ctx, tenantID, userID, conversationID, req)
 	}
 	return nil, nil
+}
+
+func (m *mockInboxUseCase) EditMessage(ctx context.Context, tenantID, messageID, newBody string) (*domain.Message, error) {
+	if m.editMessageFunc != nil {
+		return m.editMessageFunc(ctx, tenantID, messageID, newBody)
+	}
+	return nil, nil
+}
+
+func (m *mockInboxUseCase) DeleteMessage(ctx context.Context, tenantID, messageID string) error {
+	if m.deleteMessageFunc != nil {
+		return m.deleteMessageFunc(ctx, tenantID, messageID)
+	}
+	return nil
 }
 
 func (m *mockInboxUseCase) SetBroadcaster(b domain.InboxBroadcaster) {}
