@@ -346,7 +346,12 @@ func (r *PostgresInboxRepository) CreateMessage(ctx context.Context, msg *domain
 func (r *PostgresInboxRepository) UpdateMessageStatusByPlatformID(ctx context.Context, tenantID, platformMessageID, status string) (*domain.Message, error) {
 	query := `
 		UPDATE messages
-		SET status = $1
+		SET status = CASE
+			WHEN status = 'read' THEN 'read'
+			WHEN $1 = 'read' THEN 'read'
+			WHEN $1 = 'delivered' AND status IN ('sent', 'failed') THEN 'delivered'
+			ELSE $1
+		END
 		WHERE tenant_id = $2 AND platform_message_id = $3
 		RETURNING id, tenant_id, conversation_id, direction, sender_type, sender_id,
 		          body, media_url, media_type, platform_message_id, status, error_message,

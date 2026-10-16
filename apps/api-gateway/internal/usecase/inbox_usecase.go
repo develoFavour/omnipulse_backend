@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"omnipulse/apps/api-gateway/internal/domain"
@@ -95,10 +96,11 @@ func (u *inboxUseCase) SendReply(ctx context.Context, tenantID, userID, conversa
 		sent := false
 		// 1. Try WhatsApp Multi-Device session first
 		if u.waManager != nil {
-			waErr := u.waManager.SendMessage(ctx, tenantID, routingValue, req.Body, req.MediaURL)
+			waMsgID, waErr := u.waManager.SendMessage(ctx, tenantID, routingValue, req.Body, req.MediaURL)
 			if waErr == nil {
 				sent = true
-				log.Printf("[INBOX] WhatsApp Multi-Device reply sent to %s for tenant %s\n", routingValue, tenantID)
+				platformMsgID = &waMsgID
+				log.Printf("[INBOX] WhatsApp Multi-Device reply sent to %s for tenant %s (msgID: %s)\n", routingValue, tenantID, waMsgID)
 			} else {
 				log.Printf("[INBOX] WhatsApp Multi-Device reply failed: %v. Attempting Cloud API...\n", waErr)
 			}
@@ -212,6 +214,17 @@ func (u *inboxUseCase) SendReply(ctx context.Context, tenantID, userID, conversa
 						defer resp.Body.Close()
 						if resp.StatusCode != http.StatusOK {
 							sendErr = fmt.Errorf("Telegram API returned error %d", resp.StatusCode)
+						} else {
+							var tgResp struct {
+								Ok     bool `json:"ok"`
+								Result struct {
+									MessageID int `json:"message_id"`
+								} `json:"result"`
+							}
+							if err := json.NewDecoder(resp.Body).Decode(&tgResp); err == nil && tgResp.Result.MessageID != 0 {
+								midStr := strconv.Itoa(tgResp.Result.MessageID)
+								platformMsgID = &midStr
+							}
 						}
 					}
 				}
@@ -264,11 +277,48 @@ func (u *inboxUseCase) EditMessage(ctx context.Context, tenantID, messageID, new
 		return nil, err
 	}
 
-	// 2. Best-effort: push edit to WhatsApp platform via whatsmeow
-	if u.waManager != nil && updated.PlatformMessageID != nil {
-		// whatsmeow does not currently expose a direct EditMessage API;
-		// WhatsApp Business API supports message editing via PATCH — handled gracefully
-		log.Printf("[INBOX] WhatsApp edit dispatched for msg %s (tenant %s) — platform edit may require Cloud API\n", messageID, tenantID)
+	// 2. Push edit to WhatsApp or Telegram platform
+	conv, convErr := u.inboxRepo.GetConversation(ctx, tenantID, updated.ConversationID)
+	if convErr == nil && conv != nil && conv.Contact != nil && updated.PlatformMessageID != nil && *updated.PlatformMessageID != "" {
+		platformMsgID := *updated.PlatformMessageID
+		routingValue := conv.Contact.RoutingValue
+
+		if conv.Channel == "whatsapp" && u.waManager != nil {
+			if eErr := u.waManager.EditMessage(ctx, tenantID, routingValue, platformMsgID, newBody); eErr != nil {
+				log.Printf("[INBOX] Warning: failed to edit WhatsApp message on platform: %v\n", eErr)
+			} else {
+				log.Printf("[INBOX] ✅ WhatsApp message %s edited on platform for tenant %s\n", platformMsgID, tenantID)
+			}
+		} else if conv.Channel == "telegram" {
+			ch, chErr := u.channelRepo.FindActiveByPlatform(ctx, tenantID, "telegram")
+			if chErr == nil && ch != nil {
+				var creds struct {
+					BotToken string `json:"bot_token"`
+				}
+				if json.Unmarshal(ch.EncryptedCredentials, &creds) == nil && creds.BotToken != "" {
+					msgIDInt, pErr := strconv.Atoi(platformMsgID)
+					if pErr == nil {
+						tgURL := fmt.Sprintf("https://api.telegram.org/bot%s/editMessageText", creds.BotToken)
+						payload := map[string]interface{}{
+							"chat_id":    routingValue,
+							"message_id": msgIDInt,
+							"text":       newBody,
+						}
+						bodyBytes, _ := json.Marshal(payload)
+						req, rErr := http.NewRequestWithContext(ctx, http.MethodPost, tgURL, bytes.NewBuffer(bodyBytes))
+						if rErr == nil {
+							req.Header.Set("Content-Type", "application/json")
+							client := &http.Client{Timeout: 10 * time.Second}
+							resp, dErr := client.Do(req)
+							if dErr == nil {
+								resp.Body.Close()
+								log.Printf("[INBOX] ✅ Telegram message %s edited on platform\n", platformMsgID)
+							}
+						}
+					}
+				}
+			}
+		}
 	}
 
 	// 3. Broadcast real-time update
@@ -279,7 +329,7 @@ func (u *inboxUseCase) EditMessage(ctx context.Context, tenantID, messageID, new
 	return updated, nil
 }
 
-// DeleteMessage soft-deletes the message in the DB and attempts to revoke it on the platform,
+// DeleteMessage soft-deletes the message in the DB and revokes it on the platform (WhatsApp / Telegram),
 // then broadcasts a MESSAGE_DELETED event to all connected clients.
 func (u *inboxUseCase) DeleteMessage(ctx context.Context, tenantID, messageID string) error {
 	// 1. Soft-delete in DB
@@ -288,11 +338,47 @@ func (u *inboxUseCase) DeleteMessage(ctx context.Context, tenantID, messageID st
 		return err
 	}
 
-	// 2. Best-effort: revoke message on WhatsApp
-	if u.waManager != nil && deleted.PlatformMessageID != nil {
-		log.Printf("[INBOX] WhatsApp message revocation requested for msg %s (tenant %s)\n", messageID, tenantID)
-		// whatsmeow RevokeMessage is available but conversation context requires chat JID;
-		// we log and skip for now — future enhancement: pass chat JID from DB
+	// 2. Revoke message on WhatsApp or Telegram platform
+	conv, convErr := u.inboxRepo.GetConversation(ctx, tenantID, deleted.ConversationID)
+	if convErr == nil && conv != nil && conv.Contact != nil && deleted.PlatformMessageID != nil && *deleted.PlatformMessageID != "" {
+		platformMsgID := *deleted.PlatformMessageID
+		routingValue := conv.Contact.RoutingValue
+
+		if conv.Channel == "whatsapp" && u.waManager != nil {
+			if rErr := u.waManager.RevokeMessage(ctx, tenantID, routingValue, platformMsgID); rErr != nil {
+				log.Printf("[INBOX] Warning: failed to revoke WhatsApp message on platform: %v\n", rErr)
+			} else {
+				log.Printf("[INBOX] ✅ WhatsApp message %s revoked on platform for tenant %s\n", platformMsgID, tenantID)
+			}
+		} else if conv.Channel == "telegram" {
+			ch, chErr := u.channelRepo.FindActiveByPlatform(ctx, tenantID, "telegram")
+			if chErr == nil && ch != nil {
+				var creds struct {
+					BotToken string `json:"bot_token"`
+				}
+				if json.Unmarshal(ch.EncryptedCredentials, &creds) == nil && creds.BotToken != "" {
+					msgIDInt, pErr := strconv.Atoi(platformMsgID)
+					if pErr == nil {
+						tgURL := fmt.Sprintf("https://api.telegram.org/bot%s/deleteMessage", creds.BotToken)
+						payload := map[string]interface{}{
+							"chat_id":    routingValue,
+							"message_id": msgIDInt,
+						}
+						bodyBytes, _ := json.Marshal(payload)
+						req, rErr := http.NewRequestWithContext(ctx, http.MethodPost, tgURL, bytes.NewBuffer(bodyBytes))
+						if rErr == nil {
+							req.Header.Set("Content-Type", "application/json")
+							client := &http.Client{Timeout: 10 * time.Second}
+							resp, dErr := client.Do(req)
+							if dErr == nil {
+								resp.Body.Close()
+								log.Printf("[INBOX] ✅ Telegram message %s deleted on platform\n", platformMsgID)
+							}
+						}
+					}
+				}
+			}
+		}
 	}
 
 	// 3. Broadcast real-time delete

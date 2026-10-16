@@ -484,14 +484,16 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 		case *events.Receipt:
 			// WhatsApp receipt event: fired when messages are delivered or read.
 			// ReceiptType "" (empty string) = delivered (grey double-tick)
-			// ReceiptType "read"            = read (blue/sky double-tick)
+			// ReceiptType "read" / "read-self" / "played" = read (blue/sky double-tick)
 			var newStatus string
 			switch evt.Type {
-			case types.ReceiptTypeRead, types.ReceiptTypeReadSelf:
+			case types.ReceiptTypeRead, types.ReceiptTypeReadSelf, types.ReceiptTypePlayed, types.ReceiptTypePlayedSelf:
 				newStatus = "read"
-			default:
-				// covers ReceiptTypeDelivered ("") and any other delivery variants
+			case types.ReceiptTypeDelivered, types.ReceiptTypeSender:
 				newStatus = "delivered"
+			default:
+				log.Printf("[WhatsAppManager] ℹ️ Ignoring non-delivery receipt type: %v (tenant: %s)\n", evt.Type, tenantID)
+				return
 			}
 
 			if m.inboxRepo == nil || len(evt.MessageIDs) == 0 {
@@ -789,12 +791,7 @@ func (m *WhatsAppManager) Close() {
 	log.Println("[WhatsAppManager] All WhatsApp sessions cleanly disconnected.")
 }
 
-func (m *WhatsAppManager) SendMessage(ctx context.Context, tenantID string, recipientPhone string, text string, mediaURL *string) error {
-	sess, err := m.ensureSession(ctx, tenantID)
-	if err != nil {
-		return fmt.Errorf("WhatsApp client is not connected for tenant %s: %w", tenantID, err)
-	}
-
+func (m *WhatsAppManager) resolveTargetJID(ctx context.Context, sess *tenantSession, recipientPhone string) types.JID {
 	phoneClean := strings.TrimPrefix(strings.TrimSpace(recipientPhone), "+")
 	targetJID := types.NewJID(phoneClean, types.DefaultUserServer)
 
@@ -807,12 +804,14 @@ func (m *WhatsAppManager) SendMessage(ctx context.Context, tenantID string, reci
 	}
 
 	foundOnWA := false
-	if onWaResp, err := sess.client.IsOnWhatsApp(ctx, []string{phoneClean, recipientPhone}); err == nil && len(onWaResp) > 0 {
-		for _, r := range onWaResp {
-			if r.IsIn {
-				targetJID = r.JID
-				foundOnWA = true
-				break
+	if sess.client != nil {
+		if onWaResp, err := sess.client.IsOnWhatsApp(ctx, []string{phoneClean, recipientPhone}); err == nil && len(onWaResp) > 0 {
+			for _, r := range onWaResp {
+				if r.IsIn {
+					targetJID = r.JID
+					foundOnWA = true
+					break
+				}
 			}
 		}
 	}
@@ -821,6 +820,17 @@ func (m *WhatsAppManager) SendMessage(ctx context.Context, tenantID string, reci
 	if !foundOnWA && len(phoneClean) >= 15 && targetJID.Server != types.HiddenUserServer {
 		targetJID = types.NewJID(phoneClean, types.HiddenUserServer)
 	}
+
+	return targetJID
+}
+
+func (m *WhatsAppManager) SendMessage(ctx context.Context, tenantID string, recipientPhone string, text string, mediaURL *string) (string, error) {
+	sess, err := m.ensureSession(ctx, tenantID)
+	if err != nil {
+		return "", fmt.Errorf("WhatsApp client is not connected for tenant %s: %w", tenantID, err)
+	}
+
+	targetJID := m.resolveTargetJID(ctx, sess, recipientPhone)
 
 	msg := &waE2E.Message{
 		Conversation: proto.String(text),
@@ -858,9 +868,54 @@ func (m *WhatsAppManager) SendMessage(ctx context.Context, tenantID string, reci
 
 	resp, err := sess.client.SendMessage(ctx, targetJID, msg)
 	if err != nil {
-		return err
+		return "", err
 	}
 	log.Printf("[WhatsAppManager] ✅ Dispatched message to %s (%s) [MsgID: %s]\n", recipientPhone, targetJID.String(), resp.ID)
+	return resp.ID, nil
+}
+
+// RevokeMessage issues an official WhatsApp revocation ("delete for everyone")
+// for a previously sent message. The recipient's WhatsApp client will replace
+// the bubble with "This message was deleted".
+func (m *WhatsAppManager) RevokeMessage(ctx context.Context, tenantID string, recipientPhone string, platformMsgID string) error {
+	sess, err := m.ensureSession(ctx, tenantID)
+	if err != nil {
+		return fmt.Errorf("WhatsApp client is not connected for tenant %s: %w", tenantID, err)
+	}
+
+	targetJID := m.resolveTargetJID(ctx, sess, recipientPhone)
+	revokeMsg := sess.client.BuildRevoke(targetJID, types.EmptyJID, types.MessageID(platformMsgID))
+
+	resp, err := sess.client.SendMessage(ctx, targetJID, revokeMsg)
+	if err != nil {
+		return fmt.Errorf("failed to dispatch WhatsApp revocation for msg %s: %w", platformMsgID, err)
+	}
+
+	log.Printf("[WhatsAppManager] 🗑️ Dispatched message revocation to %s (%s) [RevokeMsgID: %s for OriginalMsgID: %s]\n",
+		recipientPhone, targetJID.String(), resp.ID, platformMsgID)
+	return nil
+}
+
+// EditMessage issues an official WhatsApp message edit for a previously sent message.
+// The recipient's WhatsApp client will update the message content and display the "Edited" label.
+func (m *WhatsAppManager) EditMessage(ctx context.Context, tenantID string, recipientPhone string, platformMsgID string, newText string) error {
+	sess, err := m.ensureSession(ctx, tenantID)
+	if err != nil {
+		return fmt.Errorf("WhatsApp client is not connected for tenant %s: %w", tenantID, err)
+	}
+
+	targetJID := m.resolveTargetJID(ctx, sess, recipientPhone)
+	editMsg := sess.client.BuildEdit(targetJID, types.MessageID(platformMsgID), &waE2E.Message{
+		Conversation: proto.String(newText),
+	})
+
+	resp, err := sess.client.SendMessage(ctx, targetJID, editMsg)
+	if err != nil {
+		return fmt.Errorf("failed to dispatch WhatsApp edit for msg %s: %w", platformMsgID, err)
+	}
+
+	log.Printf("[WhatsAppManager] ✏️ Dispatched message edit to %s (%s) [EditMsgID: %s for OriginalMsgID: %s]\n",
+		recipientPhone, targetJID.String(), resp.ID, platformMsgID)
 	return nil
 }
 

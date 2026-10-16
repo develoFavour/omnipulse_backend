@@ -274,7 +274,7 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 
 		// 1. Try WhatsApp Multi-Device session first if available
 		if c.waManager != nil {
-			waErr := c.waManager.SendMessage(msgCtx, task.TenantID, task.RoutingValue, personalizedMsg, task.MediaURL)
+			_, waErr := c.waManager.SendMessage(msgCtx, task.TenantID, task.RoutingValue, personalizedMsg, task.MediaURL)
 			if waErr == nil {
 				sent = true
 				log.Printf("[📲 WHATSAPP MULTI-DEVICE] Dispatched cleanly to %s (%s)\n", task.FirstName, task.RoutingValue)
