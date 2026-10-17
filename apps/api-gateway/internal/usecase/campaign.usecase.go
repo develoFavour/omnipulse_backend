@@ -3,11 +3,14 @@ package usecase
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"math"
 	"strings"
 	"time"
 
+	"omnipulse/apps/api-gateway/internal/ctxkeys"
 	"omnipulse/apps/api-gateway/internal/domain"
 	"omnipulse/shared/contracts"
 )
@@ -67,12 +70,21 @@ func (u *CampaignUseCase) ScheduleCampaign(ctx context.Context, tenantID, campai
 	if err != nil {
 		return err
 	}
-	if campaign.Status != "draft" {
-		return fmt.Errorf("only draft campaigns can be scheduled (current status: %s)", campaign.Status)
-	}
 	if scheduledAt.Before(time.Now().Add(1 * time.Minute)) {
 		return fmt.Errorf("scheduled time must be at least 1 minute in the future")
 	}
+
+	role, _ := ctx.Value(ctxkeys.UserRoleKey).(string)
+	reqApproval, _ := u.campaignRepo.GetApprovalSetting(ctx, tenantID)
+
+	if reqApproval && strings.EqualFold(role, "member") && campaign.Status != "approved" {
+		return fmt.Errorf("campaign approval is required before scheduling. Please submit this campaign for approval")
+	}
+
+	if campaign.Status != "draft" && campaign.Status != "approved" && campaign.Status != "pending_approval" {
+		return fmt.Errorf("only draft, approved, or pending approval campaigns can be scheduled (current status: %s)", campaign.Status)
+	}
+
 	return u.campaignRepo.SetScheduled(ctx, tenantID, campaignID, scheduledAt)
 }
 
@@ -112,6 +124,25 @@ func (u *CampaignUseCase) TriggerDispatch(ctx context.Context, tenantID, campaig
 	if campaign.Status == "processing" || campaign.Status == "completed" {
 		log.Printf("[DISPATCH-TRACE] ❌ Rejected: status already %s\n", campaign.Status)
 		return fmt.Errorf("campaign execution rejected: status is already %s", campaign.Status)
+	}
+
+	role, _ := ctx.Value(ctxkeys.UserRoleKey).(string)
+	reqApproval, _ := u.campaignRepo.GetApprovalSetting(ctx, tenantID)
+
+	if reqApproval {
+		if campaign.Status == "pending_approval" && strings.EqualFold(role, "member") {
+			return fmt.Errorf("campaign is pending approval from an Owner or Admin before dispatching")
+		}
+		if campaign.Status == "rejected" {
+			reason := "campaign was rejected"
+			if campaign.RejectionReason != nil && *campaign.RejectionReason != "" {
+				reason = fmt.Sprintf("campaign was rejected: %s", *campaign.RejectionReason)
+			}
+			return errors.New(reason)
+		}
+		if campaign.Status == "draft" && strings.EqualFold(role, "member") {
+			return fmt.Errorf("campaign approval is required in this workspace. Please submit this campaign for approval before dispatching")
+		}
 	}
 
 	// Enforce Plan Monthly Message Quota
@@ -294,6 +325,87 @@ func (u *CampaignUseCase) ListDeliveries(ctx context.Context, tenantID, campaign
 	}
 	return u.campaignRepo.ListDeliveriesByCampaign(ctx, tenantID, campaignID, pageSize, (page-1)*pageSize)
 }
+
+func (u *CampaignUseCase) SubmitForApproval(ctx context.Context, tenantID, campaignID, submittedBy string) error {
+	c, err := u.campaignRepo.GetByID(ctx, tenantID, campaignID)
+	if err != nil {
+		return err
+	}
+	if c.Status != "draft" && c.Status != "rejected" {
+		return fmt.Errorf("only draft or rejected campaigns can be submitted for approval (current status: %s)", c.Status)
+	}
+	return u.campaignRepo.SubmitForApproval(ctx, tenantID, campaignID, submittedBy)
+}
+
+func (u *CampaignUseCase) ApproveCampaign(ctx context.Context, tenantID, campaignID, approvedBy string) error {
+	role, _ := ctx.Value(ctxkeys.UserRoleKey).(string)
+	if !strings.EqualFold(role, "owner") && !strings.EqualFold(role, "admin") {
+		return fmt.Errorf("only workspace owners or admins can approve campaigns")
+	}
+	c, err := u.campaignRepo.GetByID(ctx, tenantID, campaignID)
+	if err != nil {
+		return err
+	}
+	if c.Status != "pending_approval" {
+		return fmt.Errorf("only campaigns pending approval can be approved (current status: %s)", c.Status)
+	}
+	return u.campaignRepo.ApproveCampaign(ctx, tenantID, campaignID, approvedBy)
+}
+
+func (u *CampaignUseCase) RejectCampaign(ctx context.Context, tenantID, campaignID, reason string) error {
+	role, _ := ctx.Value(ctxkeys.UserRoleKey).(string)
+	if !strings.EqualFold(role, "owner") && !strings.EqualFold(role, "admin") {
+		return fmt.Errorf("only workspace owners or admins can reject campaigns")
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return fmt.Errorf("a rejection reason must be provided")
+	}
+	c, err := u.campaignRepo.GetByID(ctx, tenantID, campaignID)
+	if err != nil {
+		return err
+	}
+	if c.Status != "pending_approval" {
+		return fmt.Errorf("only campaigns pending approval can be rejected (current status: %s)", c.Status)
+	}
+	return u.campaignRepo.RejectCampaign(ctx, tenantID, campaignID, reason)
+}
+
+func (u *CampaignUseCase) GetCampaignReport(ctx context.Context, tenantID, campaignID string) (*domain.CampaignReport, error) {
+	campaign, err := u.campaignRepo.GetByID(ctx, tenantID, campaignID)
+	if err != nil {
+		return nil, err
+	}
+	stats, err := u.campaignRepo.GetCampaignStats(ctx, tenantID, campaignID)
+	if err != nil {
+		return nil, err
+	}
+	deliveries, _ := u.campaignRepo.ListDeliveriesByCampaign(ctx, tenantID, campaignID, 500, 0)
+
+	deliveryRate := 0.0
+	if stats.TotalTargets > 0 {
+		deliveryRate = (float64(stats.Delivered) / float64(stats.TotalTargets)) * 100.0
+	}
+	readRate := 0.0
+	readCount := 0
+	for _, d := range deliveries {
+		if d.Status == "read" {
+			readCount++
+		}
+	}
+	if stats.Delivered > 0 {
+		readRate = (float64(readCount) / float64(stats.Delivered)) * 100.0
+	}
+
+	return &domain.CampaignReport{
+		Campaign:     campaign,
+		Stats:        stats,
+		Deliveries:   deliveries,
+		ReadRate:     math.Round(readRate*10) / 10,
+		DeliveryRate: math.Round(deliveryRate*10) / 10,
+	}, nil
+}
+
 
 func parseStringList(raw string) []string {
 	var values []string

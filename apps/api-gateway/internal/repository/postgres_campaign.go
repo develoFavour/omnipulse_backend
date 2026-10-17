@@ -46,7 +46,8 @@ func (r *PostgresCampaignRepository) ListByTenant(ctx context.Context, tenantID,
 	if status != "" {
 		if status == "scheduled" {
 			query = `
-				SELECT id, tenant_id, title, message_body, external_template_code, media_url, delivery_type, selected_channels, selected_telegram_destination_ids, selected_contact_ids, status, scheduled_at, total_targets, processed_targets, created_at, updated_at
+				SELECT id, tenant_id, title, message_body, external_template_code, media_url, delivery_type, selected_channels, selected_telegram_destination_ids, selected_contact_ids, status, scheduled_at, total_targets, processed_targets, created_at, updated_at,
+				       submitted_by, approved_by, approved_at, rejection_reason
 				FROM campaigns
 				WHERE tenant_id = $1 AND status = $2
 				ORDER BY scheduled_at ASC NULLS LAST, created_at DESC
@@ -54,7 +55,8 @@ func (r *PostgresCampaignRepository) ListByTenant(ctx context.Context, tenantID,
 			`
 		} else {
 			query = `
-				SELECT id, tenant_id, title, message_body, external_template_code, media_url, delivery_type, selected_channels, selected_telegram_destination_ids, selected_contact_ids, status, scheduled_at, total_targets, processed_targets, created_at, updated_at
+				SELECT id, tenant_id, title, message_body, external_template_code, media_url, delivery_type, selected_channels, selected_telegram_destination_ids, selected_contact_ids, status, scheduled_at, total_targets, processed_targets, created_at, updated_at,
+				       submitted_by, approved_by, approved_at, rejection_reason
 				FROM campaigns
 				WHERE tenant_id = $1 AND status = $2
 				ORDER BY created_at DESC
@@ -64,7 +66,8 @@ func (r *PostgresCampaignRepository) ListByTenant(ctx context.Context, tenantID,
 		rows, err = r.db.QueryContext(ctx, query, tenantID, status, limit, offset)
 	} else {
 		query = `
-			SELECT id, tenant_id, title, message_body, external_template_code, media_url, delivery_type, selected_channels, selected_telegram_destination_ids, selected_contact_ids, status, scheduled_at, total_targets, processed_targets, created_at, updated_at
+			SELECT id, tenant_id, title, message_body, external_template_code, media_url, delivery_type, selected_channels, selected_telegram_destination_ids, selected_contact_ids, status, scheduled_at, total_targets, processed_targets, created_at, updated_at,
+			       submitted_by, approved_by, approved_at, rejection_reason
 			FROM campaigns
 			WHERE tenant_id = $1
 			ORDER BY created_at DESC
@@ -82,14 +85,29 @@ func (r *PostgresCampaignRepository) ListByTenant(ctx context.Context, tenantID,
 	for rows.Next() {
 		var c domain.Campaign
 		var sched sql.NullTime
+		var subBy, appBy, rejReason sql.NullString
+		var appAt sql.NullTime
 		err := rows.Scan(
 			&c.ID, &c.TenantID, &c.Title, &c.MessageBody, &c.ExternalTemplateCode, &c.MediaURL, &c.DeliveryType, &c.SelectedChannels, &c.SelectedTelegramDestinationIDs, &c.SelectedContactIDs, &c.Status, &sched, &c.TotalTargets, &c.ProcessedTargets, &c.CreatedAt, &c.UpdatedAt,
+			&subBy, &appBy, &appAt, &rejReason,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan row into campaign domain: %w", err)
 		}
 		if sched.Valid {
 			c.ScheduledAt = &sched.Time
+		}
+		if subBy.Valid {
+			c.SubmittedBy = &subBy.String
+		}
+		if appBy.Valid {
+			c.ApprovedBy = &appBy.String
+		}
+		if appAt.Valid {
+			c.ApprovedAt = &appAt.Time
+		}
+		if rejReason.Valid {
+			c.RejectionReason = &rejReason.String
 		}
 		campaigns = append(campaigns, &c)
 	}
@@ -103,14 +121,18 @@ func (r *PostgresCampaignRepository) ListByTenant(ctx context.Context, tenantID,
 
 func (r *PostgresCampaignRepository) GetByID(ctx context.Context, tenantID, id string) (*domain.Campaign, error) {
 	query := `
-		SELECT id, tenant_id, title, message_body, external_template_code, media_url, delivery_type, selected_channels, selected_telegram_destination_ids, selected_contact_ids, status, scheduled_at, total_targets, processed_targets, created_at, updated_at
+		SELECT id, tenant_id, title, message_body, external_template_code, media_url, delivery_type, selected_channels, selected_telegram_destination_ids, selected_contact_ids, status, scheduled_at, total_targets, processed_targets, created_at, updated_at,
+		       submitted_by, approved_by, approved_at, rejection_reason
 		FROM campaigns
 		WHERE tenant_id = $1 AND id = $2;
 	`
 	var c domain.Campaign
 	var sched sql.NullTime
+	var subBy, appBy, rejReason sql.NullString
+	var appAt sql.NullTime
 	err := r.db.QueryRowContext(ctx, query, tenantID, id).Scan(
 		&c.ID, &c.TenantID, &c.Title, &c.MessageBody, &c.ExternalTemplateCode, &c.MediaURL, &c.DeliveryType, &c.SelectedChannels, &c.SelectedTelegramDestinationIDs, &c.SelectedContactIDs, &c.Status, &sched, &c.TotalTargets, &c.ProcessedTargets, &c.CreatedAt, &c.UpdatedAt,
+		&subBy, &appBy, &appAt, &rejReason,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -120,6 +142,18 @@ func (r *PostgresCampaignRepository) GetByID(ctx context.Context, tenantID, id s
 	}
 	if sched.Valid {
 		c.ScheduledAt = &sched.Time
+	}
+	if subBy.Valid {
+		c.SubmittedBy = &subBy.String
+	}
+	if appBy.Valid {
+		c.ApprovedBy = &appBy.String
+	}
+	if appAt.Valid {
+		c.ApprovedAt = &appAt.Time
+	}
+	if rejReason.Valid {
+		c.RejectionReason = &rejReason.String
 	}
 	return &c, nil
 }
@@ -350,7 +384,7 @@ func (r *PostgresCampaignRepository) ListDeliveriesByCampaign(ctx context.Contex
 }
 func (r *PostgresCampaignRepository) SetScheduled(ctx context.Context, tenantID, id string, scheduledAt time.Time) error {
 	result, err := r.db.ExecContext(ctx,
-		`UPDATE campaigns SET status = 'scheduled', scheduled_at = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3 AND status = 'draft'`,
+		`UPDATE campaigns SET status = 'scheduled', scheduled_at = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3 AND status IN ('draft', 'approved')`,
 		scheduledAt, id, tenantID,
 	)
 	if err != nil {
@@ -394,3 +428,67 @@ func (r *PostgresCampaignRepository) CountDeliveriesSince(ctx context.Context, t
 	}
 	return 0, nil
 }
+
+func (r *PostgresCampaignRepository) SubmitForApproval(ctx context.Context, tenantID, id, submittedBy string) error {
+	result, err := r.db.ExecContext(ctx,
+		`UPDATE campaigns 
+		 SET status = 'pending_approval', submitted_by = $1, rejection_reason = NULL, updated_at = NOW() 
+		 WHERE id = $2 AND tenant_id = $3 AND status IN ('draft', 'rejected')`,
+		submittedBy, id, tenantID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to submit campaign for approval: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return ErrCampaignNotFound
+	}
+	return nil
+}
+
+func (r *PostgresCampaignRepository) ApproveCampaign(ctx context.Context, tenantID, id, approvedBy string) error {
+	result, err := r.db.ExecContext(ctx,
+		`UPDATE campaigns 
+		 SET status = 'approved', approved_by = $1, approved_at = NOW(), updated_at = NOW() 
+		 WHERE id = $2 AND tenant_id = $3 AND status = 'pending_approval'`,
+		approvedBy, id, tenantID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to approve campaign: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return ErrCampaignNotFound
+	}
+	return nil
+}
+
+func (r *PostgresCampaignRepository) RejectCampaign(ctx context.Context, tenantID, id, reason string) error {
+	result, err := r.db.ExecContext(ctx,
+		`UPDATE campaigns 
+		 SET status = 'rejected', rejection_reason = $1, updated_at = NOW() 
+		 WHERE id = $2 AND tenant_id = $3 AND status = 'pending_approval'`,
+		reason, id, tenantID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to reject campaign: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return ErrCampaignNotFound
+	}
+	return nil
+}
+
+func (r *PostgresCampaignRepository) GetApprovalSetting(ctx context.Context, tenantID string) (bool, error) {
+	var req bool
+	err := r.db.QueryRowContext(ctx, `SELECT COALESCE(require_campaign_approval, false) FROM tenant_settings WHERE tenant_id = $1`, tenantID).Scan(&req)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return req, nil
+}
+

@@ -21,6 +21,10 @@ type Campaign struct {
 	SelectedContactIDs             string     `json:"selected_contact_ids"`
 	Status                         string     `json:"status"`
 	ScheduledAt                    *time.Time `json:"scheduled_at,omitempty"`
+	SubmittedBy                    *string    `json:"submitted_by,omitempty"`
+	ApprovedBy                     *string    `json:"approved_by,omitempty"`
+	ApprovedAt                     *time.Time `json:"approved_at,omitempty"`
+	RejectionReason                *string    `json:"rejection_reason,omitempty"`
 	TotalTargets                   int        `json:"total_targets"`
 	ProcessedTargets               int        `json:"processed_targets"`
 	CreatedAt                      time.Time  `json:"created_at"`
@@ -54,6 +58,19 @@ type CampaignRepository interface {
 	FindDueScheduledCampaigns(ctx context.Context) ([]*Campaign, error)
 	CancelScheduledCampaign(ctx context.Context, tenantID, id string) error
 	CountDeliveriesSince(ctx context.Context, tenantID string, since time.Time) (int, error)
+	SubmitForApproval(ctx context.Context, tenantID, id, submittedBy string) error
+	ApproveCampaign(ctx context.Context, tenantID, id, approvedBy string) error
+	RejectCampaign(ctx context.Context, tenantID, id, reason string) error
+	GetApprovalSetting(ctx context.Context, tenantID string) (bool, error)
+}
+
+// CampaignReport aggregates executive data for one-click agency reports
+type CampaignReport struct {
+	Campaign     *Campaign           `json:"campaign"`
+	Stats        *CampaignStats      `json:"stats"`
+	Deliveries   []*CampaignDelivery `json:"deliveries,omitempty"`
+	ReadRate     float64             `json:"read_rate"`
+	DeliveryRate float64             `json:"delivery_rate"`
 }
 
 // EventPublisher defines our outbound streaming Port (DIP)

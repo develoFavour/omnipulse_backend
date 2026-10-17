@@ -63,6 +63,29 @@ func main() {
 		logger.Println("[DB-MIGRATE] Successfully ensured campaigns.selected_contact_ids column exists.")
 	}
 
+	// Idempotent schema migrations: campaign approval workflow & agency settings
+	if _, err := db.Exec(`
+		ALTER TABLE tenant_settings ADD COLUMN IF NOT EXISTS require_campaign_approval BOOLEAN NOT NULL DEFAULT false;
+		ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS submitted_by VARCHAR(255);
+		ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS approved_by VARCHAR(255);
+		ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP WITH TIME ZONE;
+		ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
+		DO $$ BEGIN
+			ALTER TYPE campaign_status ADD VALUE IF NOT EXISTS 'pending_approval';
+			ALTER TYPE campaign_status ADD VALUE IF NOT EXISTS 'approved';
+			ALTER TYPE campaign_status ADD VALUE IF NOT EXISTS 'rejected';
+		EXCEPTION
+			WHEN duplicate_object THEN null;
+			WHEN undefined_object THEN null;
+			WHEN others THEN null;
+		END $$;
+		ALTER TABLE campaigns ALTER COLUMN status TYPE VARCHAR(50) USING status::varchar(50);
+	`); err != nil {
+		logger.Printf("[DB-MIGRATE] Campaign approval columns migration: %v\n", err)
+	} else {
+		logger.Println("[DB-MIGRATE] Successfully ensured campaign approval schema columns exist.")
+	}
+
 	// Idempotent indexes for contacts table search and pagination performance
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_contacts_tenant_created ON contacts(tenant_id, created_at DESC);`)
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_contacts_tenant_channel ON contacts(tenant_id, channel);`)
@@ -256,9 +279,9 @@ func main() {
 	tagHandler := handler.NewTagHandler(tagUseCase)
 	templateHandler := handler.NewTemplateHandler(templateUseCase)
 	contactHandler := handler.NewContactHandler(contactUseCase, subRepo)
-	campaignHandler := handler.NewCampaignHandler(campaignUseCase)
+	campaignHandler := handler.NewCampaignHandler(campaignUseCase, subRepo)
 	identityHandler := handler.NewIdentityHandler(identityUseCase)
-	settingsHandler := handler.NewSettingsHandler(db)
+	settingsHandler := handler.NewSettingsHandler(db, subRepo)
 	notificationHandler := handler.NewNotificationHandler(notificationUseCase)
 	analyticsHandler := handler.NewAnalyticsHandler(analyticsUseCase)
 
@@ -449,6 +472,8 @@ func main() {
 	mux.HandleFunc("PUT /api/v1/notification-preferences", settingsHandler.UpdatePreferences)
 	mux.HandleFunc("GET /api/v1/workspace-settings", settingsHandler.GetWorkspaceSettings)
 	mux.HandleFunc("PATCH /api/v1/workspace-settings", settingsHandler.UpdateWorkspaceSettings)
+	mux.HandleFunc("GET /api/v1/settings/approval", settingsHandler.GetApprovalSettings)
+	mux.Handle("PUT /api/v1/settings/approval", handler.RequireRole("owner", "admin")(http.HandlerFunc(settingsHandler.UpdateApprovalSettings)))
 	mux.HandleFunc("GET /api/v1/api-keys", settingsHandler.ListAPIKeys)
 	mux.HandleFunc("POST /api/v1/api-keys", settingsHandler.CreateAPIKey)
 	mux.HandleFunc("DELETE /api/v1/api-keys/{id}", settingsHandler.RevokeAPIKey)
@@ -512,7 +537,12 @@ func main() {
 	mux.HandleFunc("POST /api/v1/campaigns/{id}/dispatch", campaignHandler.DispatchCampaign)
 	mux.HandleFunc("POST /api/v1/campaigns/{id}/schedule", campaignHandler.ScheduleCampaign)
 	mux.HandleFunc("DELETE /api/v1/campaigns/{id}/schedule", campaignHandler.CancelScheduledCampaign)
+	mux.HandleFunc("POST /api/v1/campaigns/{id}/submit", campaignHandler.SubmitForApproval)
+	mux.Handle("POST /api/v1/campaigns/{id}/approve", handler.RequireRole("owner", "admin")(http.HandlerFunc(campaignHandler.ApproveCampaign)))
+	mux.Handle("POST /api/v1/campaigns/{id}/reject", handler.RequireRole("owner", "admin")(http.HandlerFunc(campaignHandler.RejectCampaign)))
 	mux.HandleFunc("GET /api/v1/campaigns/{id}/stats", campaignHandler.GetCampaignStats)
+	mux.HandleFunc("GET /api/v1/campaigns/{id}/report", campaignHandler.GetCampaignReport)
+	mux.Handle("GET /api/v1/campaigns/{id}/export", handler.RequireRole("owner", "admin")(http.HandlerFunc(campaignHandler.ExportCampaignReport)))
 	mux.HandleFunc("GET /api/v1/campaigns/{id}/deliveries", campaignHandler.GetCampaignDeliveries)
 	mux.HandleFunc("GET /api/v1/ws/campaigns/{id}", campaignHub.HandleWebSocket)
 

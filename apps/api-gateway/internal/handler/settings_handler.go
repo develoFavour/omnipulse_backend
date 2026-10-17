@@ -10,12 +10,18 @@ import (
 	"strings"
 	"time"
 
+	"omnipulse/apps/api-gateway/internal/domain"
 	"omnipulse/apps/api-gateway/internal/utils"
 )
 
-type SettingsHandler struct{ db *sql.DB }
+type SettingsHandler struct {
+	db      *sql.DB
+	subRepo domain.SubscriptionRepository
+}
 
-func NewSettingsHandler(db *sql.DB) *SettingsHandler { return &SettingsHandler{db: db} }
+func NewSettingsHandler(db *sql.DB, subRepo domain.SubscriptionRepository) *SettingsHandler {
+	return &SettingsHandler{db: db, subRepo: subRepo}
+}
 
 type workspaceSettings struct {
 	LogoURL  string `json:"logo_url"`
@@ -252,3 +258,86 @@ func (h *SettingsHandler) RevokeAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 	utils.WriteJSON(w, 200, map[string]string{"message": "API key revoked"})
 }
+
+type approvalSettingsResponse struct {
+	RequireCampaignApproval bool   `json:"require_campaign_approval"`
+	PlanTier                string `json:"plan_tier"`
+	CanEnable               bool   `json:"can_enable"`
+}
+
+func (h *SettingsHandler) GetApprovalSettings(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	tier := string(domain.PlanStarter)
+	if h.subRepo != nil {
+		sub, err := h.subRepo.GetByTenantID(r.Context(), tenantID)
+		if err == nil && sub != nil {
+			tier = string(sub.PlanTier)
+		}
+	}
+
+	var reqApproval bool
+	err := h.db.QueryRowContext(r.Context(), `SELECT COALESCE(require_campaign_approval, false) FROM tenant_settings WHERE tenant_id = $1`, tenantID).Scan(&reqApproval)
+	if err != nil && err != sql.ErrNoRows {
+		utils.WriteError(w, http.StatusInternalServerError, "Failed to load approval settings")
+		return
+	}
+
+	canEnable := tier == string(domain.PlanAgency)
+	utils.WriteJSON(w, http.StatusOK, approvalSettingsResponse{
+		RequireCampaignApproval: reqApproval,
+		PlanTier:                tier,
+		CanEnable:               canEnable,
+	})
+}
+
+func (h *SettingsHandler) UpdateApprovalSettings(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	tier := string(domain.PlanStarter)
+	if h.subRepo != nil {
+		sub, err := h.subRepo.GetByTenantID(r.Context(), tenantID)
+		if err == nil && sub != nil {
+			tier = string(sub.PlanTier)
+		}
+	}
+
+	var payload struct {
+		RequireCampaignApproval bool `json:"require_campaign_approval"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+
+	if payload.RequireCampaignApproval && tier != string(domain.PlanAgency) {
+		utils.WriteError(w, http.StatusPaymentRequired, "Campaign approval workflow requires an Agency subscription plan.")
+		return
+	}
+
+	_, err := h.db.ExecContext(r.Context(), `
+		INSERT INTO tenant_settings (tenant_id, require_campaign_approval, updated_at)
+		VALUES ($1, $2, NOW())
+		ON CONFLICT (tenant_id) DO UPDATE
+		SET require_campaign_approval = EXCLUDED.require_campaign_approval, updated_at = NOW()
+	`, tenantID, payload.RequireCampaignApproval)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "Failed to update approval settings")
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, approvalSettingsResponse{
+		RequireCampaignApproval: payload.RequireCampaignApproval,
+		PlanTier:                tier,
+		CanEnable:               tier == string(domain.PlanAgency),
+	})
+}
+
