@@ -38,3 +38,7 @@ postgres-data/
 # Ignore markdown files and scratch analysis
 *.md
 analysis_results_omnipulse
+
+# Temporary database inspection/migration utilities
+/apps/api-gateway/cmd/db_probe/
+/apps/api-gateway/cmd/migrate_db/
