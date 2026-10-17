@@ -86,6 +86,71 @@ func main() {
 		logger.Println("[DB-MIGRATE] Successfully ensured campaign approval schema columns exist.")
 	}
 
+	// Whatsmeow requires these keys for its ON CONFLICT upserts. Keep this
+	// idempotent so migrated or freshly provisioned databases behave alike.
+	if _, err := db.Exec(`
+		DO $$ BEGIN
+			IF to_regclass('public.whatsmeow_device') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'whatsmeow_device_pkey') THEN
+				ALTER TABLE whatsmeow_device ADD CONSTRAINT whatsmeow_device_pkey PRIMARY KEY (jid);
+			END IF;
+			IF to_regclass('public.whatsmeow_identity_keys') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'whatsmeow_identity_keys_pkey') THEN
+				ALTER TABLE whatsmeow_identity_keys ADD CONSTRAINT whatsmeow_identity_keys_pkey PRIMARY KEY (our_jid, their_id);
+			END IF;
+			IF to_regclass('public.whatsmeow_pre_keys') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'whatsmeow_pre_keys_pkey') THEN
+				ALTER TABLE whatsmeow_pre_keys ADD CONSTRAINT whatsmeow_pre_keys_pkey PRIMARY KEY (jid, key_id);
+			END IF;
+			IF to_regclass('public.whatsmeow_sessions') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'whatsmeow_sessions_pkey') THEN
+				ALTER TABLE whatsmeow_sessions ADD CONSTRAINT whatsmeow_sessions_pkey PRIMARY KEY (our_jid, their_id);
+			END IF;
+			IF to_regclass('public.whatsmeow_sender_keys') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'whatsmeow_sender_keys_pkey') THEN
+				ALTER TABLE whatsmeow_sender_keys ADD CONSTRAINT whatsmeow_sender_keys_pkey PRIMARY KEY (our_jid, chat_id, sender_id);
+			END IF;
+			IF to_regclass('public.whatsmeow_app_state_sync_keys') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'whatsmeow_app_state_sync_keys_pkey') THEN
+				ALTER TABLE whatsmeow_app_state_sync_keys ADD CONSTRAINT whatsmeow_app_state_sync_keys_pkey PRIMARY KEY (jid, key_id);
+			END IF;
+			IF to_regclass('public.whatsmeow_app_state_version') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'whatsmeow_app_state_version_pkey') THEN
+				ALTER TABLE whatsmeow_app_state_version ADD CONSTRAINT whatsmeow_app_state_version_pkey PRIMARY KEY (jid, name);
+			END IF;
+			IF to_regclass('public.whatsmeow_app_state_mutation_macs') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'whatsmeow_app_state_mutation_macs_pkey') THEN
+				ALTER TABLE whatsmeow_app_state_mutation_macs ADD CONSTRAINT whatsmeow_app_state_mutation_macs_pkey PRIMARY KEY (jid, name, version, index_mac);
+			END IF;
+			IF to_regclass('public.whatsmeow_contacts') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'whatsmeow_contacts_pkey') THEN
+				ALTER TABLE whatsmeow_contacts ADD CONSTRAINT whatsmeow_contacts_pkey PRIMARY KEY (our_jid, their_jid);
+			END IF;
+			IF to_regclass('public.whatsmeow_chat_settings') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'whatsmeow_chat_settings_pkey') THEN
+				ALTER TABLE whatsmeow_chat_settings ADD CONSTRAINT whatsmeow_chat_settings_pkey PRIMARY KEY (our_jid, chat_jid);
+			END IF;
+			IF to_regclass('public.whatsmeow_message_secrets') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'whatsmeow_message_secrets_pkey') THEN
+				ALTER TABLE whatsmeow_message_secrets ADD CONSTRAINT whatsmeow_message_secrets_pkey PRIMARY KEY (our_jid, chat_jid, sender_jid, message_id);
+			END IF;
+			IF to_regclass('public.whatsmeow_privacy_tokens') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'whatsmeow_privacy_tokens_pkey') THEN
+				ALTER TABLE whatsmeow_privacy_tokens ADD CONSTRAINT whatsmeow_privacy_tokens_pkey PRIMARY KEY (our_jid, their_jid);
+			END IF;
+			IF to_regclass('public.whatsmeow_lid_map') IS NOT NULL THEN
+				IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'whatsmeow_lid_map_pkey') THEN
+					ALTER TABLE whatsmeow_lid_map ADD CONSTRAINT whatsmeow_lid_map_pkey PRIMARY KEY (lid);
+				END IF;
+				IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'whatsmeow_lid_map_pn_key') THEN
+					ALTER TABLE whatsmeow_lid_map ADD CONSTRAINT whatsmeow_lid_map_pn_key UNIQUE (pn);
+				END IF;
+			END IF;
+			IF to_regclass('public.whatsmeow_nct_salt') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'whatsmeow_nct_salt_pkey') THEN
+				ALTER TABLE whatsmeow_nct_salt ADD CONSTRAINT whatsmeow_nct_salt_pkey PRIMARY KEY (our_jid);
+			END IF;
+			IF to_regclass('public.whatsmeow_event_buffer') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'whatsmeow_event_buffer_pkey') THEN
+				ALTER TABLE whatsmeow_event_buffer ADD CONSTRAINT whatsmeow_event_buffer_pkey PRIMARY KEY (our_jid, ciphertext_hash);
+			END IF;
+			IF to_regclass('public.whatsmeow_retry_buffer') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'whatsmeow_retry_buffer_pkey') THEN
+				ALTER TABLE whatsmeow_retry_buffer ADD CONSTRAINT whatsmeow_retry_buffer_pkey PRIMARY KEY (our_jid, chat_jid, message_id);
+			END IF;
+		EXCEPTION WHEN duplicate_object THEN NULL;
+		END $$;
+	`); err != nil {
+		logger.Printf("[DB-MIGRATE] Whatsmeow constraints migration: %v\n", err)
+	} else {
+		logger.Println("[DB-MIGRATE] Successfully ensured Whatsmeow constraints exist.")
+	}
+
 	// Idempotent indexes for contacts table search and pagination performance
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_contacts_tenant_created ON contacts(tenant_id, created_at DESC);`)
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_contacts_tenant_channel ON contacts(tenant_id, channel);`)
