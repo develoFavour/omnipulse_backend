@@ -359,6 +359,11 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 		return
 	}
 
+	if err := h.checkChannelQuota(r.Context(), tenantID); err != nil {
+		utils.WriteError(w, http.StatusPaymentRequired, err.Error())
+		return
+	}
+
 	if h.metaConfig.AppID == "" || h.metaConfig.AppSecret == "" {
 		utils.WriteError(w, http.StatusPreconditionFailed, "Meta OAuth is not configured. Set META_APP_ID and META_APP_SECRET environment variables.")
 		return

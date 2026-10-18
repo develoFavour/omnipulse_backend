@@ -112,7 +112,7 @@ func TestComplianceOptOut_ExcludedFromBroadcast(t *testing.T) {
 	campaign := &domain.Campaign{
 		ID:               campaignID,
 		TenantID:         tenantID,
-		Title:             "Autumn Promo",
+		Title:            "Autumn Promo",
 		MessageBody:      "Special discount code: AUTUMN50",
 		Status:           "approved",
 		SelectedChannels: `["whatsapp"]`,
@@ -191,7 +191,7 @@ func TestComplianceOptOut_ExplicitlySelectedOptedOutContact(t *testing.T) {
 	campaign := &domain.Campaign{
 		ID:                 campaignID,
 		TenantID:           tenantID,
-		Title:               "Targeted Campaign",
+		Title:              "Targeted Campaign",
 		MessageBody:        "VIP Update",
 		Status:             "approved",
 		SelectedContactIDs: `["c-opted-out", "c-active"]`,
@@ -255,7 +255,7 @@ func TestComplianceOptOut_AllTargetsOptedOutRejectsDispatch(t *testing.T) {
 	campaign := &domain.Campaign{
 		ID:               campaignID,
 		TenantID:         tenantID,
-		Title:             "Blacklisted Audience",
+		Title:            "Blacklisted Audience",
 		MessageBody:      "You should not see this",
 		Status:           "approved",
 		SelectedChannels: `["whatsapp"]`,

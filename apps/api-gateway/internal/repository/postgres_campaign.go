@@ -491,4 +491,3 @@ func (r *PostgresCampaignRepository) GetApprovalSetting(ctx context.Context, ten
 	}
 	return req, nil
 }
-

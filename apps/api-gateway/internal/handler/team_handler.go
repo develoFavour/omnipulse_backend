@@ -2,10 +2,12 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
 
+	"omnipulse/apps/api-gateway/internal/domain"
 	"omnipulse/apps/api-gateway/internal/usecase"
 	"omnipulse/apps/api-gateway/internal/utils"
 )
@@ -67,6 +69,10 @@ func (h *TeamHandler) InviteMember(w http.ResponseWriter, r *http.Request) {
 	inv, err := h.useCase.InviteMember(r.Context(), tenantID, callerID, callerRole, req.Email, req.Role)
 	if err != nil {
 		log.Printf("[TeamHandler] InviteMember FAILED for email=%s: %v\n", req.Email, err)
+		if errors.Is(err, domain.ErrQuotaExceeded) {
+			utils.WriteError(w, http.StatusPaymentRequired, err.Error())
+			return
+		}
 		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -170,6 +176,10 @@ func (h *TeamHandler) UpdateMemberRole(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[TeamHandler] UpdateMemberRole: member_id=%s newRole=%s (callerRole=%s, tenant=%s)\n", memberID, req.Role, callerRole, tenantID)
 	if err := h.useCase.UpdateMemberRole(r.Context(), tenantID, callerRole, memberID, req.Role); err != nil {
 		log.Printf("[TeamHandler] UpdateMemberRole FAILED for member_id=%s: %v\n", memberID, err)
+		if errors.Is(err, domain.ErrQuotaExceeded) {
+			utils.WriteError(w, http.StatusPaymentRequired, err.Error())
+			return
+		}
 		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}

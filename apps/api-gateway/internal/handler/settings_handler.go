@@ -340,4 +340,3 @@ func (h *SettingsHandler) UpdateApprovalSettings(w http.ResponseWriter, r *http.
 		CanEnable:               tier == string(domain.PlanAgency),
 	})
 }
-

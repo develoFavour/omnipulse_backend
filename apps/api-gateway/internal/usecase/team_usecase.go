@@ -20,6 +20,7 @@ type TeamUseCase struct {
 	mailer     *utils.Mailer
 	appBaseURL string
 	logger     *log.Logger
+	subRepo    domain.SubscriptionRepository
 }
 
 func cleanAppBaseURL(raw string) string {
@@ -38,12 +39,14 @@ func NewTeamUseCase(
 	mailer *utils.Mailer,
 	appBaseURL string,
 	logger *log.Logger,
+	subRepo domain.SubscriptionRepository,
 ) *TeamUseCase {
 	return &TeamUseCase{
 		repo:       repo,
 		mailer:     mailer,
 		appBaseURL: cleanAppBaseURL(appBaseURL),
 		logger:     logger,
+		subRepo:    subRepo,
 	}
 }
 
@@ -93,6 +96,14 @@ func (u *TeamUseCase) InviteMember(
 	ctx context.Context,
 	tenantID, callerID, callerRole, targetEmail, targetRole string,
 ) (*domain.TeamInvitation, error) {
+	// 0. Plan Tier Guard: Multi-seat team collaboration requires the Agency plan
+	if u.subRepo != nil && tenantID != "" {
+		sub, err := u.subRepo.GetByTenantID(ctx, tenantID)
+		if err == nil && sub != nil && sub.PlanTier != domain.PlanAgency {
+			return nil, fmt.Errorf("%w: team member invitations require the Agency plan. Upgrade your workspace to invite teammates.", domain.ErrQuotaExceeded)
+		}
+	}
+
 	// 1. RBAC Guard: Only owner or admin can invite
 	if !strings.EqualFold(callerRole, "owner") && !strings.EqualFold(callerRole, "admin") {
 		return nil, errors.New("insufficient permissions: only workspace owners and admins can invite members")
@@ -240,6 +251,14 @@ func (u *TeamUseCase) RemoveMember(ctx context.Context, tenantID, callerID, call
 
 // UpdateMemberRole alters a member's workspace role
 func (u *TeamUseCase) UpdateMemberRole(ctx context.Context, tenantID, callerRole, memberID, newRole string) error {
+	// 0. Plan Tier Guard: Granular role assignments require the Agency plan
+	if u.subRepo != nil && tenantID != "" {
+		sub, err := u.subRepo.GetByTenantID(ctx, tenantID)
+		if err == nil && sub != nil && sub.PlanTier != domain.PlanAgency {
+			return fmt.Errorf("%w: team role management requires the Agency plan. Upgrade your workspace to assign custom roles.", domain.ErrQuotaExceeded)
+		}
+	}
+
 	// Only owners can modify team roles
 	if !strings.EqualFold(callerRole, "owner") {
 		return errors.New("only workspace owners can alter team member roles")
@@ -253,6 +272,11 @@ func (u *TeamUseCase) UpdateMemberRole(ctx context.Context, tenantID, callerRole
 	members, err := u.repo.ListMembers(ctx, tenantID)
 	if err != nil {
 		return err
+	}
+
+	// Cannot alter role if there is only 1 member in the entire workspace
+	if len(members) <= 1 {
+		return errors.New("cannot change the role of the sole workspace member")
 	}
 
 	var targetMember *domain.TenantMember

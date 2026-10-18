@@ -475,4 +475,3 @@ func (h *CampaignHandler) ExportCampaignReport(w http.ResponseWriter, r *http.Re
 
 	writer.Flush()
 }
-

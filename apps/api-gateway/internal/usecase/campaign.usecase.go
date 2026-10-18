@@ -406,7 +406,6 @@ func (u *CampaignUseCase) GetCampaignReport(ctx context.Context, tenantID, campa
 	}, nil
 }
 
-
 func parseStringList(raw string) []string {
 	var values []string
 	if err := json.Unmarshal([]byte(raw), &values); err != nil {

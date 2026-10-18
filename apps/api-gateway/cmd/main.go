@@ -351,7 +351,7 @@ func main() {
 	analyticsHandler := handler.NewAnalyticsHandler(analyticsUseCase)
 
 	mailer := utils.NewMailer(cfg)
-	teamUseCase := usecase.NewTeamUseCase(identityRepo, mailer, cfg.PublicAppBaseURL, logger)
+	teamUseCase := usecase.NewTeamUseCase(identityRepo, mailer, cfg.PublicAppBaseURL, logger, subRepo)
 	teamHandler := handler.NewTeamHandler(teamUseCase)
 
 	stripeSvc := service.NewStripeService(cfg.StripeSecretKey, cfg.StripeWebhookSecret)
