@@ -277,6 +277,18 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 		switch evt := rawEvt.(type) {
 		case *events.Connected:
 			log.Printf("[WhatsAppManager] Tenant %s connected to WhatsApp servers\n", tenantID)
+			// On reconnect, asynchronously sync contacts from the local store.
+			// After reconnection the whatsmeow store may have fresher LID→phone mappings.
+			go func() {
+				syncCtx, syncCancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer syncCancel()
+				count, err := m.SyncContacts(syncCtx, tenantID, nil)
+				if err != nil {
+					log.Printf("[WhatsAppManager] ⚠️ Background contact sync failed for tenant %s: %v\n", tenantID, err)
+				} else {
+					log.Printf("[WhatsAppManager] ✅ Background contact sync complete for tenant %s: %d contacts\n", tenantID, count)
+				}
+			}()
 		case *events.PairSuccess:
 			jid := evt.ID
 			phone := jid.User
@@ -329,47 +341,223 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 		case *events.HistorySync:
 			log.Printf("[WhatsAppManager] 🔄 Received HistorySync (%v) for tenant %s\n", evt.Data.GetSyncType(), tenantID)
 			count := 0
-			// 1. Process Conversations
+
+			// 0. Store explicit Phone-to-LID mappings provided by WhatsApp
+			if sess.client != nil {
+				for _, mapping := range evt.Data.GetPhoneNumberToLidMappings() {
+					pnStr := mapping.GetPnJID()
+					lidStr := mapping.GetLidJID()
+					if pnStr != "" && lidStr != "" {
+						pnJID, pnErr := types.ParseJID(pnStr)
+						lidJID, lidErr := types.ParseJID(lidStr)
+						if pnErr == nil && lidErr == nil {
+							sess.client.StoreLIDPNMapping(context.Background(), pnJID, lidJID)
+							if sess.client.Store != nil && sess.client.Store.LIDs != nil {
+								_ = sess.client.Store.LIDs.PutLIDMapping(context.Background(), lidJID, pnJID)
+							}
+						}
+					}
+				}
+			}
+
+			// 1. Process InlineContacts (direct companion contacts provided by WhatsApp)
+			for _, ic := range evt.Data.GetInlineContacts() {
+				pnStr := ic.GetPnJID()
+				lidStr := ic.GetLidJID()
+				var phoneUser string
+				var lidUser string
+				if pnStr != "" {
+					if pnJID, err := types.ParseJID(pnStr); err == nil && pnJID.User != "" {
+						phoneUser = pnJID.User
+					}
+				}
+				if lidStr != "" {
+					if lidJID, err := types.ParseJID(lidStr); err == nil && lidJID.User != "" {
+						lidUser = lidJID.User
+						if phoneUser != "" && sess.client != nil {
+							if pnJID, err := types.ParseJID(pnStr); err == nil {
+								sess.client.StoreLIDPNMapping(context.Background(), pnJID, lidJID)
+								if sess.client.Store != nil && sess.client.Store.LIDs != nil {
+									_ = sess.client.Store.LIDs.PutLIDMapping(context.Background(), lidJID, pnJID)
+								}
+							}
+						}
+					}
+				}
+				if phoneUser == "" && lidUser != "" {
+					if sess.client != nil && sess.client.Store != nil {
+						resCtx, resCancel := context.WithTimeout(context.Background(), 2*time.Second)
+						lidJID := types.NewJID(lidUser, types.HiddenUserServer)
+						if alt, altErr := sess.client.Store.GetAltJID(resCtx, lidJID); altErr == nil && alt.Server == types.DefaultUserServer && alt.User != "" {
+							phoneUser = alt.User
+						} else if sess.client.Store.LIDs != nil {
+							if pn2, lidErr := sess.client.Store.LIDs.GetPNForLID(resCtx, lidJID); lidErr == nil && pn2.Server == types.DefaultUserServer && pn2.User != "" {
+								phoneUser = pn2.User
+							}
+						}
+						resCancel()
+					}
+					if phoneUser == "" {
+						phoneUser = lidUser
+					} else {
+						m.resolveAndMigrateLID(tenantID, lidUser, phoneUser)
+					}
+				}
+				if phoneUser == "" {
+					continue
+				}
+				name := ic.GetFullName()
+				if name == "" {
+					name = ic.GetFirstName()
+				}
+				if name == "" {
+					name = ic.GetUsername()
+				}
+				m.saveContact(tenantID, phoneUser, name, "whatsapp_sync")
+				count++
+			}
+
+			// 2. Process Conversations — includes both phone and LID-based chats
 			for _, conv := range evt.Data.GetConversations() {
 				chatID := conv.GetID()
 				if chatID == "" {
 					continue
 				}
 				jid, err := types.ParseJID(chatID)
-				if err != nil || jid.Server != types.DefaultUserServer || jid.User == "" {
+				if err != nil || jid.IsEmpty() || jid.Server == types.GroupServer || jid.Server == types.BroadcastServer {
+					continue // skip groups and broadcasts
+				}
+				if jid.User == "" {
 					continue
 				}
+
 				name := conv.GetName()
-				m.saveContact(tenantID, jid.User, name, "whatsapp_sync")
+				if name == "" {
+					name = conv.GetDisplayName()
+				}
+				if name == "" {
+					name = conv.GetUsername()
+				}
+
+				phoneUser := jid.User
+				pnJIDStr := conv.GetPnJID()
+				if pnJIDStr != "" {
+					if pnJID, pnErr := types.ParseJID(pnJIDStr); pnErr == nil && pnJID.User != "" {
+						phoneUser = pnJID.User
+						if jid.Server == types.HiddenUserServer && sess.client != nil {
+							sess.client.StoreLIDPNMapping(context.Background(), pnJID, jid)
+							if sess.client.Store != nil && sess.client.Store.LIDs != nil {
+								_ = sess.client.Store.LIDs.PutLIDMapping(context.Background(), jid, pnJID)
+							}
+						}
+					}
+				}
+
+				if jid.Server == types.HiddenUserServer && phoneUser == jid.User && sess.client != nil && sess.client.Store != nil {
+					// Attempt to resolve LID → real phone number
+					resCtx, resCancel := context.WithTimeout(context.Background(), 2*time.Second)
+					if alt, altErr := sess.client.Store.GetAltJID(resCtx, jid); altErr == nil && alt.Server == types.DefaultUserServer && alt.User != "" {
+						phoneUser = alt.User
+						m.resolveAndMigrateLID(tenantID, jid.User, phoneUser)
+						log.Printf("[WhatsAppManager] 🔀 HistorySync conv: resolved LID %s → phone %s\n", jid.String(), phoneUser)
+					} else if sess.client.Store.LIDs != nil {
+						if pn2, lidErr := sess.client.Store.LIDs.GetPNForLID(resCtx, jid); lidErr == nil && pn2.Server == types.DefaultUserServer && pn2.User != "" {
+							phoneUser = pn2.User
+							m.resolveAndMigrateLID(tenantID, jid.User, phoneUser)
+							log.Printf("[WhatsAppManager] 🔀 HistorySync conv: resolved LID %s → phone %s via LIDStore\n", jid.String(), phoneUser)
+						}
+					}
+					resCancel()
+				}
+
+				// Check messages inside conversation for sender pushname if name is still empty
+				if name == "" {
+					for _, hmsg := range conv.GetMessages() {
+						if hmsg != nil && hmsg.GetMessage() != nil && hmsg.GetMessage().GetPushName() != "" {
+							name = hmsg.GetMessage().GetPushName()
+							break
+						}
+					}
+				}
+
+				m.saveContact(tenantID, phoneUser, name, "whatsapp_sync")
 				count++
 			}
-			// 2. Process Pushnames
+
+			// 3. Process Pushnames — includes LID pushnames
 			for _, pn := range evt.Data.GetPushnames() {
 				jidStr := pn.GetID()
 				if jidStr == "" {
 					continue
 				}
 				jid, err := types.ParseJID(jidStr)
-				if err != nil || jid.Server != types.DefaultUserServer || jid.User == "" {
+				if err != nil || jid.IsEmpty() || jid.Server == types.GroupServer || jid.Server == types.BroadcastServer {
 					continue
 				}
-				m.saveContact(tenantID, jid.User, pn.GetPushname(), "whatsapp_sync")
+				if jid.User == "" {
+					continue
+				}
+				phoneUser := jid.User
+				if jid.Server == types.HiddenUserServer && sess.client != nil && sess.client.Store != nil {
+					resCtx, resCancel := context.WithTimeout(context.Background(), 2*time.Second)
+					if alt, altErr := sess.client.Store.GetAltJID(resCtx, jid); altErr == nil && alt.Server == types.DefaultUserServer && alt.User != "" {
+						phoneUser = alt.User
+						m.resolveAndMigrateLID(tenantID, jid.User, phoneUser)
+						log.Printf("[WhatsAppManager] 🔀 HistorySync pushname: resolved LID %s → phone %s\n", jid.String(), phoneUser)
+					} else if sess.client.Store.LIDs != nil {
+						if pn2, lidErr := sess.client.Store.LIDs.GetPNForLID(resCtx, jid); lidErr == nil && pn2.Server == types.DefaultUserServer && pn2.User != "" {
+							phoneUser = pn2.User
+							m.resolveAndMigrateLID(tenantID, jid.User, phoneUser)
+							log.Printf("[WhatsAppManager] 🔀 HistorySync pushname: resolved LID %s → phone %s via LIDStore\n", jid.String(), phoneUser)
+						}
+					}
+					resCancel()
+				}
+				m.saveContact(tenantID, phoneUser, pn.GetPushname(), "whatsapp_sync")
 				count++
 			}
 			log.Printf("[WhatsAppManager] 📥 Auto-imported %d contacts from HistorySync for tenant %s\n", count, tenantID)
 
 		case *events.PushName:
-			if evt.JID.Server == types.DefaultUserServer && evt.JID.User != "" && evt.NewPushName != "" {
-				m.saveContact(tenantID, evt.JID.User, evt.NewPushName, "whatsapp_sync")
+			phoneUser := evt.JID.User
+			if evt.JID.Server == types.HiddenUserServer && sess.client != nil && sess.client.Store != nil {
+				resCtx, resCancel := context.WithTimeout(context.Background(), 2*time.Second)
+				if alt, altErr := sess.client.Store.GetAltJID(resCtx, evt.JID); altErr == nil && alt.Server == types.DefaultUserServer && alt.User != "" {
+					phoneUser = alt.User
+					m.resolveAndMigrateLID(tenantID, evt.JID.User, phoneUser)
+				} else if sess.client.Store.LIDs != nil {
+					if pn2, lidErr := sess.client.Store.LIDs.GetPNForLID(resCtx, evt.JID); lidErr == nil && pn2.Server == types.DefaultUserServer && pn2.User != "" {
+						phoneUser = pn2.User
+						m.resolveAndMigrateLID(tenantID, evt.JID.User, phoneUser)
+					}
+				}
+				resCancel()
+			}
+			if phoneUser != "" && evt.NewPushName != "" && evt.JID.Server != types.GroupServer && evt.JID.Server != types.BroadcastServer {
+				m.saveContact(tenantID, phoneUser, evt.NewPushName, "whatsapp_sync")
 			}
 
 		case *events.Contact:
-			if evt.JID.Server == types.DefaultUserServer && evt.JID.User != "" && evt.Action != nil {
+			phoneUser := evt.JID.User
+			if evt.JID.Server == types.HiddenUserServer && sess.client != nil && sess.client.Store != nil {
+				resCtx, resCancel := context.WithTimeout(context.Background(), 2*time.Second)
+				if alt, altErr := sess.client.Store.GetAltJID(resCtx, evt.JID); altErr == nil && alt.Server == types.DefaultUserServer && alt.User != "" {
+					phoneUser = alt.User
+					m.resolveAndMigrateLID(tenantID, evt.JID.User, phoneUser)
+				} else if sess.client.Store.LIDs != nil {
+					if pn2, lidErr := sess.client.Store.LIDs.GetPNForLID(resCtx, evt.JID); lidErr == nil && pn2.Server == types.DefaultUserServer && pn2.User != "" {
+						phoneUser = pn2.User
+						m.resolveAndMigrateLID(tenantID, evt.JID.User, phoneUser)
+					}
+				}
+				resCancel()
+			}
+			if phoneUser != "" && evt.Action != nil && evt.JID.Server != types.GroupServer && evt.JID.Server != types.BroadcastServer {
 				name := evt.Action.GetFullName()
 				if name == "" {
 					name = evt.Action.GetFirstName()
 				}
-				m.saveContact(tenantID, evt.JID.User, name, "whatsapp_sync")
+				m.saveContact(tenantID, phoneUser, name, "whatsapp_sync")
 			}
 
 		case *events.Message:
@@ -406,10 +594,12 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 						queryCtx, qCancel := context.WithTimeout(context.Background(), 2*time.Second)
 						if pn, err := sess.client.Store.GetAltJID(queryCtx, evt.Info.Chat); err == nil && pn.Server == types.DefaultUserServer && pn.User != "" {
 							contactPhone = pn.User
+							m.resolveAndMigrateLID(tenantID, evt.Info.Chat.User, contactPhone)
 							log.Printf("[WhatsAppManager] 🔀 Resolved LID %s to phone %s via AltJID\n", evt.Info.Chat.String(), pn.User)
 						} else if sess.client.Store.LIDs != nil {
 							if pn, err := sess.client.Store.LIDs.GetPNForLID(queryCtx, evt.Info.Chat); err == nil && pn.Server == types.DefaultUserServer && pn.User != "" {
 								contactPhone = pn.User
+								m.resolveAndMigrateLID(tenantID, evt.Info.Chat.User, contactPhone)
 								log.Printf("[WhatsAppManager] 🔀 Resolved LID %s to phone %s via LIDStore\n", evt.Info.Chat.String(), pn.User)
 							}
 						}
@@ -619,6 +809,39 @@ func extractMessageText(msg *waE2E.Message) string {
 		return "[Location]"
 	}
 	return ""
+}
+
+// resolveAndMigrateLID updates any contact previously stored under a raw LID routing value
+// (+<lidUser>) to the real phone number (+<phoneUser>) once the phone mapping is known,
+// merging or deleting redundant placeholders.
+func (m *WhatsAppManager) resolveAndMigrateLID(tenantID, lidUser, phoneUser string) {
+	if lidUser == "" || phoneUser == "" || lidUser == phoneUser {
+		return
+	}
+	lidRouting := "+" + strings.TrimPrefix(strings.TrimSpace(lidUser), "+")
+	phoneRouting := "+" + strings.TrimPrefix(strings.TrimSpace(phoneUser), "+")
+
+	execCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// Update existing LID contact record to real phone number if no conflict exists
+	_, _ = m.db.ExecContext(execCtx, `
+		UPDATE contacts 
+		SET routing_value = $1, updated_at = NOW()
+		WHERE tenant_id = $2 AND channel = 'whatsapp' AND routing_value = $3
+		AND NOT EXISTS (
+			SELECT 1 FROM contacts WHERE tenant_id = $2 AND channel = 'whatsapp' AND routing_value = $1
+		)
+	`, phoneRouting, tenantID, lidRouting)
+
+	// If a record already exists with phoneRouting, delete the temporary LID record to avoid duplicate
+	_, _ = m.db.ExecContext(execCtx, `
+		DELETE FROM contacts 
+		WHERE tenant_id = $1 AND channel = 'whatsapp' AND routing_value = $2
+		AND EXISTS (
+			SELECT 1 FROM contacts WHERE tenant_id = $1 AND channel = 'whatsapp' AND routing_value = $3
+		)
+	`, tenantID, lidRouting, phoneRouting)
 }
 
 func (m *WhatsAppManager) saveContact(tenantID, rawPhone, name, source string) string {
@@ -961,7 +1184,9 @@ func (m *WhatsAppManager) EditMessage(ctx context.Context, tenantID string, reci
 	return nil
 }
 
-// SyncContacts reads all saved contacts from the linked WhatsApp account, groups, and local store
+// SyncContacts reads all saved contacts from the linked WhatsApp account, groups, and local store.
+// It handles both standard phone-number JIDs (s.whatsapp.net) and LID-based JIDs (lid server)
+// by attempting to resolve LIDs to their real phone numbers before saving.
 func (m *WhatsAppManager) SyncContacts(ctx context.Context, tenantID string, contactRepo domain.ContactRepository) (int, error) {
 	sess, err := m.ensureSession(ctx, tenantID)
 	if err != nil {
@@ -969,16 +1194,18 @@ func (m *WhatsAppManager) SyncContacts(ctx context.Context, tenantID string, con
 	}
 
 	syncedCount := 0
+	lidResolutionFailed := 0
 
-	// 1. Sync from local store
+	// 1. Sync from local store — process both DefaultUserServer and HiddenUserServer (LID) contacts
 	if contactsMap, err := sess.client.Store.Contacts.GetAllContacts(ctx); err == nil && len(contactsMap) > 0 {
+		log.Printf("[WhatsAppManager] 🔍 Found %d contacts in local WA store for tenant %s\n", len(contactsMap), tenantID)
 		for jid, info := range contactsMap {
-			if jid.Server != types.DefaultUserServer || jid.User == "" {
-				continue
+			if jid.Server == types.GroupServer || jid.Server == types.BroadcastServer || jid.User == "" {
+				continue // skip groups and broadcast lists
 			}
-			name := info.FirstName
+			name := info.FullName
 			if name == "" {
-				name = info.FullName
+				name = info.FirstName
 			}
 			if name == "" {
 				name = info.PushName
@@ -986,27 +1213,79 @@ func (m *WhatsAppManager) SyncContacts(ctx context.Context, tenantID string, con
 			if name == "" {
 				name = info.BusinessName
 			}
-			m.saveContact(tenantID, jid.User, name, "whatsapp_sync")
+
+			phoneUser := jid.User
+			if jid.Server == types.HiddenUserServer {
+				// LID contact: attempt to resolve to real phone number
+				resolved := false
+				if sess.client.Store != nil {
+					resCtx, resCancel := context.WithTimeout(context.Background(), 2*time.Second)
+					if alt, altErr := sess.client.Store.GetAltJID(resCtx, jid); altErr == nil && alt.Server == types.DefaultUserServer && alt.User != "" {
+						phoneUser = alt.User
+						resolved = true
+						m.resolveAndMigrateLID(tenantID, jid.User, phoneUser)
+						log.Printf("[WhatsAppManager] 🔀 SyncContacts: resolved LID %s → phone %s (name: %q)\n", jid.String(), phoneUser, name)
+					} else if sess.client.Store.LIDs != nil {
+						if pn2, lidErr := sess.client.Store.LIDs.GetPNForLID(resCtx, jid); lidErr == nil && pn2.Server == types.DefaultUserServer && pn2.User != "" {
+							phoneUser = pn2.User
+							resolved = true
+							m.resolveAndMigrateLID(tenantID, jid.User, phoneUser)
+							log.Printf("[WhatsAppManager] 🔀 SyncContacts: resolved LID %s → phone %s via LIDStore (name: %q)\n", jid.String(), phoneUser, name)
+						}
+					}
+					resCancel()
+				}
+				if !resolved {
+					// Save with LID identifier directly so the contact is not lost.
+					// The routing_value will start with the LID numeric string and will be
+					// updated to a real phone number when the mapping becomes available
+					// (e.g. next time they send a message and AltJID resolves).
+					lidResolutionFailed++
+					log.Printf("[WhatsAppManager] ℹ️ SyncContacts: could not resolve LID %s, saving as-is (name: %q)\n", jid.String(), name)
+				}
+			}
+			m.saveContact(tenantID, phoneUser, name, "whatsapp_sync")
 			syncedCount++
 		}
+		log.Printf("[WhatsAppManager] 📋 SyncContacts store pass: %d processed, %d LIDs unresolved for tenant %s\n",
+			syncedCount, lidResolutionFailed, tenantID)
+	} else if err != nil {
+		log.Printf("[WhatsAppManager] ⚠️ SyncContacts: failed to get contacts from local store: %v\n", err)
 	}
 
 	// 2. Sync from joined group participants (if any)
-	if groups, err := sess.client.GetJoinedGroups(ctx); err == nil && len(groups) > 0 {
+	if groups, groupErr := sess.client.GetJoinedGroups(ctx); groupErr == nil && len(groups) > 0 {
+		groupCount := 0
 		for _, group := range groups {
 			for _, participant := range group.Participants {
-				if participant.JID.Server == types.DefaultUserServer && participant.JID.User != "" {
-					m.saveContact(tenantID, participant.JID.User, "WhatsApp Contact", "whatsapp_group_sync")
+				if participant.JID.IsEmpty() || participant.JID.User == "" {
+					continue
 				}
+				phoneUser := participant.JID.User
+				if participant.JID.Server == types.HiddenUserServer && sess.client != nil && sess.client.Store != nil {
+					resCtx, resCancel := context.WithTimeout(context.Background(), 2*time.Second)
+					if alt, altErr := sess.client.Store.GetAltJID(resCtx, participant.JID); altErr == nil && alt.Server == types.DefaultUserServer && alt.User != "" {
+						phoneUser = alt.User
+						m.resolveAndMigrateLID(tenantID, participant.JID.User, phoneUser)
+					} else if sess.client.Store.LIDs != nil {
+						if pn2, lidErr := sess.client.Store.LIDs.GetPNForLID(resCtx, participant.JID); lidErr == nil && pn2.Server == types.DefaultUserServer && pn2.User != "" {
+							phoneUser = pn2.User
+							m.resolveAndMigrateLID(tenantID, participant.JID.User, phoneUser)
+						}
+					}
+					resCancel()
+				}
+				m.saveContact(tenantID, phoneUser, "WhatsApp Contact", "whatsapp_group_sync")
+				groupCount++
 			}
 		}
+		log.Printf("[WhatsAppManager] 👥 SyncContacts: imported %d group participants for tenant %s\n", groupCount, tenantID)
 	}
 
 	// 3. Query total count from DB for accurate feedback
 	var totalInDB int
 	_ = m.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM contacts WHERE tenant_id = $1 AND channel = 'whatsapp'`, tenantID).Scan(&totalInDB)
-	syncedCount = totalInDB
 
-	log.Printf("[WhatsAppManager] 📥 Synced %d WhatsApp contacts for tenant %s\n", syncedCount, tenantID)
-	return syncedCount, nil
+	log.Printf("[WhatsAppManager] 📥 SyncContacts complete: %d WhatsApp contacts in DB for tenant %s\n", totalInDB, tenantID)
+	return totalInDB, nil
 }
