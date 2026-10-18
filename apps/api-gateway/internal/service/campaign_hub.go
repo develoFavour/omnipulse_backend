@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"omnipulse/apps/api-gateway/internal/domain"
+	"omnipulse/apps/api-gateway/internal/utils"
 
 	"github.com/coder/websocket"
 )
@@ -45,7 +46,7 @@ func NewCampaignHub(repo domain.CampaignRepository) *CampaignHub {
 func (h *CampaignHub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	campaignID := r.PathValue("id")
 	if campaignID == "" {
-		http.Error(w, "missing campaign id", http.StatusBadRequest)
+		utils.WriteError(w, http.StatusBadRequest, "Missing campaign ID")
 		return
 	}
 

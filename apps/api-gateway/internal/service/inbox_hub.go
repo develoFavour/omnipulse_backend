@@ -10,6 +10,7 @@ import (
 
 	"omnipulse/apps/api-gateway/internal/ctxkeys"
 	"omnipulse/apps/api-gateway/internal/domain"
+	"omnipulse/apps/api-gateway/internal/utils"
 
 	"github.com/coder/websocket"
 )
@@ -47,7 +48,7 @@ func (h *InboxHub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if !ok || tenantID == "" {
 		tenantID = r.URL.Query().Get("tenant_id")
 		if tenantID == "" {
-			http.Error(w, "missing tenant context", http.StatusUnauthorized)
+			utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
 			return
 		}
 	}

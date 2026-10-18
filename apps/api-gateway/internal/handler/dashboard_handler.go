@@ -2,7 +2,6 @@ package handler
 
 import (
 	"encoding/csv"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -10,6 +9,7 @@ import (
 
 	"omnipulse/apps/api-gateway/internal/domain"
 	"omnipulse/apps/api-gateway/internal/usecase"
+	"omnipulse/apps/api-gateway/internal/utils"
 )
 
 type DashboardHandler struct {
@@ -24,24 +24,23 @@ func NewDashboardHandler(useCase *usecase.DashboardUseCase, subRepo domain.Subsc
 func (h *DashboardHandler) GetStats(w http.ResponseWriter, r *http.Request) {
 	tenantID, ok := r.Context().Value(TenantIDKey).(string)
 	if !ok || tenantID == "" {
-		http.Error(w, "Unauthorized: Missing Tenant ID", http.StatusUnauthorized)
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
 		return
 	}
 
 	stats, err := h.useCase.GetStats(r.Context(), tenantID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(stats)
+	utils.WriteJSON(w, http.StatusOK, stats)
 }
 
 func (h *DashboardHandler) ListDeliveries(w http.ResponseWriter, r *http.Request) {
 	tenantID, ok := r.Context().Value(TenantIDKey).(string)
 	if !ok || tenantID == "" {
-		http.Error(w, "Unauthorized: Missing Tenant ID", http.StatusUnauthorized)
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
 		return
 	}
 
@@ -59,7 +58,7 @@ func (h *DashboardHandler) ListDeliveries(w http.ResponseWriter, r *http.Request
 
 	deliveries, err := h.useCase.ListDeliveries(r.Context(), tenantID, limit, offset)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -67,15 +66,14 @@ func (h *DashboardHandler) ListDeliveries(w http.ResponseWriter, r *http.Request
 		deliveries = []domain.DashboardDeliveryActivity{}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(deliveries)
+	utils.WriteJSON(w, http.StatusOK, deliveries)
 }
 
 // ExportDeliveries handles: GET /api/v1/deliveries/export
 func (h *DashboardHandler) ExportDeliveries(w http.ResponseWriter, r *http.Request) {
 	tenantID, ok := r.Context().Value(TenantIDKey).(string)
 	if !ok || tenantID == "" {
-		http.Error(w, "Unauthorized: Missing Tenant ID", http.StatusUnauthorized)
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
 		return
 	}
 
@@ -83,7 +81,7 @@ func (h *DashboardHandler) ExportDeliveries(w http.ResponseWriter, r *http.Reque
 	if h.subRepo != nil {
 		sub, err := h.subRepo.GetByTenantID(r.Context(), tenantID)
 		if err == nil && sub != nil && sub.PlanTier == domain.PlanStarter {
-			http.Error(w, "CSV streaming exports require a Growth or Agency subscription plan.", http.StatusPaymentRequired)
+			utils.WriteError(w, http.StatusPaymentRequired, "CSV streaming exports require a Growth or Agency subscription plan.")
 			return
 		}
 	}
