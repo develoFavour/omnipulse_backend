@@ -162,34 +162,40 @@ func (u *IdentityUseCase) CreateWorkspace(ctx context.Context, userID, companyNa
 	if u.subRepo != nil {
 		workspaces, err := u.repo.ListUserWorkspaces(ctx, userID)
 		if err == nil && len(workspaces) > 0 {
-			var activeTenantID string
+			bestTier := domain.PlanStarter
+			ownedWorkspacesCount := 0
+
 			for _, ws := range workspaces {
-				if ws.IsActive {
-					activeTenantID = ws.ID
-					break
+				if strings.EqualFold(ws.Role, "owner") {
+					ownedWorkspacesCount++
+				}
+
+				sub, subErr := u.subRepo.GetByTenantID(ctx, ws.ID)
+				if subErr == nil && sub != nil {
+					if sub.PlanTier == domain.PlanAgency {
+						bestTier = domain.PlanAgency
+					} else if sub.PlanTier == domain.PlanGrowth && bestTier != domain.PlanAgency {
+						bestTier = domain.PlanGrowth
+					}
 				}
 			}
-			if activeTenantID == "" {
-				activeTenantID = workspaces[0].ID
-			}
 
-			sub, err := u.subRepo.GetByTenantID(ctx, activeTenantID)
 			maxWorkspaces := 1
-			planName := "Starter"
-			if err == nil && sub != nil {
-				planName = string(sub.PlanTier)
-				switch sub.PlanTier {
-				case domain.PlanAgency:
-					maxWorkspaces = -1
-				case domain.PlanGrowth:
-					maxWorkspaces = 3
-				default:
-					maxWorkspaces = 1
-				}
+			if planCfg, ok := domain.AvailablePlans[bestTier]; ok {
+				maxWorkspaces = planCfg.WorkspaceLimit
 			}
 
-			if maxWorkspaces != -1 && len(workspaces) >= maxWorkspaces {
-				return nil, fmt.Errorf("%w: workspace capacity limit of %d reached for %s tier. Upgrade to add more workspaces.", domain.ErrQuotaExceeded, maxWorkspaces, planName)
+			if maxWorkspaces != -1 && ownedWorkspacesCount >= maxWorkspaces {
+				targetTier := "Growth"
+				if bestTier == domain.PlanGrowth {
+					targetTier = "Agency"
+				}
+				planTitle := string(bestTier)
+				if len(planTitle) > 0 {
+					planTitle = strings.ToUpper(planTitle[:1]) + planTitle[1:]
+				}
+				return nil, fmt.Errorf("%w: workspace capacity limit of %d reached for %s tier (%d owned workspaces). Upgrade to %s to create more workspaces.",
+					domain.ErrQuotaExceeded, maxWorkspaces, planTitle, ownedWorkspacesCount, targetTier)
 			}
 		}
 	}

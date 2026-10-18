@@ -26,50 +26,54 @@ const (
 )
 
 type PlanConfig struct {
-	Tier         PlanTier `json:"tier"`
-	Name         string   `json:"name"`
-	USDMonthly   int      `json:"usd_monthly"`   // cents (e.g. 1400 = $14)
-	USDYearly    int      `json:"usd_yearly"`    // cents (e.g. 14000 = $140)
-	NGNMonthly   int      `json:"ngn_monthly"`   // kobo (e.g. 650000 = ₦6,500)
-	NGNYearly    int      `json:"ngn_yearly"`    // kobo (e.g. 6500000 = ₦65,000)
-	MessageLimit int      `json:"message_limit"` // -1 for unlimited
-	ContactLimit int      `json:"contact_limit"` // -1 for unlimited
-	ChannelLimit int      `json:"channel_limit"` // -1 for unlimited
+	Tier           PlanTier `json:"tier"`
+	Name           string   `json:"name"`
+	USDMonthly     int      `json:"usd_monthly"`     // cents (e.g. 1400 = $14)
+	USDYearly      int      `json:"usd_yearly"`      // cents (e.g. 14000 = $140)
+	NGNMonthly     int      `json:"ngn_monthly"`     // kobo (e.g. 650000 = ₦6,500)
+	NGNYearly      int      `json:"ngn_yearly"`      // kobo (e.g. 6500000 = ₦65,000)
+	MessageLimit   int      `json:"message_limit"`   // -1 for unlimited
+	ContactLimit   int      `json:"contact_limit"`   // -1 for unlimited
+	ChannelLimit   int      `json:"channel_limit"`   // -1 for unlimited
+	WorkspaceLimit int      `json:"workspace_limit"` // -1 for unlimited
 }
 
 var AvailablePlans = map[PlanTier]PlanConfig{
 	PlanStarter: {
-		Tier:         PlanStarter,
-		Name:         "Starter",
-		USDMonthly:   0,
-		USDYearly:    0,
-		NGNMonthly:   0,
-		NGNYearly:    0,
-		MessageLimit: 1000,
-		ContactLimit: 500,
-		ChannelLimit: 2,
+		Tier:           PlanStarter,
+		Name:           "Starter",
+		USDMonthly:     0,
+		USDYearly:      0,
+		NGNMonthly:     0,
+		NGNYearly:      0,
+		MessageLimit:   1000,
+		ContactLimit:   500,
+		ChannelLimit:   2,
+		WorkspaceLimit: 1,
 	},
 	PlanGrowth: {
-		Tier:         PlanGrowth,
-		Name:         "Growth",
-		USDMonthly:   1400,    // $14.00
-		USDYearly:    14000,   // $140.00
-		NGNMonthly:   650000,  // ₦6,500
-		NGNYearly:    6500000, // ₦65,000
-		MessageLimit: 25000,
-		ContactLimit: 5000,
-		ChannelLimit: -1,
+		Tier:           PlanGrowth,
+		Name:           "Growth",
+		USDMonthly:     1400,    // $14.00
+		USDYearly:      14000,   // $140.00
+		NGNMonthly:     650000,  // ₦6,500
+		NGNYearly:      6500000, // ₦65,000
+		MessageLimit:   25000,
+		ContactLimit:   5000,
+		ChannelLimit:   -1,
+		WorkspaceLimit: 3,
 	},
 	PlanAgency: {
-		Tier:         PlanAgency,
-		Name:         "Agency",
-		USDMonthly:   3400,     // $34.00
-		USDYearly:    34000,    // $340.00
-		NGNMonthly:   1750000,  // ₦17,500
-		NGNYearly:    17500000, // ₦175,000
-		MessageLimit: 100000,
-		ContactLimit: 25000,
-		ChannelLimit: -1,
+		Tier:           PlanAgency,
+		Name:           "Agency",
+		USDMonthly:     3400,     // $34.00
+		USDYearly:      34000,    // $340.00
+		NGNMonthly:     1750000,  // ₦17,500
+		NGNYearly:      17500000, // ₦175,000
+		MessageLimit:   100000,
+		ContactLimit:   25000,
+		ChannelLimit:   -1,
+		WorkspaceLimit: -1,
 	},
 }
 

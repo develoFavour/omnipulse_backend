@@ -346,7 +346,8 @@ func TestMessageQuota_Enforcement(t *testing.T) {
 
 type mockTeamIdentityRepo struct {
 	domain.IdentityRepository
-	members []domain.TenantMember
+	members    []domain.TenantMember
+	workspaces []domain.UserWorkspace
 }
 
 func (m *mockTeamIdentityRepo) ListMembers(ctx context.Context, tenantID string) ([]domain.TenantMember, error) {
@@ -452,6 +453,100 @@ func TestTeamPlanQuota_Enforcement(t *testing.T) {
 		err := uc.UpdateMemberRole(context.Background(), tenantID, "owner", "m2", "admin")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
+func (m *mockTeamIdentityRepo) ListUserWorkspaces(ctx context.Context, userID string) ([]domain.UserWorkspace, error) {
+	return m.workspaces, nil
+}
+
+func (m *mockTeamIdentityRepo) CreateWorkspace(ctx context.Context, userID, companyName string) (*domain.Tenant, error) {
+	return &domain.Tenant{ID: "new-ws-id", CompanyName: companyName}, nil
+}
+
+func TestWorkspaceQuota_Enforcement(t *testing.T) {
+	userID := "user-workspace-test"
+
+	t.Run("Rejects second workspace on Starter tier (1 workspace limit)", func(t *testing.T) {
+		subRepo := &mockSubscriptionRepo{
+			getByTenantIDFunc: func(ctx context.Context, tID string) (*domain.Subscription, error) {
+				return &domain.Subscription{TenantID: tID, PlanTier: domain.PlanStarter}, nil
+			},
+		}
+		repo := &mockTeamIdentityRepo{
+			workspaces: []domain.UserWorkspace{
+				{ID: "ws-1", Role: "owner", IsActive: true},
+			},
+		}
+		uc := NewIdentityUseCase(repo, nil, subRepo)
+
+		_, err := uc.CreateWorkspace(context.Background(), userID, "Brand New Workspace")
+		if err == nil {
+			t.Fatal("expected ErrQuotaExceeded, got nil")
+		}
+		if !errors.Is(err, domain.ErrQuotaExceeded) {
+			t.Fatalf("expected domain.ErrQuotaExceeded, got: %v", err)
+		}
+	})
+
+	t.Run("Allows up to 3 workspaces on Growth tier and rejects 4th", func(t *testing.T) {
+		subRepo := &mockSubscriptionRepo{
+			getByTenantIDFunc: func(ctx context.Context, tID string) (*domain.Subscription, error) {
+				return &domain.Subscription{TenantID: tID, PlanTier: domain.PlanGrowth}, nil
+			},
+		}
+
+		// Currently owns 2 workspaces on Growth plan -> can create 3rd
+		repo := &mockTeamIdentityRepo{
+			workspaces: []domain.UserWorkspace{
+				{ID: "ws-1", Role: "owner", IsActive: true},
+				{ID: "ws-2", Role: "owner", IsActive: false},
+			},
+		}
+		uc := NewIdentityUseCase(repo, nil, subRepo)
+
+		ws3, err := uc.CreateWorkspace(context.Background(), userID, "Third Workspace")
+		if err != nil {
+			t.Fatalf("unexpected error creating 3rd workspace: %v", err)
+		}
+		if ws3 == nil {
+			t.Fatal("expected created workspace, got nil")
+		}
+
+		// Now owns 3 workspaces on Growth plan -> creating 4th must be rejected
+		repo.workspaces = append(repo.workspaces, domain.UserWorkspace{ID: "ws-3", Role: "owner", IsActive: false})
+		_, err = uc.CreateWorkspace(context.Background(), userID, "Fourth Workspace")
+		if err == nil {
+			t.Fatal("expected ErrQuotaExceeded for 4th workspace on Growth, got nil")
+		}
+		if !errors.Is(err, domain.ErrQuotaExceeded) {
+			t.Fatalf("expected domain.ErrQuotaExceeded, got: %v", err)
+		}
+	})
+
+	t.Run("Allows unlimited workspaces on Agency tier", func(t *testing.T) {
+		subRepo := &mockSubscriptionRepo{
+			getByTenantIDFunc: func(ctx context.Context, tID string) (*domain.Subscription, error) {
+				return &domain.Subscription{TenantID: tID, PlanTier: domain.PlanAgency}, nil
+			},
+		}
+		repo := &mockTeamIdentityRepo{
+			workspaces: []domain.UserWorkspace{
+				{ID: "ws-1", Role: "owner", IsActive: true},
+				{ID: "ws-2", Role: "owner", IsActive: false},
+				{ID: "ws-3", Role: "owner", IsActive: false},
+				{ID: "ws-4", Role: "owner", IsActive: false},
+			},
+		}
+		uc := NewIdentityUseCase(repo, nil, subRepo)
+
+		ws5, err := uc.CreateWorkspace(context.Background(), userID, "Fifth Workspace")
+		if err != nil {
+			t.Fatalf("unexpected error for Agency plan: %v", err)
+		}
+		if ws5 == nil {
+			t.Fatal("expected created workspace, got nil")
 		}
 	})
 }
