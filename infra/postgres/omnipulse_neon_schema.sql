@@ -226,3 +226,43 @@ CREATE INDEX IF NOT EXISTS idx_subscriptions_tenant_id ON subscriptions(tenant_i
 CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON subscriptions(status);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_customer_id ON subscriptions(customer_id);
 
+-- 14. AI BUSINESS ASSISTANT (AUTONOMOUS CLIENT ENGAGEMENT)
+CREATE TABLE IF NOT EXISTS ai_agent_configs (
+    tenant_id UUID PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+    is_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    operational_mode VARCHAR(32) NOT NULL DEFAULT 'after_hours',
+    idle_timeout_seconds INT NOT NULL DEFAULT 180,
+    business_name VARCHAR(255) NOT NULL DEFAULT '',
+    business_summary TEXT NOT NULL DEFAULT '',
+    tone VARCHAR(64) NOT NULL DEFAULT 'professional',
+    language VARCHAR(32) NOT NULL DEFAULT 'en',
+    custom_system_prompt TEXT NOT NULL DEFAULT '',
+    business_hours_start TIME DEFAULT '09:00:00',
+    business_hours_end TIME DEFAULT '17:00:00',
+    timezone VARCHAR(64) NOT NULL DEFAULT 'Africa/Lagos',
+    work_days INT[] DEFAULT '{1,2,3,4,5}',
+    human_handoff_message TEXT NOT NULL DEFAULT 'I am transferring you to one of our human team members who will assist you shortly.',
+    unsupported_query_message TEXT NOT NULL DEFAULT 'I do not have that exact information right now, but I have alerted our team to follow up with you directly.',
+    confidence_threshold NUMERIC(3,2) NOT NULL DEFAULT 0.70,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS ai_knowledge_items (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    category VARCHAR(64) NOT NULL DEFAULT 'faq',
+    question_or_topic VARCHAR(500) NOT NULL,
+    answer_or_content TEXT NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_knowledge_tenant ON ai_knowledge_items(tenant_id, is_active);
+
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS ai_state VARCHAR(32) NOT NULL DEFAULT 'active';
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS ai_paused_until TIMESTAMP WITH TIME ZONE;
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS needs_human_attention BOOLEAN NOT NULL DEFAULT FALSE;
+
+

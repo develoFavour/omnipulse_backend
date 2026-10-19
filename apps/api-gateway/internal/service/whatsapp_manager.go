@@ -32,6 +32,8 @@ type WhatsAppManager struct {
 	encryptionKey string
 	inboxRepo     domain.InboxRepository
 	inboxHub      *InboxHub
+	aiEngine      *AIEngineService
+	aiAgentRepo   domain.AIAgentRepository
 	clients       sync.Map // map[string]*tenantSession (key: tenantID)
 	mu            sync.Mutex
 }
@@ -79,6 +81,18 @@ func (m *WhatsAppManager) SetInboxHub(hub *InboxHub) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.inboxHub = hub
+}
+
+func (m *WhatsAppManager) SetAIEngine(aiEngine *AIEngineService) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.aiEngine = aiEngine
+}
+
+func (m *WhatsAppManager) SetAIAgentRepo(repo domain.AIAgentRepository) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.aiAgentRepo = repo
 }
 
 func (m *WhatsAppManager) restoreExistingSessions() {
@@ -700,6 +714,10 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 						if m.inboxHub != nil {
 							m.inboxHub.BroadcastMessage(tenantID, conv, newMsg)
 						}
+						// Autonomous AI Business Assistant: handle inbound customer inquiries asynchronously
+						if direction == domain.MessageDirectionInbound && text != "" {
+							go m.handleAIAutoResponse(tenantID, conv, contactPhone, text)
+						}
 						log.Printf("[WhatsAppManager] 💬 Synced %s message for tenant %s with %s (conv %s, media=%v): %q\n", direction, tenantID, contactPhone, conv.ID, mediaType != nil, text)
 					} else {
 						log.Printf("[WhatsAppManager] ⚠️ Failed to create/find conversation for contact %s: %v\n", contactID, cErr)
@@ -1288,4 +1306,94 @@ func (m *WhatsAppManager) SyncContacts(ctx context.Context, tenantID string, con
 
 	log.Printf("[WhatsAppManager] 📥 SyncContacts complete: %d WhatsApp contacts in DB for tenant %s\n", totalInDB, tenantID)
 	return totalInDB, nil
+}
+
+func (m *WhatsAppManager) handleAIAutoResponse(tenantID string, conv *domain.Conversation, contactPhone, incomingText string) {
+	if m.aiEngine == nil || m.aiAgentRepo == nil || !m.aiEngine.HasActiveProvider() {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// 1. Check AI master toggle and configuration for tenant
+	cfg, err := m.aiAgentRepo.GetConfig(ctx, tenantID)
+	if err != nil || cfg == nil || !cfg.IsEnabled {
+		return
+	}
+
+	// 2. Check conversation-level AI state (e.g. human agent paused it)
+	aiState, pausedUntil, _, err := m.aiAgentRepo.GetConversationAIState(ctx, tenantID, conv.ID)
+	if err == nil {
+		if aiState == "paused_by_human" {
+			if pausedUntil != nil && time.Now().Before(*pausedUntil) {
+				log.Printf("[WhatsAppManager/AI] ⏸️ Skipping AI reply for conv %s: paused by agent until %v\n", conv.ID, pausedUntil)
+				return
+			}
+			// Resume automatically after pause period ends
+			_ = m.aiAgentRepo.SetConversationAIState(ctx, tenantID, conv.ID, "active", nil, false)
+		} else if aiState == "disabled" {
+			return
+		}
+	}
+
+	// 3. Verify operational mode (always_on vs after_hours)
+	if !m.aiEngine.ShouldRespond(cfg) {
+		log.Printf("[WhatsAppManager/AI] ⏳ AI reply skipped for tenant %s: current time is within business hours / agent shift\n", tenantID)
+		return
+	}
+
+	// 4. Fetch business knowledge items
+	knowledge, _ := m.aiAgentRepo.ListKnowledgeItems(ctx, tenantID)
+
+	// 5. Fetch recent conversation history (last 6 messages) for context
+	recentMsgs, _ := m.inboxRepo.ListMessages(ctx, tenantID, conv.ID, 6, 0)
+	// Reverse to chronological order
+	for i, j := 0, len(recentMsgs)-1; i < j; i, j = i+1, j-1 {
+		recentMsgs[i], recentMsgs[j] = recentMsgs[j], recentMsgs[i]
+	}
+
+	// 6. Generate reply with dual-engine fallback (Gemini -> Groq)
+	replyText, needsHuman, err := m.aiEngine.GenerateReply(ctx, cfg, knowledge, recentMsgs, incomingText)
+	if err != nil {
+		log.Printf("[WhatsAppManager/AI] ⚠️ Failed to generate AI reply for tenant %s: %v\n", tenantID, err)
+		return
+	}
+
+	if strings.TrimSpace(replyText) == "" {
+		return
+	}
+
+	// 7. Dispatch reply to customer via WhatsApp
+	msgID, err := m.SendMessage(ctx, tenantID, contactPhone, replyText, nil)
+	if err != nil {
+		log.Printf("[WhatsAppManager/AI] ❌ Failed to dispatch WhatsApp message to %s: %v\n", contactPhone, err)
+		return
+	}
+
+	// 8. Persist the reply with sender_type = "bot"
+	botMsg := &domain.Message{
+		TenantID:          tenantID,
+		ConversationID:    conv.ID,
+		Direction:         domain.MessageDirectionOutbound,
+		SenderType:        domain.MessageSenderTypeBot,
+		Body:              replyText,
+		PlatformMessageID: &msgID,
+		Status:            "delivered",
+		CreatedAt:         time.Now().UTC(),
+	}
+	_ = m.inboxRepo.CreateMessage(ctx, botMsg)
+
+	// 9. If customer asked for human assistance, flag the conversation
+	if needsHuman {
+		_ = m.aiAgentRepo.SetConversationAIState(ctx, tenantID, conv.ID, "escalated", nil, true)
+	}
+
+	// 10. Broadcast the bot message to the Team Inbox live via WebSocket!
+	if m.inboxHub != nil {
+		m.inboxHub.BroadcastMessage(tenantID, conv, botMsg)
+	}
+
+	log.Printf("[WhatsAppManager/AI] 🤖 Successfully sent AI bot reply to %s for tenant %s (conv: %s, needsHuman: %v)\n",
+		contactPhone, tenantID, conv.ID, needsHuman)
 }

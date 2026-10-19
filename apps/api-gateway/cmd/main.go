@@ -312,6 +312,50 @@ func main() {
 		logger.Println("[DB-MIGRATE] Successfully ensured subscriptions table and indexes exist.")
 	}
 
+	// Idempotent schema migrations: AI Business Assistant
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS ai_agent_configs (
+			tenant_id UUID PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+			is_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+			operational_mode VARCHAR(32) NOT NULL DEFAULT 'after_hours',
+			idle_timeout_seconds INT NOT NULL DEFAULT 180,
+			business_name VARCHAR(255) NOT NULL DEFAULT '',
+			business_summary TEXT NOT NULL DEFAULT '',
+			tone VARCHAR(64) NOT NULL DEFAULT 'professional',
+			language VARCHAR(32) NOT NULL DEFAULT 'en',
+			custom_system_prompt TEXT NOT NULL DEFAULT '',
+			business_hours_start TIME DEFAULT '09:00:00',
+			business_hours_end TIME DEFAULT '17:00:00',
+			timezone VARCHAR(64) NOT NULL DEFAULT 'Africa/Lagos',
+			work_days INT[] DEFAULT '{1,2,3,4,5}',
+			human_handoff_message TEXT NOT NULL DEFAULT 'I am transferring you to one of our human team members who will assist you shortly.',
+			unsupported_query_message TEXT NOT NULL DEFAULT 'I do not have that exact information right now, but I have alerted our team to follow up with you directly.',
+			confidence_threshold NUMERIC(3,2) NOT NULL DEFAULT 0.70,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+		);
+
+		CREATE TABLE IF NOT EXISTS ai_knowledge_items (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+			category VARCHAR(64) NOT NULL DEFAULT 'faq',
+			question_or_topic VARCHAR(500) NOT NULL,
+			answer_or_content TEXT NOT NULL,
+			is_active BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE INDEX IF NOT EXISTS idx_ai_knowledge_tenant ON ai_knowledge_items(tenant_id, is_active);
+
+		ALTER TABLE conversations ADD COLUMN IF NOT EXISTS ai_state VARCHAR(32) NOT NULL DEFAULT 'active';
+		ALTER TABLE conversations ADD COLUMN IF NOT EXISTS ai_paused_until TIMESTAMP WITH TIME ZONE;
+		ALTER TABLE conversations ADD COLUMN IF NOT EXISTS needs_human_attention BOOLEAN NOT NULL DEFAULT FALSE;
+	`); err != nil {
+		logger.Printf("[DB-MIGRATE] AI Business Assistant table migration: %v\n", err)
+	} else {
+		logger.Println("[DB-MIGRATE] Successfully ensured AI Business Assistant tables and conversation columns exist.")
+	}
+
 	// 2. Initialize NATS JetStream Event Broker Adapter
 	natsPublisher, err := event.NewJetStreamPublisher(cfg.NatsURL, cfg.NatsCreds)
 	if err != nil {
@@ -328,6 +372,7 @@ func main() {
 	destinationRepo := repository.NewPostgresTelegramDestinationRepository(db)
 	tagRepo := repository.NewPostgresTagRepository(db)
 	templateRepo := repository.NewPostgresTemplateRepository(db)
+	aiAgentRepo := repository.NewPostgresAIAgentRepository(db)
 	notificationRepo := repository.NewPostgresNotificationRepository(db)
 	analyticsRepo := repository.NewPostgresAnalyticsRepository(db)
 	inboxRepo := repository.NewPostgresInboxRepository(db)
@@ -358,6 +403,14 @@ func main() {
 	paystackSvc := service.NewPaystackService(cfg.PaystackSecretKey, cfg.PaystackPublicKey)
 	billingUseCase := usecase.NewBillingUseCase(subRepo, stripeSvc, paystackSvc, cfg.PublicAppBaseURL)
 	billingHandler := handler.NewBillingHandler(billingUseCase)
+	aiAgentHandler := handler.NewAIAgentHandler(aiAgentRepo)
+
+	aiEngine := service.NewAIEngineService(cfg.GeminiAPIKey, cfg.GroqAPIKey)
+	if aiEngine.HasActiveProvider() {
+		logger.Printf("[AI-ENGINE] 🤖 Dual-engine AI Business Assistant initialized (Gemini: %v, Groq: %v)\n", cfg.GeminiAPIKey != "", cfg.GroqAPIKey != "")
+	} else {
+		logger.Println("[AI-ENGINE] ℹ️ Dual-engine AI Business Assistant standing by (set GEMINI_API_KEY or GROQ_API_KEY to activate)")
+	}
 
 	var waManager *service.WhatsAppManager
 	var waErr error
@@ -367,6 +420,8 @@ func main() {
 	} else {
 		logger.Println("Successfully initialized WhatsApp Multi-Device session manager.")
 		waManager.SetInboxRepo(inboxRepo)
+		waManager.SetAIEngine(aiEngine)
+		waManager.SetAIAgentRepo(aiAgentRepo)
 	}
 
 	channelHandler := handler.NewChannelHandler(channelRepo, contactRepo, subRepo, cfg.PublicAPIBaseURL, cfg.PublicAppBaseURL, handler.MetaAppConfig{
@@ -377,9 +432,13 @@ func main() {
 		PhoneNumberID: cfg.MetaPhoneNumberID,
 	}, waManager)
 	webhookHandler := handler.NewWebhookHandler(contactUseCase, channelRepo, destinationRepo, inboxRepo, cfg.MetaAppSecret, cfg.TelegramWebhookSecret)
+	webhookHandler.SetAIEngine(aiEngine)
+	webhookHandler.SetAIAgentRepo(aiAgentRepo)
+
 	dashboardHandler := handler.NewDashboardHandler(dashboardUseCase, subRepo)
 	destinationHandler := handler.NewTelegramDestinationHandler(destinationRepo)
 	inboxUseCase := usecase.NewInboxUseCase(inboxRepo, contactRepo, channelRepo, waManager)
+	inboxUseCase.SetAIAgentRepo(aiAgentRepo)
 	inboxHandler := handler.NewInboxHandler(inboxUseCase)
 
 	inboxHub := service.NewInboxHub()
@@ -638,6 +697,15 @@ func main() {
 	mux.HandleFunc("PATCH /api/v1/inbox/messages/{msgID}", inboxHandler.EditMessage)
 	mux.HandleFunc("DELETE /api/v1/inbox/messages/{msgID}", inboxHandler.DeleteMessage)
 	mux.HandleFunc("GET /api/v1/ws/inbox", inboxHub.HandleWebSocket)
+
+	// AI Business Assistant Subsystem Endpoints
+	mux.HandleFunc("GET /api/v1/ai-agent/config", aiAgentHandler.GetConfig)
+	mux.Handle("PUT /api/v1/ai-agent/config", handler.RequireRole("owner", "admin")(http.HandlerFunc(aiAgentHandler.SaveConfig)))
+	mux.HandleFunc("GET /api/v1/ai-agent/knowledge", aiAgentHandler.ListKnowledgeItems)
+	mux.Handle("POST /api/v1/ai-agent/knowledge", handler.RequireRole("owner", "admin")(http.HandlerFunc(aiAgentHandler.CreateKnowledgeItem)))
+	mux.Handle("PUT /api/v1/ai-agent/knowledge/{id}", handler.RequireRole("owner", "admin")(http.HandlerFunc(aiAgentHandler.UpdateKnowledgeItem)))
+	mux.Handle("DELETE /api/v1/ai-agent/knowledge/{id}", handler.RequireRole("owner", "admin")(http.HandlerFunc(aiAgentHandler.DeleteKnowledgeItem)))
+	mux.HandleFunc("POST /api/v1/ai-agent/conversations/{id}/toggle", aiAgentHandler.ToggleConversationAI)
 
 	// Webhook Subsystem Endpoints (Inbound Event Flywheel)
 	mux.HandleFunc("POST /api/v1/webhooks/telegram/{tenant_id}", webhookHandler.HandleTelegram)

@@ -82,7 +82,9 @@ func (r *PostgresInboxRepository) ListConversations(ctx context.Context, tenantI
 	query := fmt.Sprintf(`
 		SELECT 
 			c.id, c.tenant_id, c.contact_id, c.channel, c.status, c.assigned_to, 
-			c.last_message_text, c.last_message_at, c.unread_count, c.created_at, c.updated_at,
+			c.last_message_text, c.last_message_at, c.unread_count, 
+			COALESCE(c.ai_state, 'active'), c.ai_paused_until, COALESCE(c.needs_human_attention, false),
+			c.created_at, c.updated_at,
 			ct.first_name, ct.last_name, ct.channel, ct.routing_value, ct.status,
 			u.id, u.email, u.role
 		FROM conversations c
@@ -110,7 +112,9 @@ func (r *PostgresInboxRepository) ListConversations(ctx context.Context, tenantI
 
 		err := rows.Scan(
 			&conv.ID, &conv.TenantID, &conv.ContactID, &conv.Channel, &conv.Status, &conv.AssignedTo,
-			&conv.LastMessageText, &conv.LastMessageAt, &conv.UnreadCount, &conv.CreatedAt, &conv.UpdatedAt,
+			&conv.LastMessageText, &conv.LastMessageAt, &conv.UnreadCount,
+			&conv.AIState, &conv.AIPausedUntil, &conv.NeedsHuman,
+			&conv.CreatedAt, &conv.UpdatedAt,
 			&contact.FirstName, &ctLastName, &contact.Channel, &contact.RoutingValue, &contact.Status,
 			&uID, &uEmail, &uRole,
 		)
@@ -143,7 +147,9 @@ func (r *PostgresInboxRepository) GetConversation(ctx context.Context, tenantID,
 	query := `
 		SELECT 
 			c.id, c.tenant_id, c.contact_id, c.channel, c.status, c.assigned_to, 
-			c.last_message_text, c.last_message_at, c.unread_count, c.created_at, c.updated_at,
+			c.last_message_text, c.last_message_at, c.unread_count,
+			COALESCE(c.ai_state, 'active'), c.ai_paused_until, COALESCE(c.needs_human_attention, false),
+			c.created_at, c.updated_at,
 			ct.first_name, ct.last_name, ct.channel, ct.routing_value, ct.status,
 			u.id, u.email, u.role
 		FROM conversations c
@@ -159,7 +165,9 @@ func (r *PostgresInboxRepository) GetConversation(ctx context.Context, tenantID,
 
 	err := r.db.QueryRowContext(ctx, query, conversationID, tenantID).Scan(
 		&conv.ID, &conv.TenantID, &conv.ContactID, &conv.Channel, &conv.Status, &conv.AssignedTo,
-		&conv.LastMessageText, &conv.LastMessageAt, &conv.UnreadCount, &conv.CreatedAt, &conv.UpdatedAt,
+		&conv.LastMessageText, &conv.LastMessageAt, &conv.UnreadCount,
+		&conv.AIState, &conv.AIPausedUntil, &conv.NeedsHuman,
+		&conv.CreatedAt, &conv.UpdatedAt,
 		&contact.FirstName, &ctLastName, &contact.Channel, &contact.RoutingValue, &contact.Status,
 		&uID, &uEmail, &uRole,
 	)
@@ -194,13 +202,16 @@ func (r *PostgresInboxRepository) GetOrCreateConversation(ctx context.Context, t
 		VALUES ($1, $2, $3, 'open', NOW())
 		ON CONFLICT (tenant_id, contact_id, channel) DO UPDATE
 		SET updated_at = NOW()
-		RETURNING id, tenant_id, contact_id, channel, status, assigned_to, last_message_text, last_message_at, unread_count, created_at, updated_at;
+		RETURNING id, tenant_id, contact_id, channel, status, assigned_to, last_message_text, last_message_at, unread_count, 
+		          COALESCE(ai_state, 'active'), ai_paused_until, COALESCE(needs_human_attention, false), created_at, updated_at;
 	`
 
 	var conv domain.Conversation
 	err := r.db.QueryRowContext(ctx, query, tenantID, contactID, channel).Scan(
 		&conv.ID, &conv.TenantID, &conv.ContactID, &conv.Channel, &conv.Status, &conv.AssignedTo,
-		&conv.LastMessageText, &conv.LastMessageAt, &conv.UnreadCount, &conv.CreatedAt, &conv.UpdatedAt,
+		&conv.LastMessageText, &conv.LastMessageAt, &conv.UnreadCount,
+		&conv.AIState, &conv.AIPausedUntil, &conv.NeedsHuman,
+		&conv.CreatedAt, &conv.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get or create conversation: %w", err)

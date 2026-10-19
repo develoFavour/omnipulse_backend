@@ -25,6 +25,7 @@ type InboxUseCase interface {
 	EditMessage(ctx context.Context, tenantID, messageID, newBody string) (*domain.Message, error)
 	DeleteMessage(ctx context.Context, tenantID, messageID string) error
 	SetBroadcaster(b domain.InboxBroadcaster)
+	SetAIAgentRepo(repo domain.AIAgentRepository)
 }
 
 type inboxUseCase struct {
@@ -33,10 +34,15 @@ type inboxUseCase struct {
 	channelRepo domain.ChannelRepository
 	waManager   *service.WhatsAppManager
 	broadcaster domain.InboxBroadcaster
+	aiAgentRepo domain.AIAgentRepository
 }
 
 func (u *inboxUseCase) SetBroadcaster(b domain.InboxBroadcaster) {
 	u.broadcaster = b
+}
+
+func (u *inboxUseCase) SetAIAgentRepo(repo domain.AIAgentRepository) {
+	u.aiAgentRepo = repo
 }
 
 func NewInboxUseCase(
@@ -255,6 +261,13 @@ func (u *inboxUseCase) SendReply(ctx context.Context, tenantID, userID, conversa
 
 	if err := u.inboxRepo.CreateMessage(ctx, msg); err != nil {
 		return nil, fmt.Errorf("message was sent to recipient but failed to record in database: %w", err)
+	}
+
+	// Autonomous AI Handoff: When a human agent manually replies from the inbox,
+	// automatically pause the AI for 30 minutes so it does not speak over the agent.
+	if u.aiAgentRepo != nil {
+		pausedUntil := time.Now().Add(30 * time.Minute)
+		_ = u.aiAgentRepo.SetConversationAIState(ctx, tenantID, conversationID, "paused_by_human", &pausedUntil, false)
 	}
 
 	if u.broadcaster != nil {

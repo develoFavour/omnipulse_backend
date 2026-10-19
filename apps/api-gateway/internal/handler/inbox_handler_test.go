@@ -90,7 +90,8 @@ func (m *mockInboxUseCase) DeleteMessage(ctx context.Context, tenantID, messageI
 	return nil
 }
 
-func (m *mockInboxUseCase) SetBroadcaster(b domain.InboxBroadcaster) {}
+func (m *mockInboxUseCase) SetBroadcaster(b domain.InboxBroadcaster)     {}
+func (m *mockInboxUseCase) SetAIAgentRepo(repo domain.AIAgentRepository) {}
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 

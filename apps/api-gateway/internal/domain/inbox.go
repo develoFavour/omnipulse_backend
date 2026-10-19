@@ -39,6 +39,9 @@ type Conversation struct {
 	LastMessageText *string            `json:"last_message_text,omitempty"`
 	LastMessageAt   time.Time          `json:"last_message_at"`
 	UnreadCount     int                `json:"unread_count"`
+	AIState         string             `json:"ai_state"` // "active", "paused_by_human", "escalated", "disabled"
+	AIPausedUntil   *time.Time         `json:"ai_paused_until,omitempty"`
+	NeedsHuman      bool               `json:"needs_human_attention"`
 	CreatedAt       time.Time          `json:"created_at"`
 	UpdatedAt       time.Time          `json:"updated_at"`
 

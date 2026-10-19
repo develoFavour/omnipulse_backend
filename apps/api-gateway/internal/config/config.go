@@ -46,6 +46,10 @@ type Config struct {
 	// Security & Encryption
 	EncryptionKey         string
 	TelegramWebhookSecret string
+
+	// AI Business Assistant Providers (Free Dual-Engine)
+	GeminiAPIKey string
+	GroqAPIKey   string
 }
 
 // Load reads values from the OS environment variables or supplies secure defaults
@@ -86,6 +90,8 @@ func Load() *Config {
 		PaystackPublicKey:     getEnv("PAYSTACK_PUBLIC_KEY", ""),
 		EncryptionKey:         getEnv("ENCRYPTION_KEY", ""),
 		TelegramWebhookSecret: getEnv("TELEGRAM_WEBHOOK_SECRET", ""),
+		GeminiAPIKey:          getEnv("GEMINI_API_KEY", ""),
+		GroqAPIKey:            getEnv("GROQ_API_KEY", ""),
 	}
 }
 
