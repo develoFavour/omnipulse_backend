@@ -19,6 +19,7 @@ type AIAgentHandler struct {
 	repo                domain.AIAgentRepository
 	aiEngine            *service.AIEngineService
 	knowledgeDispatcher service.KnowledgeIngestionDispatcher
+	inboxHub            *service.InboxHub
 }
 
 func NewAIAgentHandler(repo domain.AIAgentRepository) *AIAgentHandler {
@@ -31,6 +32,10 @@ func (h *AIAgentHandler) SetAIEngine(aiEngine *service.AIEngineService) {
 
 func (h *AIAgentHandler) SetKnowledgeIngestionDispatcher(dispatcher service.KnowledgeIngestionDispatcher) {
 	h.knowledgeDispatcher = dispatcher
+}
+
+func (h *AIAgentHandler) SetInboxHub(hub *service.InboxHub) {
+	h.inboxHub = hub
 }
 
 // GetConfig handles GET /api/v1/ai-agent/config
@@ -269,6 +274,9 @@ func (h *AIAgentHandler) ToggleConversationAI(w http.ResponseWriter, r *http.Req
 	if err := h.repo.SetConversationAIState(r.Context(), tenantID, conversationID, req.AIState, pausedUntil, needsHuman); err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if h.inboxHub != nil {
+		h.inboxHub.BroadcastConversationAIState(tenantID, conversationID, req.AIState, pausedUntil, needsHuman)
 	}
 
 	utils.WriteJSON(w, http.StatusOK, map[string]interface{}{

@@ -268,6 +268,9 @@ func (u *inboxUseCase) SendReply(ctx context.Context, tenantID, userID, conversa
 	if u.aiAgentRepo != nil {
 		pausedUntil := time.Now().Add(30 * time.Minute)
 		_ = u.aiAgentRepo.SetConversationAIState(ctx, tenantID, conversationID, "paused_by_human", &pausedUntil, false)
+		if u.broadcaster != nil {
+			u.broadcaster.BroadcastConversationAIState(tenantID, conversationID, "paused_by_human", &pausedUntil, false)
+		}
 	}
 
 	if u.broadcaster != nil {

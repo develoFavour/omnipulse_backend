@@ -45,6 +45,10 @@ func (r *PostgresInboxRepository) ListConversations(ctx context.Context, tenantI
 		argIdx++
 	}
 
+	if filter.NeedsHuman {
+		conditions = append(conditions, "COALESCE(c.needs_human_attention, false) = true")
+	}
+
 	if filter.Search != "" {
 		searchPattern := "%" + strings.ToLower(filter.Search) + "%"
 		conditions = append(conditions, fmt.Sprintf(

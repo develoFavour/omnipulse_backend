@@ -159,6 +159,52 @@ func (h *InboxHub) BroadcastMessage(tenantID string, conv *domain.Conversation, 
 	h.mu.RUnlock()
 }
 
+// BroadcastConversationAIState keeps Inbox controls and escalation filters in sync
+// across all open dashboard tabs for the tenant.
+func (h *InboxHub) BroadcastConversationAIState(tenantID, conversationID, aiState string, pausedUntil *time.Time, needsHuman bool) {
+	if h == nil {
+		return
+	}
+	h.mu.RLock()
+	clients, ok := h.subscribers[tenantID]
+	if !ok || len(clients) == 0 {
+		h.mu.RUnlock()
+		return
+	}
+
+	evt := struct {
+		Type           string     `json:"type"`
+		TenantID       string     `json:"tenant_id"`
+		ConversationID string     `json:"conversation_id"`
+		AIState        string     `json:"ai_state"`
+		AIPausedUntil  *time.Time `json:"ai_paused_until,omitempty"`
+		NeedsHuman     bool       `json:"needs_human_attention"`
+		Timestamp      string     `json:"timestamp"`
+	}{
+		Type:           "CONVERSATION_AI_UPDATED",
+		TenantID:       tenantID,
+		ConversationID: conversationID,
+		AIState:        aiState,
+		AIPausedUntil:  pausedUntil,
+		NeedsHuman:     needsHuman,
+		Timestamp:      time.Now().UTC().Format(time.RFC3339),
+	}
+
+	payload, err := json.Marshal(evt)
+	if err != nil {
+		h.mu.RUnlock()
+		return
+	}
+	for client := range clients {
+		select {
+		case client.send <- payload:
+		default:
+			log.Printf("[INBOX-WS] Buffer full for tenant %s client, dropping CONVERSATION_AI_UPDATED frame\n", tenantID)
+		}
+	}
+	h.mu.RUnlock()
+}
+
 // BroadcastStatusUpdate pushes a STATUS_UPDATE event to all connected clients of a tenant.
 // The frontend uses this to update the message tick (sent → delivered → read) in real time.
 func (h *InboxHub) BroadcastStatusUpdate(tenantID, conversationID, messageID, status string) {

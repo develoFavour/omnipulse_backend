@@ -1438,6 +1438,9 @@ func (m *WhatsAppManager) handleAIAutoResponse(tenantID string, conv *domain.Con
 	// 9. If customer asked for human assistance, flag the conversation
 	if needsHuman {
 		_ = m.aiAgentRepo.SetConversationAIState(ctx, tenantID, conv.ID, "escalated", nil, true)
+		if m.inboxHub != nil {
+			m.inboxHub.BroadcastConversationAIState(tenantID, conv.ID, "escalated", nil, true)
+		}
 	}
 
 	// 10. Broadcast the bot message to the Team Inbox live via WebSocket!

@@ -34,6 +34,7 @@ func (h *InboxHandler) ListConversations(w http.ResponseWriter, r *http.Request)
 		Status:     query.Get("status"),
 		Search:     query.Get("search"),
 		AssignedTo: query.Get("assigned_to"),
+		NeedsHuman: query.Get("needs_attention") == "true",
 		Limit:      limit,
 		Offset:     offset,
 	}

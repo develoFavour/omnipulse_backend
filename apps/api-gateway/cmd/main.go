@@ -506,6 +506,7 @@ func main() {
 	inboxHandler := handler.NewInboxHandler(inboxUseCase)
 
 	inboxHub := service.NewInboxHub()
+	aiAgentHandler.SetInboxHub(inboxHub)
 	if waManager != nil {
 		waManager.SetInboxHub(inboxHub)
 	}

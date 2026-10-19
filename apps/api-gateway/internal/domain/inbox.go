@@ -73,6 +73,7 @@ type ConversationFilter struct {
 	Status     string // "open", "closed", "waiting", "all"
 	Search     string // search by contact name or message body
 	AssignedTo string // filter by assigned user ID
+	NeedsHuman bool   // only conversations awaiting human attention
 	Limit      int
 	Offset     int
 }
@@ -99,6 +100,7 @@ type SendReplyRequest struct {
 
 type InboxBroadcaster interface {
 	BroadcastMessage(tenantID string, conv *Conversation, msg *Message)
+	BroadcastConversationAIState(tenantID, conversationID, aiState string, pausedUntil *time.Time, needsHuman bool)
 	BroadcastStatusUpdate(tenantID, conversationID, messageID, status string)
 	BroadcastMessageEdit(tenantID, conversationID, messageID, newBody string)
 	BroadcastMessageDelete(tenantID, conversationID, messageID string)

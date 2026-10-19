@@ -581,6 +581,9 @@ func (h *WebhookHandler) handleTelegramAIResponse(tenantID string, conv *domain.
 	// 8. Update conversation state if escalated
 	if needsHuman {
 		_ = h.aiAgentRepo.SetConversationAIState(ctx, tenantID, conv.ID, "escalated", nil, true)
+		if h.broadcaster != nil {
+			h.broadcaster.BroadcastConversationAIState(tenantID, conv.ID, "escalated", nil, true)
+		}
 	}
 
 	// 9. Broadcast bot reply to Team Inbox
