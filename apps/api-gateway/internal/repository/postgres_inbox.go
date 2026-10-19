@@ -3,10 +3,12 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/lib/pq"
 	"omnipulse/apps/api-gateway/internal/domain"
 )
 
@@ -326,7 +328,7 @@ func (r *PostgresInboxRepository) CreateMessage(ctx context.Context, msg *domain
 		`, msg.TenantID, *msg.PlatformMessageID).Scan(&existingID)
 		if lookupErr == nil {
 			msg.ID = existingID
-			return nil
+			return domain.ErrMessageAlreadyExists
 		}
 		if lookupErr != sql.ErrNoRows {
 			return fmt.Errorf("failed to check for duplicate platform message: %w", lookupErr)
@@ -348,6 +350,10 @@ func (r *PostgresInboxRepository) CreateMessage(ctx context.Context, msg *domain
 	).Scan(&msg.ID)
 
 	if err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+			return domain.ErrMessageAlreadyExists
+		}
 		return fmt.Errorf("failed to insert message: %w", err)
 	}
 

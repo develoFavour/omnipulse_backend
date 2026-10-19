@@ -2,8 +2,11 @@ package domain
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+var ErrMessageAlreadyExists = errors.New("message already exists")
 
 type ConversationStatus string
 

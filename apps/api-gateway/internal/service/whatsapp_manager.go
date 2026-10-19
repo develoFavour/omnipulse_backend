@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -728,9 +729,15 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 							PlatformMessageID: &msgID,
 							Status:            initialStatus,
 						}
+						messageCreated := false
 						if err := m.inboxRepo.CreateMessage(ctx, newMsg); err != nil {
-							log.Printf("[WhatsAppManager/Inbox] Failed to persist %s message for tenant %s (conversation=%s, platform_id=%s): %v", direction, tenantID, conv.ID, msgID, err)
+							if errors.Is(err, domain.ErrMessageAlreadyExists) {
+								log.Printf("[WhatsAppManager/Inbox] Ignored duplicate %s platform message for tenant %s (conversation=%s, platform_id=%s)", direction, tenantID, conv.ID, msgID)
+							} else {
+								log.Printf("[WhatsAppManager/Inbox] Failed to persist %s message for tenant %s (conversation=%s, platform_id=%s): %v", direction, tenantID, conv.ID, msgID, err)
+							}
 						} else {
+							messageCreated = true
 							log.Printf("[WhatsAppManager/Inbox] Persisted %s message id=%s for tenant %s conversation=%s", direction, newMsg.ID, tenantID, conv.ID)
 							if m.inboxHub != nil {
 								m.inboxHub.BroadcastMessage(tenantID, conv, newMsg)
@@ -740,7 +747,7 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 							}
 						}
 						// Autonomous AI Business Assistant: handle inbound customer inquiries asynchronously
-						if direction == domain.MessageDirectionInbound && text != "" {
+						if messageCreated && direction == domain.MessageDirectionInbound && text != "" {
 							job := AIReplyJob{
 								TenantID: tenantID, ConversationID: conv.ID, Channel: "whatsapp",
 								Recipient: contactPhone, IncomingText: text, PlatformID: msgID,
@@ -754,7 +761,9 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 								go m.handleAIAutoResponse(tenantID, conv, contactPhone, text)
 							}
 						}
-						log.Printf("[WhatsAppManager] 💬 Synced %s message for tenant %s with %s (conv %s, media=%v): %q\n", direction, tenantID, contactPhone, conv.ID, mediaType != nil, text)
+						if messageCreated {
+							log.Printf("[WhatsAppManager] 💬 Synced %s message for tenant %s with %s (conv %s, media=%v): %q", direction, tenantID, contactPhone, conv.ID, mediaType != nil, text)
+						}
 					} else {
 						log.Printf("[WhatsAppManager] ⚠️ Failed to create/find conversation for contact %s: %v\n", contactID, cErr)
 					}
