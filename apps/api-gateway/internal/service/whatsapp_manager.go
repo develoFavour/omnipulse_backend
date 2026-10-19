@@ -153,7 +153,7 @@ func (m *WhatsAppManager) restoreExistingSessions() {
 	}
 
 	rows, err := m.db.Query(
-		`SELECT tenant_id, sender_identity, account_identity, encrypted_credentials, status FROM tenant_channels WHERE platform_name = 'whatsapp' AND status = 'active'`,
+		`SELECT tenant_id, sender_identity, COALESCE(account_identity, ''), encrypted_credentials, status FROM tenant_channels WHERE platform_name = 'whatsapp' AND status = 'active'`,
 	)
 	if err != nil {
 		log.Printf("[WhatsAppManager] Warning: failed to query tenant_channels: %v\n", err)

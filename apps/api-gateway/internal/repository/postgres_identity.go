@@ -420,8 +420,19 @@ func (r *PostgresIdentityRepository) AcceptInvitation(ctx context.Context, token
 		return nil, fmt.Errorf("failed to add member to workspace: %w", err)
 	}
 
-	// 3. Update user's active tenant to this workspace
-	_, _ = tx.ExecContext(ctx, `UPDATE users SET tenant_id = $1::uuid, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, inv.TenantID, userID)
+	// 3. Update the user's active workspace. This must succeed: all tenant-scoped
+	// requests, including channel listing, resolve their workspace from users.tenant_id.
+	result, err := tx.ExecContext(ctx, `UPDATE users SET tenant_id = $1::uuid, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, inv.TenantID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to activate joined workspace: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("failed to verify joined workspace activation: %w", err)
+	}
+	if rowsAffected != 1 {
+		return nil, fmt.Errorf("authenticated user was not found while joining workspace")
+	}
 
 	// 4. Mark invitation accepted
 	if _, err := tx.ExecContext(ctx, `UPDATE team_invitations SET status = 'accepted', updated_at = CURRENT_TIMESTAMP WHERE id = $1::uuid`, inv.ID); err != nil {

@@ -293,6 +293,8 @@ func (h *ChannelHandler) ListChannels(w http.ResponseWriter, r *http.Request) {
 	if channels == nil {
 		channels = []domain.TenantChannel{}
 	}
+	userID, _ := r.Context().Value(UserIDKey).(string)
+	log.Printf("[ChannelHandler] ListChannels resolved user=%s tenant=%s count=%d", userID, tenantID, len(channels))
 	utils.WriteJSON(w, http.StatusOK, channels)
 }
 
