@@ -20,6 +20,13 @@ type AIEngineService struct {
 	client    *http.Client
 }
 
+const (
+	knowledgeChunkMaxChars = 12000
+	knowledgeChunkOverlap  = 600
+	maxKnowledgeChunks     = 100
+	knowledgeOutputTokens  = 1600
+)
+
 func NewAIEngineService(geminiKey, groqKey string) *AIEngineService {
 	return &AIEngineService{
 		geminiKey: strings.TrimSpace(geminiKey),
@@ -339,9 +346,67 @@ func (s *AIEngineService) ExtractKnowledgeItemsFromText(ctx context.Context, tex
 	if !s.HasActiveProvider() {
 		return nil, fmt.Errorf("no AI provider configured")
 	}
+	return s.extractKnowledgeItemsChunked(ctx, text)
+
+	/*
+		systemPrompt := `You are an expert AI knowledge base parser for businesses and agencies.
+	Analyze the provided text, document, FAQs, product list, or policy, and extract all factual Question & Answer (or Topic & Detail) knowledge items.
+	Categories MUST be one of: "faq", "pricing", "product", "policy", "hours".
+
+	Strictly output ONLY a valid JSON array of objects without any markdown formatting or commentary:
+	[
+	  {
+	    "category": "pricing",
+	    "question_or_topic": "What are your delivery fees?",
+	    "answer_or_content": "Delivery to Lagos is ₦2,000 and ₦4,000 nationwide."
+	  }
+	]`
+
+		var rawOutput string
+		var err error
+		log.Printf("[AIEngine] Knowledge extraction started (text_bytes=%d, gemini_configured=%t, groq_configured=%t)", len(text), s.geminiKey != "", s.groqKey != "")
+
+		if s.geminiKey != "" {
+			rawOutput, err = s.callGemini(ctx, systemPrompt, "", text)
+			if err == nil && rawOutput != "" {
+				return parseExtractedKnowledgeJSON(rawOutput)
+			}
+			log.Printf("[AIEngine] ⚠️ Gemini knowledge extraction failed: %v. Trying Groq...\n", err)
+		}
+
+		if s.groqKey != "" {
+			rawOutput, err = s.callGroq(ctx, systemPrompt, "", text)
+			if err == nil && rawOutput != "" {
+				return parseExtractedKnowledgeJSON(rawOutput)
+			}
+			log.Printf("[AIEngine] ⚠️ Groq knowledge extraction failed: %v\n", err)
+		}
+
+		if err != nil {
+			log.Printf("[AIEngine] Knowledge extraction failed after all configured providers: %v", err)
+			return nil, fmt.Errorf("failed to extract knowledge items: %w", err)
+		}
+		return nil, fmt.Errorf("all providers failed to extract knowledge items")
+	*/
+}
+
+func (s *AIEngineService) extractKnowledgeItemsChunked(ctx context.Context, text string) ([]domain.AIKnowledgeItem, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil, fmt.Errorf("document contains no readable text")
+	}
+	chunks, err := chunkKnowledgeText(text, knowledgeChunkMaxChars, knowledgeChunkOverlap)
+	if err != nil {
+		return nil, err
+	}
+	if len(chunks) > maxKnowledgeChunks {
+		return nil, fmt.Errorf("document is too large to analyze in one job; please split it into smaller documents")
+	}
 
 	systemPrompt := `You are an expert AI knowledge base parser for businesses and agencies.
-Analyze the provided text, document, FAQs, product list, or policy, and extract all factual Question & Answer (or Topic & Detail) knowledge items.
+Analyze ONLY the provided document section and extract every distinct factual Question & Answer (or Topic & Detail) knowledge item in that section.
+Do not omit prices, names, limits, eligibility rules, locations, dates, contact details, or other concrete facts. Preserve important details in the answer.
+Do not invent information and do not refer to facts outside the provided section.
 Categories MUST be one of: "faq", "pricing", "product", "policy", "hours".
 
 Strictly output ONLY a valid JSON array of objects without any markdown formatting or commentary:
@@ -353,31 +418,103 @@ Strictly output ONLY a valid JSON array of objects without any markdown formatti
   }
 ]`
 
-	var rawOutput string
-	var err error
-	log.Printf("[AIEngine] Knowledge extraction started (text_bytes=%d, gemini_configured=%t, groq_configured=%t)", len(text), s.geminiKey != "", s.groqKey != "")
-
-	if s.geminiKey != "" {
-		rawOutput, err = s.callGemini(ctx, systemPrompt, "", text)
-		if err == nil && rawOutput != "" {
-			return parseExtractedKnowledgeJSON(rawOutput)
+	log.Printf("[AIEngine] Knowledge extraction started (text_bytes=%d, chunks=%d, gemini_configured=%t, groq_configured=%t)", len(text), len(chunks), s.geminiKey != "", s.groqKey != "")
+	allItems := make([]domain.AIKnowledgeItem, 0)
+	for index, chunk := range chunks {
+		var rawOutput string
+		var providerErr error
+		if s.geminiKey != "" {
+			rawOutput, providerErr = s.callGemini(ctx, systemPrompt, "", chunk)
+			if providerErr == nil && rawOutput != "" {
+				items, parseErr := parseExtractedKnowledgeJSON(rawOutput)
+				if parseErr == nil {
+					allItems = append(allItems, items...)
+					log.Printf("[AIEngine] Knowledge chunk %d/%d completed (chars=%d, items=%d)", index+1, len(chunks), len(chunk), len(items))
+					continue
+				}
+				providerErr = parseErr
+			}
+			log.Printf("[AIEngine] Gemini knowledge chunk failed: %v. Trying Groq fallback", providerErr)
 		}
-		log.Printf("[AIEngine] ⚠️ Gemini knowledge extraction failed: %v. Trying Groq...\n", err)
-	}
-
-	if s.groqKey != "" {
-		rawOutput, err = s.callGroq(ctx, systemPrompt, "", text)
-		if err == nil && rawOutput != "" {
-			return parseExtractedKnowledgeJSON(rawOutput)
+		if s.groqKey != "" {
+			rawOutput, providerErr = s.callGroq(ctx, systemPrompt, "", chunk)
+			if providerErr == nil && rawOutput != "" {
+				items, parseErr := parseExtractedKnowledgeJSON(rawOutput)
+				if parseErr == nil {
+					allItems = append(allItems, items...)
+					log.Printf("[AIEngine] Knowledge chunk %d/%d completed (chars=%d, items=%d)", index+1, len(chunks), len(chunk), len(items))
+					continue
+				}
+				providerErr = parseErr
+			}
+			log.Printf("[AIEngine] Groq knowledge chunk failed: %v", providerErr)
 		}
-		log.Printf("[AIEngine] ⚠️ Groq knowledge extraction failed: %v\n", err)
+		return nil, fmt.Errorf("failed to extract knowledge from document section %d: %w", index+1, providerErr)
 	}
+	return mergeKnowledgeItems(allItems), nil
+}
 
-	if err != nil {
-		log.Printf("[AIEngine] Knowledge extraction failed after all configured providers: %v", err)
-		return nil, fmt.Errorf("failed to extract knowledge items: %w", err)
+func chunkKnowledgeText(text string, maxChars, overlap int) ([]string, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil, fmt.Errorf("document contains no readable text")
 	}
-	return nil, fmt.Errorf("all providers failed to extract knowledge items")
+	if maxChars <= 0 || overlap < 0 || overlap >= maxChars {
+		return nil, fmt.Errorf("invalid knowledge chunk configuration")
+	}
+	chunks := make([]string, 0, (len(text)/maxChars)+1)
+	start := 0
+	for start < len(text) {
+		end := start + maxChars
+		if end >= len(text) {
+			chunks = append(chunks, strings.TrimSpace(text[start:]))
+			break
+		}
+		boundary := end
+		for boundary > start && !isKnowledgeBoundary(text[boundary]) {
+			boundary--
+		}
+		if boundary == start {
+			boundary = end
+		}
+		chunk := strings.TrimSpace(text[start:boundary])
+		if chunk != "" {
+			chunks = append(chunks, chunk)
+		}
+		next := boundary - overlap
+		if next <= start {
+			next = boundary
+		}
+		start = next
+	}
+	return chunks, nil
+}
+
+func isKnowledgeBoundary(value byte) bool {
+	return value == ' ' || value == '\n' || value == '\r' || value == '\t'
+}
+
+func mergeKnowledgeItems(items []domain.AIKnowledgeItem) []domain.AIKnowledgeItem {
+	merged := make([]domain.AIKnowledgeItem, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		item.QuestionOrTopic = strings.TrimSpace(item.QuestionOrTopic)
+		item.AnswerOrContent = strings.TrimSpace(item.AnswerOrContent)
+		if item.QuestionOrTopic == "" || item.AnswerOrContent == "" {
+			continue
+		}
+		if item.Category == "" {
+			item.Category = "faq"
+		}
+		item.IsActive = true
+		key := strings.ToLower(strings.Join([]string{item.Category, item.QuestionOrTopic, item.AnswerOrContent}, "\x00"))
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		merged = append(merged, item)
+	}
+	return merged
 }
 
 func parseExtractedKnowledgeJSON(raw string) ([]domain.AIKnowledgeItem, error) {
@@ -493,7 +630,7 @@ func (s *AIEngineService) callGemini(ctx context.Context, systemPrompt, transcri
 		},
 		"generationConfig": map[string]interface{}{
 			"temperature":      0.3,
-			"maxOutputTokens":  600,
+			"maxOutputTokens":  knowledgeOutputTokens,
 			"responseMimeType": "application/json",
 		},
 	}
@@ -566,7 +703,7 @@ func (s *AIEngineService) callGroq(ctx context.Context, systemPrompt, transcript
 		"model":           "openai/gpt-oss-120b",
 		"messages":        messages,
 		"temperature":     0.3,
-		"max_tokens":      600,
+		"max_tokens":      knowledgeOutputTokens,
 		"response_format": map[string]string{"type": "json_object"},
 	}
 

@@ -67,11 +67,26 @@ type KnowledgeIngestionJob struct {
 	ContentType  string                   `json:"content_type,omitempty"`
 	Status       KnowledgeIngestionStatus `json:"status"`
 	Items        []AIKnowledgeItem        `json:"items,omitempty"`
+	ItemCount    int                      `json:"item_count,omitempty"`
 	ErrorMessage string                   `json:"error_message,omitempty"`
 	CreatedAt    time.Time                `json:"created_at"`
 	StartedAt    *time.Time               `json:"started_at,omitempty"`
 	CompletedAt  *time.Time               `json:"completed_at,omitempty"`
 	SourceData   []byte                   `json:"-"`
+}
+
+type KnowledgePage struct {
+	Items  []AIKnowledgeItem `json:"items"`
+	Total  int               `json:"total"`
+	Limit  int               `json:"limit"`
+	Offset int               `json:"offset"`
+}
+
+type KnowledgeIngestionPage struct {
+	Jobs   []KnowledgeIngestionJob `json:"jobs"`
+	Total  int                     `json:"total"`
+	Limit  int                     `json:"limit"`
+	Offset int                     `json:"offset"`
 }
 
 type ExtractedLeadInfo struct {
@@ -83,6 +98,7 @@ type AIAgentRepository interface {
 	GetConfig(ctx context.Context, tenantID string) (*AIAgentConfig, error)
 	SaveConfig(ctx context.Context, cfg *AIAgentConfig) error
 	ListKnowledgeItems(ctx context.Context, tenantID string) ([]AIKnowledgeItem, error)
+	ListKnowledgeItemsPage(ctx context.Context, tenantID, search, category string, limit, offset int) (*KnowledgePage, error)
 	CreateKnowledgeItem(ctx context.Context, item *AIKnowledgeItem) error
 	BulkCreateKnowledgeItems(ctx context.Context, tenantID string, items []AIKnowledgeItem) error
 	UpdateKnowledgeItem(ctx context.Context, item *AIKnowledgeItem) error
@@ -90,6 +106,7 @@ type AIAgentRepository interface {
 
 	CreateKnowledgeIngestionJob(ctx context.Context, tenantID, filename, contentType string, sourceData []byte) (*KnowledgeIngestionJob, error)
 	GetKnowledgeIngestionJob(ctx context.Context, tenantID, jobID string) (*KnowledgeIngestionJob, error)
+	ListKnowledgeIngestionJobs(ctx context.Context, tenantID, status string, limit, offset int) (*KnowledgeIngestionPage, error)
 	ClaimKnowledgeIngestionJob(ctx context.Context, jobID string) (*KnowledgeIngestionJob, error)
 	CompleteKnowledgeIngestionJob(ctx context.Context, jobID string, items []AIKnowledgeItem) error
 	FailKnowledgeIngestionJob(ctx context.Context, jobID, message string) error

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"strings"
 	"testing"
 
 	"omnipulse/apps/api-gateway/internal/domain"
@@ -32,5 +33,40 @@ func TestRankKnowledgeItemsReturnsRelevantBoundedItems(t *testing.T) {
 	got := rankKnowledgeItems(items, "What is the delivery fee?", 1)
 	if len(got) != 1 || got[0].QuestionOrTopic != "Delivery fees" {
 		t.Fatalf("unexpected ranked knowledge items: %+v", got)
+	}
+}
+
+func TestChunkKnowledgeTextPreservesDocumentContent(t *testing.T) {
+	text := strings.Repeat("A factual sentence with important business details. ", 300)
+	chunks, err := chunkKnowledgeText(text, 100, 10)
+	if err != nil {
+		t.Fatalf("chunkKnowledgeText returned error: %v", err)
+	}
+	if len(chunks) < 2 {
+		t.Fatalf("expected multiple chunks, got %d", len(chunks))
+	}
+	for _, chunk := range chunks {
+		if len(chunk) > 100 {
+			t.Fatalf("chunk exceeded maximum size: %d", len(chunk))
+		}
+	}
+	joined := strings.Join(chunks, " ")
+	if !strings.Contains(joined, "important business details") {
+		t.Fatal("chunking lost document content")
+	}
+}
+
+func TestMergeKnowledgeItemsRemovesOnlyExactDuplicates(t *testing.T) {
+	items := mergeKnowledgeItems([]domain.AIKnowledgeItem{
+		{Category: "pricing", QuestionOrTopic: "Delivery", AnswerOrContent: "Lagos: N2,000"},
+		{Category: "pricing", QuestionOrTopic: "Delivery", AnswerOrContent: "Lagos: N2,000"},
+		{Category: "pricing", QuestionOrTopic: "Delivery", AnswerOrContent: "Nationwide: N4,000"},
+		{Category: "", QuestionOrTopic: "Hours", AnswerOrContent: "9am to 5pm"},
+	})
+	if len(items) != 3 {
+		t.Fatalf("expected 3 merged items, got %d", len(items))
+	}
+	if items[2].Category != "faq" {
+		t.Fatalf("expected missing category to default to faq, got %q", items[2].Category)
 	}
 }

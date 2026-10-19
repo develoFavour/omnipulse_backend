@@ -162,6 +162,50 @@ func (r *PostgresAIAgentRepository) ListKnowledgeItems(ctx context.Context, tena
 	return items, nil
 }
 
+func (r *PostgresAIAgentRepository) ListKnowledgeItemsPage(ctx context.Context, tenantID, search, category string, limit, offset int) (*domain.KnowledgePage, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 25
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	pattern := "%" + search + "%"
+	var total int
+	if err := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM ai_knowledge_items
+		WHERE tenant_id = $1
+		  AND ($2 = '' OR question_or_topic ILIKE $3 OR answer_or_content ILIKE $3)
+		  AND ($4 = '' OR category = $4)
+	`, tenantID, search, pattern, category).Scan(&total); err != nil {
+		return nil, fmt.Errorf("failed to count knowledge items: %w", err)
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, tenant_id, category, question_or_topic, answer_or_content, is_active, created_at, updated_at
+		FROM ai_knowledge_items
+		WHERE tenant_id = $1
+		  AND ($2 = '' OR question_or_topic ILIKE $3 OR answer_or_content ILIKE $3)
+		  AND ($4 = '' OR category = $4)
+		ORDER BY created_at DESC
+		LIMIT $5 OFFSET $6
+	`, tenantID, search, pattern, category, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list knowledge items page: %w", err)
+	}
+	defer rows.Close()
+	items := make([]domain.AIKnowledgeItem, 0, limit)
+	for rows.Next() {
+		var item domain.AIKnowledgeItem
+		if err := rows.Scan(&item.ID, &item.TenantID, &item.Category, &item.QuestionOrTopic, &item.AnswerOrContent, &item.IsActive, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan knowledge item page: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read knowledge item page: %w", err)
+	}
+	return &domain.KnowledgePage{Items: items, Total: total, Limit: limit, Offset: offset}, nil
+}
+
 func (r *PostgresAIAgentRepository) CreateKnowledgeItem(ctx context.Context, item *domain.AIKnowledgeItem) error {
 	query := `
 		INSERT INTO ai_knowledge_items (tenant_id, category, question_or_topic, answer_or_content, is_active)
@@ -238,11 +282,12 @@ func (r *PostgresAIAgentRepository) GetKnowledgeIngestionJob(ctx context.Context
 	var itemsJSON []byte
 	err := r.db.QueryRowContext(ctx, `
 		SELECT id, tenant_id, filename, content_type, status, extracted_items,
+		       jsonb_array_length(COALESCE(extracted_items, '[]'::jsonb)),
 		       COALESCE(error_message, ''), created_at, started_at, completed_at
 		FROM ai_knowledge_ingestion_jobs
 		WHERE id = $1 AND tenant_id = $2
 	`, jobID, tenantID).Scan(
-		&job.ID, &job.TenantID, &job.Filename, &job.ContentType, &status, &itemsJSON,
+		&job.ID, &job.TenantID, &job.Filename, &job.ContentType, &status, &itemsJSON, &job.ItemCount,
 		&job.ErrorMessage, &job.CreatedAt, &job.StartedAt, &job.CompletedAt,
 	)
 	if err != nil {
@@ -258,6 +303,49 @@ func (r *PostgresAIAgentRepository) GetKnowledgeIngestionJob(ctx context.Context
 		}
 	}
 	return job, nil
+}
+
+func (r *PostgresAIAgentRepository) ListKnowledgeIngestionJobs(ctx context.Context, tenantID, status string, limit, offset int) (*domain.KnowledgeIngestionPage, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 25
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	var total int
+	if err := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM ai_knowledge_ingestion_jobs
+		WHERE tenant_id = $1 AND ($2 = '' OR status = $2)
+	`, tenantID, status).Scan(&total); err != nil {
+		return nil, fmt.Errorf("failed to count ingestion jobs: %w", err)
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, tenant_id, filename, content_type, status,
+		       jsonb_array_length(COALESCE(extracted_items, '[]'::jsonb)),
+		       COALESCE(error_message, ''), created_at, started_at, completed_at
+		FROM ai_knowledge_ingestion_jobs
+		WHERE tenant_id = $1 AND ($2 = '' OR status = $2)
+		ORDER BY created_at DESC
+		LIMIT $3 OFFSET $4
+	`, tenantID, status, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list ingestion jobs: %w", err)
+	}
+	defer rows.Close()
+	jobs := make([]domain.KnowledgeIngestionJob, 0, limit)
+	for rows.Next() {
+		var job domain.KnowledgeIngestionJob
+		var statusValue string
+		if err := rows.Scan(&job.ID, &job.TenantID, &job.Filename, &job.ContentType, &statusValue, &job.ItemCount, &job.ErrorMessage, &job.CreatedAt, &job.StartedAt, &job.CompletedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan ingestion job: %w", err)
+		}
+		job.Status = domain.KnowledgeIngestionStatus(statusValue)
+		jobs = append(jobs, job)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read ingestion jobs: %w", err)
+	}
+	return &domain.KnowledgeIngestionPage{Jobs: jobs, Total: total, Limit: limit, Offset: offset}, nil
 }
 
 func (r *PostgresAIAgentRepository) ClaimKnowledgeIngestionJob(ctx context.Context, jobID string) (*domain.KnowledgeIngestionJob, error) {

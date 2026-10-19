@@ -769,6 +769,7 @@ func main() {
 	mux.HandleFunc("GET /api/v1/ai-agent/knowledge", aiAgentHandler.ListKnowledgeItems)
 	mux.Handle("POST /api/v1/ai-agent/knowledge", handler.RequireRole("owner", "admin")(http.HandlerFunc(aiAgentHandler.CreateKnowledgeItem)))
 	mux.Handle("POST /api/v1/ai-agent/knowledge/ingest", handler.RequireRole("owner", "admin")(http.HandlerFunc(aiAgentHandler.IngestDocument)))
+	mux.Handle("GET /api/v1/ai-agent/knowledge/ingest", handler.RequireRole("owner", "admin")(http.HandlerFunc(aiAgentHandler.ListKnowledgeIngestionJobs)))
 	mux.Handle("GET /api/v1/ai-agent/knowledge/ingest/{id}", handler.RequireRole("owner", "admin")(http.HandlerFunc(aiAgentHandler.GetKnowledgeIngestionJob)))
 	mux.Handle("POST /api/v1/ai-agent/knowledge/approve", handler.RequireRole("owner", "admin")(http.HandlerFunc(aiAgentHandler.ApproveKnowledgeItems)))
 	mux.HandleFunc("POST /api/v1/ai-agent/simulate", aiAgentHandler.TestSimulate)

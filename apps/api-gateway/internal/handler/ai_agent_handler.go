@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -129,19 +130,46 @@ func (h *AIAgentHandler) ListKnowledgeItems(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	items, err := h.repo.ListKnowledgeItems(r.Context(), tenantID)
+	limit, offset := paginationParams(r)
+	page, err := h.repo.ListKnowledgeItemsPage(r.Context(), tenantID, strings.TrimSpace(r.URL.Query().Get("search")), strings.TrimSpace(r.URL.Query().Get("category")), limit, offset)
 	if err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if items == nil {
-		items = []domain.AIKnowledgeItem{}
-	}
+	utils.WriteJSON(w, http.StatusOK, page)
+}
 
-	utils.WriteJSON(w, http.StatusOK, map[string]interface{}{
-		"items": items,
-		"total": len(items),
-	})
+// ListKnowledgeIngestionJobs handles GET /api/v1/ai-agent/knowledge/ingest.
+// It provides a paginated document library without returning every extracted item.
+func (h *AIAgentHandler) ListKnowledgeIngestionJobs(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok || tenantID == "" {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+	limit, offset := paginationParams(r)
+	page, err := h.repo.ListKnowledgeIngestionJobs(r.Context(), tenantID, strings.TrimSpace(r.URL.Query().Get("status")), limit, offset)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "The document library could not be loaded. Please try again.")
+		return
+	}
+	utils.WriteJSON(w, http.StatusOK, page)
+}
+
+func paginationParams(r *http.Request) (int, int) {
+	limit := 25
+	offset := 0
+	if value := r.URL.Query().Get("limit"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			limit = parsed
+		}
+	}
+	if value := r.URL.Query().Get("offset"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			offset = parsed
+		}
+	}
+	return limit, offset
 }
 
 // CreateKnowledgeItem handles POST /api/v1/ai-agent/knowledge
