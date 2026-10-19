@@ -786,6 +786,7 @@ func main() {
 	// AI Business Assistant Subsystem Endpoints
 	mux.HandleFunc("GET /api/v1/ai-agent/config", aiAgentHandler.GetConfig)
 	mux.Handle("PUT /api/v1/ai-agent/config", handler.RequireRole("owner", "admin")(http.HandlerFunc(aiAgentHandler.SaveConfig)))
+	mux.Handle("POST /api/v1/ai-agent/toggle", handler.RequireRole("owner", "admin")(http.HandlerFunc(aiAgentHandler.ToggleGlobalAI)))
 	mux.HandleFunc("GET /api/v1/ai-agent/knowledge", aiAgentHandler.ListKnowledgeItems)
 	mux.Handle("POST /api/v1/ai-agent/knowledge", handler.RequireRole("owner", "admin")(http.HandlerFunc(aiAgentHandler.CreateKnowledgeItem)))
 	mux.Handle("POST /api/v1/ai-agent/knowledge/ingest", handler.RequireRole("owner", "admin")(http.HandlerFunc(aiAgentHandler.IngestDocument)))

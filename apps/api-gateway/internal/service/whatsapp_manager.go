@@ -1384,7 +1384,16 @@ func (m *WhatsAppManager) SyncContacts(ctx context.Context, tenantID string, con
 }
 
 func (m *WhatsAppManager) handleAIAutoResponse(tenantID string, conv *domain.Conversation, contactPhone, incomingText string) error {
-	if m.aiEngine == nil || m.aiAgentRepo == nil || !m.aiEngine.HasActiveProvider() {
+	if m.aiEngine == nil {
+		log.Printf("[WhatsAppManager/AI] Skipping reply for tenant %s: AI engine is unavailable\n", tenantID)
+		return nil
+	}
+	if m.aiAgentRepo == nil {
+		log.Printf("[WhatsAppManager/AI] Skipping reply for tenant %s: AI configuration repository is unavailable\n", tenantID)
+		return nil
+	}
+	if !m.aiEngine.HasActiveProvider() {
+		log.Printf("[WhatsAppManager/AI] Skipping reply for tenant %s: no AI provider key is configured\n", tenantID)
 		return nil
 	}
 
@@ -1394,9 +1403,11 @@ func (m *WhatsAppManager) handleAIAutoResponse(tenantID string, conv *domain.Con
 	// 1. Check AI master toggle and configuration for tenant
 	cfg, err := m.aiAgentRepo.GetConfig(ctx, tenantID)
 	if err != nil {
+		log.Printf("[WhatsAppManager/AI] Failed to load AI configuration for tenant %s: %v\n", tenantID, err)
 		return err
 	}
 	if cfg == nil || !cfg.IsEnabled {
+		log.Printf("[WhatsAppManager/AI] Skipping reply for tenant %s: workspace AI assistance is disabled\n", tenantID)
 		return nil
 	}
 
@@ -1411,13 +1422,14 @@ func (m *WhatsAppManager) handleAIAutoResponse(tenantID string, conv *domain.Con
 			// Resume automatically after pause period ends
 			_ = m.aiAgentRepo.SetConversationAIState(ctx, tenantID, conv.ID, "active", nil, false)
 		} else if aiState == "disabled" {
+			log.Printf("[WhatsAppManager/AI] Skipping reply for conversation %s: AI is disabled for this conversation\n", conv.ID)
 			return nil
 		}
 	}
 
 	// 3. Verify operational mode (always_on vs after_hours)
 	if !m.aiEngine.ShouldRespond(cfg) {
-		log.Printf("[WhatsAppManager/AI] ⏳ AI reply skipped for tenant %s: current time is within business hours / agent shift\n", tenantID)
+		log.Printf("[WhatsAppManager/AI] Skipping reply for tenant %s: operational mode %q does not allow an automatic response right now\n", tenantID, cfg.OperationalMode)
 		return nil
 	}
 

@@ -52,8 +52,54 @@ func (h *AIAgentHandler) GetConfig(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	cfg.ProviderAvailable = h.aiEngine != nil && h.aiEngine.HasActiveProvider()
 
 	utils.WriteJSON(w, http.StatusOK, cfg)
+}
+
+// ToggleGlobalAI handles POST /api/v1/ai-agent/toggle.
+// This workspace-level consent switch is separate from per-conversation
+// pause/resume controls used by human agents.
+func (h *AIAgentHandler) ToggleGlobalAI(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok || tenantID == "" {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	var req struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "Choose whether AI assistance should be enabled")
+		return
+	}
+	if req.Enabled == nil {
+		utils.WriteError(w, http.StatusBadRequest, "Choose whether AI assistance should be enabled")
+		return
+	}
+	enabled := *req.Enabled
+	if enabled && (h.aiEngine == nil || !h.aiEngine.HasActiveProvider()) {
+		utils.WriteError(w, http.StatusServiceUnavailable, "AI assistance is not ready yet. Add a Gemini or Groq provider key before enabling it.")
+		return
+	}
+
+	if err := h.repo.SetEnabled(r.Context(), tenantID, enabled); err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "The AI assistance setting could not be updated. Please try again.")
+		return
+	}
+
+	cfg, err := h.repo.GetConfig(r.Context(), tenantID)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "The AI assistance setting was saved, but its current status could not be loaded.")
+		return
+	}
+	cfg.ProviderAvailable = h.aiEngine != nil && h.aiEngine.HasActiveProvider()
+	message := "AI assistance is now off for this workspace."
+	if enabled {
+		message = "AI assistance is now on for this workspace."
+	}
+	utils.WriteJSON(w, http.StatusOK, map[string]interface{}{"message": message, "config": cfg})
 }
 
 // SaveConfig handles PUT /api/v1/ai-agent/config
@@ -115,6 +161,7 @@ func (h *AIAgentHandler) SaveConfig(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	req.ProviderAvailable = h.aiEngine != nil && h.aiEngine.HasActiveProvider()
 
 	utils.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"message": "AI assistant configuration saved successfully",

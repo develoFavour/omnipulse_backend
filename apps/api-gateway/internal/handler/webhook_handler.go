@@ -459,7 +459,16 @@ func isTelegramDestinationType(chatType string) bool {
 }
 
 func (h *WebhookHandler) handleTelegramAIResponse(tenantID string, conv *domain.Conversation, chatIDStr, incomingText string) {
-	if h.aiEngine == nil || h.aiAgentRepo == nil || !h.aiEngine.HasActiveProvider() {
+	if h.aiEngine == nil {
+		log.Printf("[Webhook/Telegram/AI] Skipping reply for tenant %s: AI engine is unavailable\n", tenantID)
+		return
+	}
+	if h.aiAgentRepo == nil {
+		log.Printf("[Webhook/Telegram/AI] Skipping reply for tenant %s: AI configuration repository is unavailable\n", tenantID)
+		return
+	}
+	if !h.aiEngine.HasActiveProvider() {
+		log.Printf("[Webhook/Telegram/AI] Skipping reply for tenant %s: no AI provider key is configured\n", tenantID)
 		return
 	}
 
@@ -468,7 +477,12 @@ func (h *WebhookHandler) handleTelegramAIResponse(tenantID string, conv *domain.
 
 	// 1. Check AI master toggle
 	cfg, err := h.aiAgentRepo.GetConfig(ctx, tenantID)
-	if err != nil || cfg == nil || !cfg.IsEnabled {
+	if err != nil {
+		log.Printf("[Webhook/Telegram/AI] Failed to load AI configuration for tenant %s: %v\n", tenantID, err)
+		return
+	}
+	if cfg == nil || !cfg.IsEnabled {
+		log.Printf("[Webhook/Telegram/AI] Skipping reply for tenant %s: workspace AI assistance is disabled\n", tenantID)
 		return
 	}
 
@@ -482,12 +496,14 @@ func (h *WebhookHandler) handleTelegramAIResponse(tenantID string, conv *domain.
 			}
 			_ = h.aiAgentRepo.SetConversationAIState(ctx, tenantID, conv.ID, "active", nil, false)
 		} else if aiState == "disabled" {
+			log.Printf("[Webhook/Telegram/AI] Skipping reply for conversation %s: AI is disabled for this conversation\n", conv.ID)
 			return
 		}
 	}
 
 	// 3. Operational mode
 	if !h.aiEngine.ShouldRespond(cfg) {
+		log.Printf("[Webhook/Telegram/AI] Skipping reply for tenant %s: operational mode %q does not allow an automatic response right now\n", tenantID, cfg.OperationalMode)
 		return
 	}
 

@@ -133,6 +133,19 @@ func (r *PostgresAIAgentRepository) SaveConfig(ctx context.Context, cfg *domain.
 	return nil
 }
 
+func (r *PostgresAIAgentRepository) SetEnabled(ctx context.Context, tenantID string, enabled bool) error {
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO ai_agent_configs (tenant_id, is_enabled, operational_mode)
+		VALUES ($1, $2, CASE WHEN $2 THEN 'always_on' ELSE 'after_hours' END)
+		ON CONFLICT (tenant_id) DO UPDATE
+		SET is_enabled = EXCLUDED.is_enabled, updated_at = NOW()
+	`, tenantID, enabled)
+	if err != nil {
+		return fmt.Errorf("failed to update AI assistant consent: %w", err)
+	}
+	return nil
+}
+
 func (r *PostgresAIAgentRepository) ListKnowledgeItems(ctx context.Context, tenantID string) ([]domain.AIKnowledgeItem, error) {
 	query := `
 		SELECT id, tenant_id, category, question_or_topic, answer_or_content, is_active, created_at, updated_at

@@ -17,6 +17,7 @@ const (
 type AIAgentConfig struct {
 	TenantID                string            `json:"tenant_id"`
 	IsEnabled               bool              `json:"is_enabled"`
+	ProviderAvailable       bool              `json:"provider_available"`
 	OperationalMode         AIOperationalMode `json:"operational_mode"`
 	IdleTimeoutSeconds      int               `json:"idle_timeout_seconds"`
 	BusinessName            string            `json:"business_name"`
@@ -97,6 +98,7 @@ type ExtractedLeadInfo struct {
 type AIAgentRepository interface {
 	GetConfig(ctx context.Context, tenantID string) (*AIAgentConfig, error)
 	SaveConfig(ctx context.Context, cfg *AIAgentConfig) error
+	SetEnabled(ctx context.Context, tenantID string, enabled bool) error
 	ListKnowledgeItems(ctx context.Context, tenantID string) ([]AIKnowledgeItem, error)
 	ListKnowledgeItemsPage(ctx context.Context, tenantID, search, category string, limit, offset int) (*KnowledgePage, error)
 	CreateKnowledgeItem(ctx context.Context, item *AIKnowledgeItem) error
