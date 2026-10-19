@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -311,10 +312,12 @@ func (h *AIAgentHandler) IngestDocument(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := h.knowledgeDispatcher.EnqueueKnowledgeIngestion(r.Context(), job.ID); err != nil {
+		log.Printf("[KNOWLEDGE-QUEUE] Failed to enqueue ingestion job %s: %v", job.ID, err)
 		_ = h.repo.FailKnowledgeIngestionJob(r.Context(), job.ID, "Document processing is temporarily unavailable. Please try again.")
 		utils.WriteError(w, http.StatusServiceUnavailable, "Document processing is temporarily unavailable. Please try again.")
 		return
 	}
+	log.Printf("[KNOWLEDGE-QUEUE] Enqueued ingestion job %s (tenant=%s, filename=%q, content_type=%q, source_bytes=%d)", job.ID, tenantID, upload.filename, upload.contentType, len(upload.data))
 
 	utils.WriteJSON(w, http.StatusAccepted, map[string]interface{}{
 		"message": "Your document is being processed. Check the job status to review the extracted knowledge.",

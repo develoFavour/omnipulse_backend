@@ -63,6 +63,7 @@ func (w *KnowledgeIngestionWorker) Start() error {
 			_ = msg.Term()
 			return
 		}
+		log.Printf("[KNOWLEDGE-QUEUE] Received ingestion job %s", payload.JobID)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		err := w.process(ctx, payload.JobID)
@@ -78,6 +79,7 @@ func (w *KnowledgeIngestionWorker) Start() error {
 		return fmt.Errorf("failed to subscribe to knowledge ingestion queue: %w", err)
 	}
 	w.sub = sub
+	log.Printf("[KNOWLEDGE-QUEUE] Worker subscribed to %s (queue=knowledge-ingestion-workers)", knowledgeIngestionSubject)
 	return nil
 }
 
@@ -88,8 +90,10 @@ func (w *KnowledgeIngestionWorker) process(ctx context.Context, jobID string) er
 	}
 	if job == nil {
 		// Already completed, failed, or currently being processed by another worker.
+		log.Printf("[KNOWLEDGE-QUEUE] Job %s was not claimable (already complete, failed, or still within its processing lease)", jobID)
 		return nil
 	}
+	log.Printf("[KNOWLEDGE-QUEUE] Claimed job %s (filename=%q, content_type=%q, source_bytes=%d)", job.ID, job.Filename, job.ContentType, len(job.SourceData))
 
 	fail := func(message string) error {
 		failCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -102,12 +106,14 @@ func (w *KnowledgeIngestionWorker) process(ctx context.Context, jobID string) er
 
 	text, err := ExtractDocumentText(ctx, job.Filename, job.ContentType, job.SourceData)
 	if err != nil {
+		log.Printf("[KNOWLEDGE-QUEUE] Text extraction failed for job %s: %v", jobID, err)
 		if failErr := fail(err.Error()); failErr != nil {
 			return failErr
 		}
 		return nil
 	}
 	if text == "" {
+		log.Printf("[KNOWLEDGE-QUEUE] Text extraction returned no readable text for job %s", jobID)
 		if failErr := fail("No readable text was found in the document"); failErr != nil {
 			return failErr
 		}
@@ -116,12 +122,14 @@ func (w *KnowledgeIngestionWorker) process(ctx context.Context, jobID string) er
 
 	items, err := w.aiEngine.ExtractKnowledgeItemsFromText(ctx, text)
 	if err != nil {
+		log.Printf("[KNOWLEDGE-QUEUE] AI knowledge extraction failed for job %s: %v", jobID, err)
 		if failErr := fail("The document could not be analyzed right now. Please try again."); failErr != nil {
 			return failErr
 		}
 		return nil
 	}
 	if len(items) == 0 {
+		log.Printf("[KNOWLEDGE-QUEUE] AI returned zero knowledge items for job %s", jobID)
 		if failErr := fail("No discrete facts or Q&A items could be identified from the provided content"); failErr != nil {
 			return failErr
 		}
@@ -131,6 +139,7 @@ func (w *KnowledgeIngestionWorker) process(ctx context.Context, jobID string) er
 	if err := w.repo.CompleteKnowledgeIngestionJob(ctx, jobID, items); err != nil {
 		return err
 	}
+	log.Printf("[KNOWLEDGE-QUEUE] Completed ingestion job %s with %d knowledge items", jobID, len(items))
 	return nil
 }
 

@@ -355,6 +355,7 @@ Strictly output ONLY a valid JSON array of objects without any markdown formatti
 
 	var rawOutput string
 	var err error
+	log.Printf("[AIEngine] Knowledge extraction started (text_bytes=%d, gemini_configured=%t, groq_configured=%t)", len(text), s.geminiKey != "", s.groqKey != "")
 
 	if s.geminiKey != "" {
 		rawOutput, err = s.callGemini(ctx, systemPrompt, "", text)
@@ -373,6 +374,7 @@ Strictly output ONLY a valid JSON array of objects without any markdown formatti
 	}
 
 	if err != nil {
+		log.Printf("[AIEngine] Knowledge extraction failed after all configured providers: %v", err)
 		return nil, fmt.Errorf("failed to extract knowledge items: %w", err)
 	}
 	return nil, fmt.Errorf("all providers failed to extract knowledge items")
@@ -468,7 +470,7 @@ func (s *AIEngineService) buildSystemPrompt(cfg *domain.AIAgentConfig, knowledge
 
 // callGemini executes a prompt against Google Gemini REST API
 func (s *AIEngineService) callGemini(ctx context.Context, systemPrompt, transcript, incomingText string) (string, error) {
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=%s", s.geminiKey)
+	url := "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"
 
 	userPrompt := incomingText
 	if transcript != "" {
@@ -506,6 +508,7 @@ func (s *AIEngineService) callGemini(ctx context.Context, systemPrompt, transcri
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-goog-api-key", s.geminiKey)
 
 	resp, err := s.client.Do(req)
 	if err != nil {
