@@ -93,10 +93,22 @@ func (h *InboxHub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// Write pump
 	go func() {
+		ticker := time.NewTicker(20 * time.Second)
+		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
+			case <-ticker.C:
+				pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
+				if err := c.Ping(pingCtx); err != nil {
+					log.Printf("[INBOX-WS] Ping failed for tenant %s: %v", tenantID, err)
+					pingCancel()
+					cancel()
+					_ = c.Close(websocket.StatusGoingAway, "keepalive failed")
+					return
+				}
+				pingCancel()
 			case msg, ok := <-client.send:
 				if !ok {
 					return
@@ -105,6 +117,9 @@ func (h *InboxHub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 				err := c.Write(writeCtx, websocket.MessageText, msg)
 				writeCancel()
 				if err != nil {
+					log.Printf("[INBOX-WS] Write failed for tenant %s: %v", tenantID, err)
+					cancel()
+					_ = c.Close(websocket.StatusGoingAway, "write failed")
 					return
 				}
 			}
@@ -115,6 +130,7 @@ func (h *InboxHub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	for {
 		_, _, err := c.Read(ctx)
 		if err != nil {
+			log.Printf("[INBOX-WS] Read loop ended for tenant %s (close_status=%d): %v", tenantID, websocket.CloseStatus(err), err)
 			break
 		}
 	}

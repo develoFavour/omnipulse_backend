@@ -728,9 +728,16 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 							PlatformMessageID: &msgID,
 							Status:            initialStatus,
 						}
-						_ = m.inboxRepo.CreateMessage(ctx, newMsg)
-						if m.inboxHub != nil {
-							m.inboxHub.BroadcastMessage(tenantID, conv, newMsg)
+						if err := m.inboxRepo.CreateMessage(ctx, newMsg); err != nil {
+							log.Printf("[WhatsAppManager/Inbox] Failed to persist %s message for tenant %s (conversation=%s, platform_id=%s): %v", direction, tenantID, conv.ID, msgID, err)
+						} else {
+							log.Printf("[WhatsAppManager/Inbox] Persisted %s message id=%s for tenant %s conversation=%s", direction, newMsg.ID, tenantID, conv.ID)
+							if m.inboxHub != nil {
+								m.inboxHub.BroadcastMessage(tenantID, conv, newMsg)
+								log.Printf("[WhatsAppManager/Inbox] Broadcast %s message id=%s for tenant %s conversation=%s", direction, newMsg.ID, tenantID, conv.ID)
+							} else {
+								log.Printf("[WhatsAppManager/Inbox] Cannot broadcast message id=%s: inbox hub is unavailable", newMsg.ID)
+							}
 						}
 						// Autonomous AI Business Assistant: handle inbound customer inquiries asynchronously
 						if direction == domain.MessageDirectionInbound && text != "" {
