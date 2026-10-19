@@ -62,6 +62,10 @@ func (m *mockInboxUseCase) AssignConversation(ctx context.Context, tenantID, con
 	return nil
 }
 
+func (m *mockInboxUseCase) BulkAssignConversations(ctx context.Context, tenantID string, conversationIDs []string, userID *string) error {
+	return nil
+}
+
 func (m *mockInboxUseCase) MarkConversationAsRead(ctx context.Context, tenantID, conversationID string) error {
 	if m.markConversationAsReadFunc != nil {
 		return m.markConversationAsReadFunc(ctx, tenantID, conversationID)

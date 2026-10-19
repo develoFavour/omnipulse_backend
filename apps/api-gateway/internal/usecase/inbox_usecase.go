@@ -20,6 +20,7 @@ type InboxUseCase interface {
 	ListMessages(ctx context.Context, tenantID, conversationID string, limit, offset int) ([]domain.Message, error)
 	UpdateConversationStatus(ctx context.Context, tenantID, conversationID string, status domain.ConversationStatus) error
 	AssignConversation(ctx context.Context, tenantID, conversationID string, userID *string) error
+	BulkAssignConversations(ctx context.Context, tenantID string, conversationIDs []string, userID *string) error
 	MarkConversationAsRead(ctx context.Context, tenantID, conversationID string) error
 	SendReply(ctx context.Context, tenantID, userID, conversationID string, req domain.SendReplyRequest) (*domain.Message, error)
 	EditMessage(ctx context.Context, tenantID, messageID, newBody string) (*domain.Message, error)
@@ -77,6 +78,10 @@ func (u *inboxUseCase) UpdateConversationStatus(ctx context.Context, tenantID, c
 
 func (u *inboxUseCase) AssignConversation(ctx context.Context, tenantID, conversationID string, userID *string) error {
 	return u.inboxRepo.AssignConversation(ctx, tenantID, conversationID, userID)
+}
+
+func (u *inboxUseCase) BulkAssignConversations(ctx context.Context, tenantID string, conversationIDs []string, userID *string) error {
+	return u.inboxRepo.BulkAssignConversations(ctx, tenantID, conversationIDs, userID)
 }
 
 func (u *inboxUseCase) MarkConversationAsRead(ctx context.Context, tenantID, conversationID string) error {

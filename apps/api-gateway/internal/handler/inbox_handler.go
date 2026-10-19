@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"omnipulse/apps/api-gateway/internal/domain"
 	"omnipulse/apps/api-gateway/internal/usecase"
@@ -153,7 +154,7 @@ func (h *InboxHandler) UpdateConversation(w http.ResponseWriter, r *http.Request
 
 	var req struct {
 		Status     *domain.ConversationStatus `json:"status,omitempty"`
-		AssignedTo *string                    `json:"assigned_to,omitempty"`
+		AssignedTo json.RawMessage            `json:"assigned_to,omitempty"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -168,14 +169,65 @@ func (h *InboxHandler) UpdateConversation(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	if req.AssignedTo != nil {
-		if err := h.inboxUseCase.AssignConversation(r.Context(), tenantID, conversationID, req.AssignedTo); err != nil {
+	if len(req.AssignedTo) > 0 {
+		var assignedTo *string
+		if strings.TrimSpace(string(req.AssignedTo)) != "null" {
+			var assignee string
+			if err := json.Unmarshal(req.AssignedTo, &assignee); err != nil || strings.TrimSpace(assignee) == "" {
+				utils.WriteError(w, http.StatusBadRequest, "assigned_to must be a workspace member ID or null")
+				return
+			}
+			assignedTo = &assignee
+		}
+		if err := h.inboxUseCase.AssignConversation(r.Context(), tenantID, conversationID, assignedTo); err != nil {
 			utils.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 	}
 
 	utils.WriteJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
+// BulkAssignConversations assigns or unassigns selected conversations atomically.
+func (h *InboxHandler) BulkAssignConversations(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok || tenantID == "" {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	var req struct {
+		ConversationIDs []string        `json:"conversation_ids"`
+		AssignedTo      json.RawMessage `json:"assigned_to"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if len(req.ConversationIDs) == 0 {
+		utils.WriteError(w, http.StatusBadRequest, "Select at least one conversation")
+		return
+	}
+
+	var assignedTo *string
+	if len(req.AssignedTo) > 0 && strings.TrimSpace(string(req.AssignedTo)) != "null" {
+		var assignee string
+		if err := json.Unmarshal(req.AssignedTo, &assignee); err != nil || strings.TrimSpace(assignee) == "" {
+			utils.WriteError(w, http.StatusBadRequest, "assigned_to must be a workspace member ID or null")
+			return
+		}
+		assignedTo = &assignee
+	}
+
+	if err := h.inboxUseCase.BulkAssignConversations(r.Context(), tenantID, req.ConversationIDs, assignedTo); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"status":        "updated",
+		"updated_count": len(req.ConversationIDs),
+	})
 }
 
 func (h *InboxHandler) MarkAsRead(w http.ResponseWriter, r *http.Request) {

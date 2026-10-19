@@ -42,9 +42,13 @@ func (r *PostgresInboxRepository) ListConversations(ctx context.Context, tenantI
 	}
 
 	if filter.AssignedTo != "" {
-		conditions = append(conditions, fmt.Sprintf("c.assigned_to = $%d", argIdx))
-		args = append(args, filter.AssignedTo)
-		argIdx++
+		if filter.AssignedTo == "unassigned" {
+			conditions = append(conditions, "c.assigned_to IS NULL")
+		} else {
+			conditions = append(conditions, fmt.Sprintf("c.assigned_to = $%d", argIdx))
+			args = append(args, filter.AssignedTo)
+			argIdx++
+		}
 	}
 
 	if filter.NeedsHuman {
@@ -248,6 +252,13 @@ func (r *PostgresInboxRepository) AssignConversation(ctx context.Context, tenant
 		UPDATE conversations
 		SET assigned_to = $1, updated_at = NOW()
 		WHERE id = $2 AND tenant_id = $3
+		  AND ($1::varchar IS NULL OR EXISTS (
+			SELECT 1 FROM tenant_members tm
+			WHERE tm.tenant_id = $3::uuid AND tm.user_id = $1
+		  ) OR EXISTS (
+			SELECT 1 FROM users u
+			WHERE u.id = $1 AND u.tenant_id = $3::uuid
+		  ))
 	`
 	res, err := r.db.ExecContext(ctx, query, userID, conversationID, tenantID)
 	if err != nil {
@@ -255,7 +266,39 @@ func (r *PostgresInboxRepository) AssignConversation(ctx context.Context, tenant
 	}
 	rows, _ := res.RowsAffected()
 	if rows == 0 {
-		return fmt.Errorf("conversation not found")
+		return fmt.Errorf("conversation not found or assignee is not a workspace member")
+	}
+	return nil
+}
+
+func (r *PostgresInboxRepository) BulkAssignConversations(ctx context.Context, tenantID string, conversationIDs []string, userID *string) error {
+	if len(conversationIDs) == 0 {
+		return fmt.Errorf("at least one conversation is required")
+	}
+
+	query := `
+		UPDATE conversations
+		SET assigned_to = $1, updated_at = NOW()
+		WHERE tenant_id = $2::uuid
+		  AND id = ANY($3::uuid[])
+		  AND ($1::varchar IS NULL OR EXISTS (
+			SELECT 1 FROM tenant_members tm
+			WHERE tm.tenant_id = $2::uuid AND tm.user_id = $1
+		  ) OR EXISTS (
+			SELECT 1 FROM users u
+			WHERE u.id = $1 AND u.tenant_id = $2::uuid
+		  ))
+	`
+	result, err := r.db.ExecContext(ctx, query, userID, tenantID, pq.Array(conversationIDs))
+	if err != nil {
+		return fmt.Errorf("failed to assign conversations: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to verify conversation assignment: %w", err)
+	}
+	if rows != int64(len(conversationIDs)) {
+		return fmt.Errorf("some conversations were not found in this workspace or the assignee is not a workspace member")
 	}
 	return nil
 }

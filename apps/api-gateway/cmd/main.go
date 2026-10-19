@@ -786,6 +786,7 @@ func main() {
 
 	// Unified Team Inbox Endpoints
 	mux.HandleFunc("GET /api/v1/inbox/conversations", inboxHandler.ListConversations)
+	mux.HandleFunc("POST /api/v1/inbox/conversations/bulk-assign", inboxHandler.BulkAssignConversations)
 	mux.HandleFunc("GET /api/v1/inbox/conversations/{id}", inboxHandler.GetConversation)
 	mux.HandleFunc("GET /api/v1/inbox/conversations/{id}/messages", inboxHandler.ListMessages)
 	mux.HandleFunc("POST /api/v1/inbox/conversations/{id}/reply", inboxHandler.SendReply)

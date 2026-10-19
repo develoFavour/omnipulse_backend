@@ -87,6 +87,7 @@ type InboxRepository interface {
 	GetOrCreateConversation(ctx context.Context, tenantID, contactID, channel string) (*Conversation, error)
 	UpdateConversationStatus(ctx context.Context, tenantID, conversationID string, status ConversationStatus) error
 	AssignConversation(ctx context.Context, tenantID, conversationID string, userID *string) error
+	BulkAssignConversations(ctx context.Context, tenantID string, conversationIDs []string, userID *string) error
 	MarkConversationAsRead(ctx context.Context, tenantID, conversationID string) error
 
 	ListMessages(ctx context.Context, tenantID, conversationID string, limit, offset int) ([]Message, error)
