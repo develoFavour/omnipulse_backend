@@ -233,13 +233,20 @@ func (h *AIAgentHandler) CreateKnowledgeItem(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if strings.TrimSpace(req.QuestionOrTopic) == "" || strings.TrimSpace(req.AnswerOrContent) == "" {
+	req.QuestionOrTopic = strings.TrimSpace(req.QuestionOrTopic)
+	req.AnswerOrContent = strings.TrimSpace(req.AnswerOrContent)
+	req.Category = strings.TrimSpace(strings.ToLower(req.Category))
+	if req.QuestionOrTopic == "" || req.AnswerOrContent == "" {
 		utils.WriteError(w, http.StatusBadRequest, "Question/topic and answer/content cannot be empty")
 		return
 	}
 
 	if req.Category == "" {
 		req.Category = "faq"
+	}
+	if !isValidKnowledgeCategory(req.Category) {
+		utils.WriteError(w, http.StatusBadRequest, "Choose a valid knowledge category")
+		return
 	}
 	req.TenantID = tenantID
 	req.IsActive = true
@@ -276,6 +283,20 @@ func (h *AIAgentHandler) UpdateKnowledgeItem(w http.ResponseWriter, r *http.Requ
 
 	req.ID = itemID
 	req.TenantID = tenantID
+	req.QuestionOrTopic = strings.TrimSpace(req.QuestionOrTopic)
+	req.AnswerOrContent = strings.TrimSpace(req.AnswerOrContent)
+	req.Category = strings.TrimSpace(strings.ToLower(req.Category))
+	if req.QuestionOrTopic == "" || req.AnswerOrContent == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Question/topic and answer/content cannot be empty")
+		return
+	}
+	if req.Category == "" {
+		req.Category = "faq"
+	}
+	if !isValidKnowledgeCategory(req.Category) {
+		utils.WriteError(w, http.StatusBadRequest, "Choose a valid knowledge category")
+		return
+	}
 
 	if err := h.repo.UpdateKnowledgeItem(r.Context(), &req); err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -283,6 +304,15 @@ func (h *AIAgentHandler) UpdateKnowledgeItem(w http.ResponseWriter, r *http.Requ
 	}
 
 	utils.WriteJSON(w, http.StatusOK, req)
+}
+
+func isValidKnowledgeCategory(category string) bool {
+	switch category {
+	case "faq", "pricing", "product", "policy", "hours":
+		return true
+	default:
+		return false
+	}
 }
 
 // DeleteKnowledgeItem handles DELETE /api/v1/ai-agent/knowledge/{id}
