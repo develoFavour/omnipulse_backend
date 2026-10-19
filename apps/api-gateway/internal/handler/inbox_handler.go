@@ -12,11 +12,16 @@ import (
 )
 
 type InboxHandler struct {
-	inboxUseCase usecase.InboxUseCase
+	inboxUseCase       usecase.InboxUseCase
+	assignmentNotifier AssignmentNotifier
 }
 
-func NewInboxHandler(inboxUseCase usecase.InboxUseCase) *InboxHandler {
-	return &InboxHandler{inboxUseCase: inboxUseCase}
+func NewInboxHandler(inboxUseCase usecase.InboxUseCase, notifiers ...AssignmentNotifier) *InboxHandler {
+	h := &InboxHandler{inboxUseCase: inboxUseCase}
+	if len(notifiers) > 0 {
+		h.assignmentNotifier = notifiers[0]
+	}
+	return h
 }
 
 func (h *InboxHandler) ListConversations(w http.ResponseWriter, r *http.Request) {
@@ -179,9 +184,18 @@ func (h *InboxHandler) UpdateConversation(w http.ResponseWriter, r *http.Request
 			}
 			assignedTo = &assignee
 		}
+		var previousAssignee *string
+		if h.assignmentNotifier != nil {
+			if conversation, err := h.inboxUseCase.GetConversation(r.Context(), tenantID, conversationID); err == nil && conversation != nil {
+				previousAssignee = conversation.AssignedTo
+			}
+		}
 		if err := h.inboxUseCase.AssignConversation(r.Context(), tenantID, conversationID, assignedTo); err != nil {
 			utils.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
+		}
+		if h.assignmentNotifier != nil {
+			h.assignmentNotifier.NotifyConversationAssignment(r.Context(), tenantID, conversationID, previousAssignee)
 		}
 	}
 
@@ -219,9 +233,21 @@ func (h *InboxHandler) BulkAssignConversations(w http.ResponseWriter, r *http.Re
 		assignedTo = &assignee
 	}
 
+	previousAssignees := make(map[string]*string, len(req.ConversationIDs))
+	if h.assignmentNotifier != nil {
+		for _, conversationID := range req.ConversationIDs {
+			if conversation, err := h.inboxUseCase.GetConversation(r.Context(), tenantID, conversationID); err == nil && conversation != nil {
+				previousAssignees[conversationID] = conversation.AssignedTo
+			}
+		}
+	}
+
 	if err := h.inboxUseCase.BulkAssignConversations(r.Context(), tenantID, req.ConversationIDs, assignedTo); err != nil {
 		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if h.assignmentNotifier != nil {
+		h.assignmentNotifier.NotifyBulkConversationAssignment(r.Context(), tenantID, req.ConversationIDs, previousAssignees)
 	}
 
 	utils.WriteJSON(w, http.StatusOK, map[string]interface{}{

@@ -33,6 +33,13 @@ type brevoEmailAddress struct {
 	Email string `json:"email"`
 }
 
+// ConversationAssignment is the small amount of context included in an
+// assignment notification. Message contents are intentionally excluded.
+type ConversationAssignment struct {
+	ContactName string
+	Channel     string
+}
+
 // NewMailer creates an instance of Mailer.
 func NewMailer(cfg *config.Config) *Mailer {
 	return &Mailer{
@@ -225,6 +232,50 @@ func (m *Mailer) SendTeamInvitation(toEmail, inviterName, workspaceName, role, i
   </table>
 </body>
 </html>`, escapedInviter, escapedWorkspace, escapedRole, escapedURL)
+
+	m.SendEmail(toEmail, subject, htmlBody)
+}
+
+// SendConversationAssignments notifies a teammate that conversations have
+// been assigned to them. It is intentionally asynchronous, so a mail provider
+// outage never makes an otherwise successful assignment fail.
+func (m *Mailer) SendConversationAssignments(toEmail, recipientName, workspaceName, inboxURL string, assignments []ConversationAssignment) {
+	if strings.TrimSpace(toEmail) == "" || len(assignments) == 0 {
+		return
+	}
+
+	escapedRecipient := html.EscapeString(recipientName)
+	escapedWorkspace := html.EscapeString(workspaceName)
+	escapedURL := html.EscapeString(inboxURL)
+
+	rows := make([]string, 0, len(assignments))
+	for _, assignment := range assignments {
+		rows = append(rows, fmt.Sprintf(`<tr>
+  <td style="padding: 10px 12px; border-bottom: 1px solid #f3f4f6; font-size: 14px; color: #111827;">%s</td>
+  <td style="padding: 10px 12px; border-bottom: 1px solid #f3f4f6; font-size: 13px; color: #6b7280; text-transform: capitalize;">%s</td>
+</tr>`, html.EscapeString(assignment.ContactName), html.EscapeString(assignment.Channel)))
+	}
+
+	subject := fmt.Sprintf("%d conversation(s) assigned to you in %s", len(assignments), workspaceName)
+	htmlBody := fmt.Sprintf(`<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Conversation assignment</title></head>
+<body style="margin:0;padding:32px 16px;background:#f9fafb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:#111827;">
+  <table role="presentation" width="100%%" cellspacing="0" cellpadding="0"><tr><td align="center">
+    <table role="presentation" width="100%%" cellspacing="0" cellpadding="0" style="max-width:560px;background:#fff;border:1px solid #e5e7eb;border-radius:12px;">
+      <tr><td style="padding:28px 32px 20px;border-bottom:1px solid #f3f4f6;"><strong style="font-size:16px;color:#14532d;">MessageRail</strong></td></tr>
+      <tr><td style="padding:28px 32px 32px;">
+        <h1 style="margin:0 0 12px;font-size:22px;line-height:1.3;">New conversation assignment</h1>
+        <p style="margin:0 0 22px;font-size:15px;line-height:24px;color:#4b5563;"><strong>%s</strong>, you have been assigned %d conversation(s) in <strong>%s</strong>.</p>
+        <table role="presentation" width="100%%" cellspacing="0" cellpadding="0" style="border:1px solid #e5e7eb;border-radius:8px;border-collapse:separate;overflow:hidden;">
+          <tr style="background:#f9fafb;"><th align="left" style="padding:10px 12px;font-size:12px;color:#6b7280;text-transform:uppercase;">Contact</th><th align="left" style="padding:10px 12px;font-size:12px;color:#6b7280;text-transform:uppercase;">Channel</th></tr>
+          %s
+        </table>
+        <p style="margin:26px 0 0;text-align:center;"><a href="%s" target="_blank" style="display:inline-block;background:#14532d;color:#fff;text-decoration:none;font-weight:600;font-size:14px;padding:12px 24px;border-radius:8px;">Open Inbox &rarr;</a></p>
+      </td></tr>
+    </table>
+    <p style="margin:18px 0 0;font-size:12px;color:#9ca3af;">MessageRail &bull; Omnichannel workspace inbox</p>
+  </td></tr></table>
+</body></html>`, escapedRecipient, len(assignments), escapedWorkspace, strings.Join(rows, ""), escapedURL)
 
 	m.SendEmail(toEmail, subject, htmlBody)
 }

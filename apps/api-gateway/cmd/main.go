@@ -536,7 +536,8 @@ func main() {
 	destinationHandler := handler.NewTelegramDestinationHandler(destinationRepo)
 	inboxUseCase := usecase.NewInboxUseCase(inboxRepo, contactRepo, channelRepo, waManager)
 	inboxUseCase.SetAIAgentRepo(aiAgentRepo)
-	inboxHandler := handler.NewInboxHandler(inboxUseCase)
+	inboxAssignmentNotifier := handler.NewAssignmentEmailNotifier(db, mailer, cfg.PublicAppBaseURL, logger)
+	inboxHandler := handler.NewInboxHandler(inboxUseCase, inboxAssignmentNotifier)
 
 	inboxHub := service.NewInboxHub()
 	aiAgentHandler.SetInboxHub(inboxHub)
