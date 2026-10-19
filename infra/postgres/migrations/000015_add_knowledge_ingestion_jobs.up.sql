@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS ai_knowledge_ingestion_jobs (
     tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     filename TEXT NOT NULL,
     content_type VARCHAR(255) NOT NULL DEFAULT 'application/octet-stream',
-    source_data BYTEA NOT NULL,
+    source_data BYTEA,
     status VARCHAR(32) NOT NULL DEFAULT 'queued',
     extracted_items JSONB,
     error_message TEXT,

@@ -352,7 +352,7 @@ func main() {
 			tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
 			filename TEXT NOT NULL,
 			content_type VARCHAR(255) NOT NULL DEFAULT 'application/octet-stream',
-			source_data BYTEA NOT NULL,
+			source_data BYTEA,
 			status VARCHAR(32) NOT NULL DEFAULT 'queued',
 			extracted_items JSONB,
 			error_message TEXT,
@@ -368,6 +368,8 @@ func main() {
 		CREATE INDEX IF NOT EXISTS idx_ai_knowledge_ingestion_queue
 			ON ai_knowledge_ingestion_jobs (status, created_at)
 			WHERE status = 'queued';
+		ALTER TABLE ai_knowledge_ingestion_jobs
+			ALTER COLUMN source_data DROP NOT NULL;
 
 		ALTER TABLE conversations ADD COLUMN IF NOT EXISTS ai_state VARCHAR(32) NOT NULL DEFAULT 'active';
 		ALTER TABLE conversations ADD COLUMN IF NOT EXISTS ai_paused_until TIMESTAMP WITH TIME ZONE;
