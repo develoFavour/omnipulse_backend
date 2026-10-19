@@ -34,6 +34,7 @@ type WhatsAppManager struct {
 	inboxHub      *InboxHub
 	aiEngine      *AIEngineService
 	aiAgentRepo   domain.AIAgentRepository
+	aiDispatcher  AIReplyDispatcher
 	clients       sync.Map // map[string]*tenantSession (key: tenantID)
 	mu            sync.Mutex
 }
@@ -93,6 +94,23 @@ func (m *WhatsAppManager) SetAIAgentRepo(repo domain.AIAgentRepository) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.aiAgentRepo = repo
+}
+
+func (m *WhatsAppManager) SetAIReplyDispatcher(dispatcher AIReplyDispatcher) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.aiDispatcher = dispatcher
+}
+
+func (m *WhatsAppManager) ProcessAIReplyJob(ctx context.Context, job AIReplyJob) error {
+	if m.inboxRepo == nil {
+		return fmt.Errorf("inbox repository is unavailable")
+	}
+	conv, err := m.inboxRepo.GetConversation(ctx, job.TenantID, job.ConversationID)
+	if err != nil {
+		return err
+	}
+	return m.handleAIAutoResponse(job.TenantID, conv, job.Recipient, job.IncomingText)
 }
 
 func (m *WhatsAppManager) restoreExistingSessions() {
@@ -716,7 +734,18 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 						}
 						// Autonomous AI Business Assistant: handle inbound customer inquiries asynchronously
 						if direction == domain.MessageDirectionInbound && text != "" {
-							go m.handleAIAutoResponse(tenantID, conv, contactPhone, text)
+							job := AIReplyJob{
+								TenantID: tenantID, ConversationID: conv.ID, Channel: "whatsapp",
+								Recipient: contactPhone, IncomingText: text, PlatformID: msgID,
+							}
+							if m.aiDispatcher != nil {
+								if err := m.aiDispatcher.EnqueueAIReply(ctx, job); err != nil {
+									log.Printf("[WhatsAppManager/AI] Queue unavailable, falling back to in-process reply: %v\n", err)
+									go m.handleAIAutoResponse(tenantID, conv, contactPhone, text)
+								}
+							} else {
+								go m.handleAIAutoResponse(tenantID, conv, contactPhone, text)
+							}
 						}
 						log.Printf("[WhatsAppManager] 💬 Synced %s message for tenant %s with %s (conv %s, media=%v): %q\n", direction, tenantID, contactPhone, conv.ID, mediaType != nil, text)
 					} else {
@@ -1308,9 +1337,9 @@ func (m *WhatsAppManager) SyncContacts(ctx context.Context, tenantID string, con
 	return totalInDB, nil
 }
 
-func (m *WhatsAppManager) handleAIAutoResponse(tenantID string, conv *domain.Conversation, contactPhone, incomingText string) {
+func (m *WhatsAppManager) handleAIAutoResponse(tenantID string, conv *domain.Conversation, contactPhone, incomingText string) error {
 	if m.aiEngine == nil || m.aiAgentRepo == nil || !m.aiEngine.HasActiveProvider() {
-		return
+		return nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1318,8 +1347,11 @@ func (m *WhatsAppManager) handleAIAutoResponse(tenantID string, conv *domain.Con
 
 	// 1. Check AI master toggle and configuration for tenant
 	cfg, err := m.aiAgentRepo.GetConfig(ctx, tenantID)
-	if err != nil || cfg == nil || !cfg.IsEnabled {
-		return
+	if err != nil {
+		return err
+	}
+	if cfg == nil || !cfg.IsEnabled {
+		return nil
 	}
 
 	// 2. Check conversation-level AI state (e.g. human agent paused it)
@@ -1328,47 +1360,64 @@ func (m *WhatsAppManager) handleAIAutoResponse(tenantID string, conv *domain.Con
 		if aiState == "paused_by_human" {
 			if pausedUntil != nil && time.Now().Before(*pausedUntil) {
 				log.Printf("[WhatsAppManager/AI] ⏸️ Skipping AI reply for conv %s: paused by agent until %v\n", conv.ID, pausedUntil)
-				return
+				return nil
 			}
 			// Resume automatically after pause period ends
 			_ = m.aiAgentRepo.SetConversationAIState(ctx, tenantID, conv.ID, "active", nil, false)
 		} else if aiState == "disabled" {
-			return
+			return nil
 		}
 	}
 
 	// 3. Verify operational mode (always_on vs after_hours)
 	if !m.aiEngine.ShouldRespond(cfg) {
 		log.Printf("[WhatsAppManager/AI] ⏳ AI reply skipped for tenant %s: current time is within business hours / agent shift\n", tenantID)
-		return
+		return nil
 	}
 
 	// 4. Fetch business knowledge items
-	knowledge, _ := m.aiAgentRepo.ListKnowledgeItems(ctx, tenantID)
+	knowledge, err := m.aiAgentRepo.ListKnowledgeItems(ctx, tenantID)
+	if err != nil {
+		return err
+	}
 
 	// 5. Fetch recent conversation history (last 6 messages) for context
-	recentMsgs, _ := m.inboxRepo.ListMessages(ctx, tenantID, conv.ID, 6, 0)
+	recentMsgs, err := m.inboxRepo.ListMessages(ctx, tenantID, conv.ID, 6, 0)
+	if err != nil {
+		return err
+	}
 	// Reverse to chronological order
 	for i, j := 0, len(recentMsgs)-1; i < j; i, j = i+1, j-1 {
 		recentMsgs[i], recentMsgs[j] = recentMsgs[j], recentMsgs[i]
 	}
 
 	// 6. Generate reply with dual-engine fallback (Gemini -> Groq)
-	replyText, needsHuman, err := m.aiEngine.GenerateReply(ctx, cfg, knowledge, recentMsgs, incomingText)
+	replyText, needsHuman, leadInfo, err := m.aiEngine.GenerateReply(ctx, cfg, knowledge, recentMsgs, incomingText)
 	if err != nil {
 		log.Printf("[WhatsAppManager/AI] ⚠️ Failed to generate AI reply for tenant %s: %v\n", tenantID, err)
-		return
+		return err
+	}
+
+	// Auto-enrich audience contact details if lead info detected
+	if leadInfo != nil && leadInfo.Name != "" {
+		phoneRouting := "+" + strings.TrimPrefix(strings.TrimSpace(contactPhone), "+")
+		_, _ = m.db.ExecContext(ctx, `
+			UPDATE contacts
+			SET first_name = $1, updated_at = NOW()
+			WHERE tenant_id = $2 AND channel = 'whatsapp' AND (routing_value = $3 OR routing_value = $4)
+		`, leadInfo.Name, tenantID, phoneRouting, contactPhone)
+		log.Printf("[WhatsAppManager/AI] 🎯 Auto-captured lead name %q for %s\n", leadInfo.Name, contactPhone)
 	}
 
 	if strings.TrimSpace(replyText) == "" {
-		return
+		return nil
 	}
 
 	// 7. Dispatch reply to customer via WhatsApp
 	msgID, err := m.SendMessage(ctx, tenantID, contactPhone, replyText, nil)
 	if err != nil {
 		log.Printf("[WhatsAppManager/AI] ❌ Failed to dispatch WhatsApp message to %s: %v\n", contactPhone, err)
-		return
+		return err
 	}
 
 	// 8. Persist the reply with sender_type = "bot"
@@ -1382,7 +1431,9 @@ func (m *WhatsAppManager) handleAIAutoResponse(tenantID string, conv *domain.Con
 		Status:            "delivered",
 		CreatedAt:         time.Now().UTC(),
 	}
-	_ = m.inboxRepo.CreateMessage(ctx, botMsg)
+	if err := m.inboxRepo.CreateMessage(ctx, botMsg); err != nil {
+		return err
+	}
 
 	// 9. If customer asked for human assistance, flag the conversation
 	if needsHuman {
@@ -1396,4 +1447,5 @@ func (m *WhatsAppManager) handleAIAutoResponse(tenantID string, conv *domain.Con
 
 	log.Printf("[WhatsAppManager/AI] 🤖 Successfully sent AI bot reply to %s for tenant %s (conv: %s, needsHuman: %v)\n",
 		contactPhone, tenantID, conv.ID, needsHuman)
+	return nil
 }

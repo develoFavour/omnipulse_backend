@@ -61,8 +61,11 @@ func (s *AIEngineService) ShouldRespond(cfg *domain.AIAgentConfig) bool {
 		}
 		now := time.Now().In(loc)
 
-		// Check day of week (0 = Sunday, 1 = Monday, ..., 6 = Saturday)
+		// Use the configuration contract: 1 = Monday, ..., 7 = Sunday.
 		weekday := int(now.Weekday())
+		if weekday == 0 {
+			weekday = 7
+		}
 		isWorkDay := false
 		for _, d := range cfg.WorkDays {
 			if d == weekday {
@@ -81,7 +84,14 @@ func (s *AIEngineService) ShouldRespond(cfg *domain.AIAgentConfig) bool {
 		startMinutes := parseTimeToMinutes(cfg.BusinessHoursStart, 9*60)
 		endMinutes := parseTimeToMinutes(cfg.BusinessHoursEnd, 17*60)
 
-		if currentMinutes < startMinutes || currentMinutes >= endMinutes {
+		outsideHours := false
+		if startMinutes <= endMinutes {
+			outsideHours = currentMinutes < startMinutes || currentMinutes >= endMinutes
+		} else {
+			// Support businesses whose shift crosses midnight, e.g. 22:00–06:00.
+			outsideHours = currentMinutes >= endMinutes && currentMinutes < startMinutes
+		}
+		if outsideHours {
 			// Outside business hours -> AI should respond
 			return true
 		}
@@ -112,11 +122,15 @@ func (s *AIEngineService) GenerateReply(
 	knowledge []domain.AIKnowledgeItem,
 	recentMessages []domain.Message,
 	incomingText string,
-) (reply string, needsHuman bool, err error) {
+) (reply string, needsHuman bool, lead *domain.ExtractedLeadInfo, err error) {
+	if cfg == nil {
+		return "", false, nil, fmt.Errorf("AI assistant configuration is missing")
+	}
 	if !s.HasActiveProvider() {
-		return "", false, fmt.Errorf("no AI provider configured (set GEMINI_API_KEY or GROQ_API_KEY)")
+		return "", false, nil, fmt.Errorf("no AI provider configured (set GEMINI_API_KEY or GROQ_API_KEY)")
 	}
 
+	knowledge = rankKnowledgeItems(knowledge, incomingText, 8)
 	systemPrompt := s.buildSystemPrompt(cfg, knowledge)
 
 	// Build conversation history transcript (last 6 messages max)
@@ -136,42 +150,263 @@ func (s *AIEngineService) GenerateReply(
 	}
 	transcript := historyBuilder.String()
 
-	// 1. Try Gemini 1.5 Flash if configured
+	// 1. Try Gemini REST API if configured
 	if s.geminiKey != "" {
 		reply, err = s.callGemini(ctx, systemPrompt, transcript, incomingText)
 		if err == nil && reply != "" {
-			return s.postProcessReply(reply)
+			processed, handoff, extractedLead, processErr := s.postProcessReply(reply)
+			if processErr == nil {
+				if confidence := responseConfidence(reply); cfg.ConfidenceThreshold > 0 && confidence < cfg.ConfidenceThreshold {
+					fallback := cfg.UnsupportedQueryMessage
+					if fallback == "" {
+						fallback = "I do not have that information right now, but a team member will follow up with you."
+					}
+					return fallback, true, extractedLead, nil
+				}
+				return processed, handoff, extractedLead, nil
+			}
+			err = processErr
 		}
 		log.Printf("[AIEngine] ⚠️ Gemini call failed: %v. Attempting Groq fallback...\n", err)
 	}
 
-	// 2. Fallback to Groq (Llama 3.3 70B) if configured
+	// 2. Fallback to Groq if configured
 	if s.groqKey != "" {
 		reply, err = s.callGroq(ctx, systemPrompt, transcript, incomingText)
 		if err == nil && reply != "" {
-			return s.postProcessReply(reply)
+			processed, handoff, extractedLead, processErr := s.postProcessReply(reply)
+			if processErr == nil {
+				if confidence := responseConfidence(reply); cfg.ConfidenceThreshold > 0 && confidence < cfg.ConfidenceThreshold {
+					fallback := cfg.UnsupportedQueryMessage
+					if fallback == "" {
+						fallback = "I do not have that information right now, but a team member will follow up with you."
+					}
+					return fallback, true, extractedLead, nil
+				}
+				return processed, handoff, extractedLead, nil
+			}
+			err = processErr
 		}
 		log.Printf("[AIEngine] ⚠️ Groq fallback failed: %v\n", err)
 	}
 
 	if reply == "" {
-		return "", false, fmt.Errorf("all configured AI providers failed to generate a response")
+		return "", false, nil, fmt.Errorf("all configured AI providers failed to generate a response")
 	}
 
 	return s.postProcessReply(reply)
 }
 
-func (s *AIEngineService) postProcessReply(rawReply string) (string, bool, error) {
+// rankKnowledgeItems keeps the prompt tenant-scoped and bounded. It uses a
+// deterministic lexical match for the current MVP; a pgvector-backed retriever
+// can replace this function later without changing the AI orchestration API.
+func rankKnowledgeItems(items []domain.AIKnowledgeItem, query string, limit int) []domain.AIKnowledgeItem {
+	if limit <= 0 || len(items) <= limit {
+		return items
+	}
+	queryTokens := knowledgeTokens(query)
+	type scoredItem struct {
+		item  domain.AIKnowledgeItem
+		score int
+	}
+	scored := make([]scoredItem, 0, len(items))
+	for _, item := range items {
+		if !item.IsActive {
+			continue
+		}
+		textTokens := knowledgeTokens(item.QuestionOrTopic + " " + item.AnswerOrContent)
+		score := 0
+		for token := range queryTokens {
+			if _, found := textTokens[token]; found {
+				score++
+			}
+		}
+		if score > 0 {
+			scored = append(scored, scoredItem{item: item, score: score})
+		}
+	}
+	for i := 0; i < len(scored); i++ {
+		for j := i + 1; j < len(scored); j++ {
+			if scored[j].score > scored[i].score {
+				scored[i], scored[j] = scored[j], scored[i]
+			}
+		}
+	}
+	if len(scored) > limit {
+		scored = scored[:limit]
+	}
+	result := make([]domain.AIKnowledgeItem, 0, len(scored))
+	for _, entry := range scored {
+		result = append(result, entry.item)
+	}
+	return result
+}
+
+func knowledgeTokens(value string) map[string]struct{} {
+	result := make(map[string]struct{})
+	for _, token := range strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	}) {
+		if len(token) >= 3 {
+			result[token] = struct{}{}
+		}
+	}
+	return result
+}
+
+type structuredAIResponse struct {
+	Response      string                    `json:"response"`
+	ShouldHandoff bool                      `json:"should_handoff"`
+	HandoffReason string                    `json:"handoff_reason"`
+	Confidence    float64                   `json:"confidence"`
+	LeadInfo      *domain.ExtractedLeadInfo `json:"lead_info,omitempty"`
+}
+
+func (s *AIEngineService) postProcessReply(rawReply string) (string, bool, *domain.ExtractedLeadInfo, error) {
 	needsHuman := false
 	cleaned := rawReply
+	legacyMarkers := strings.Contains(rawReply, "[HANDOFF_TO_HUMAN]") || strings.Contains(rawReply, "[LEAD_NAME:") || strings.Contains(rawReply, "[LEAD_EMAIL:")
+
+	// Providers are instructed to return JSON. Validate it before sending anything
+	// to a customer. Marker parsing remains as a backwards-compatible fallback for
+	// already-configured providers, but is treated as low-confidence output.
+	jsonCandidate := strings.TrimSpace(rawReply)
+	if start := strings.Index(jsonCandidate, "{"); start >= 0 {
+		if end := strings.LastIndex(jsonCandidate, "}"); end > start {
+			var structured structuredAIResponse
+			if err := json.Unmarshal([]byte(jsonCandidate[start:end+1]), &structured); err == nil {
+				if strings.TrimSpace(structured.Response) == "" {
+					return "", false, nil, fmt.Errorf("AI provider returned an empty response")
+				}
+				return strings.TrimSpace(structured.Response), structured.ShouldHandoff, structured.LeadInfo, nil
+			}
+		}
+	}
 
 	if strings.Contains(cleaned, "[HANDOFF_TO_HUMAN]") {
 		needsHuman = true
 		cleaned = strings.ReplaceAll(cleaned, "[HANDOFF_TO_HUMAN]", "")
 	}
 
+	var lead *domain.ExtractedLeadInfo
+	if strings.Contains(cleaned, "[LEAD_NAME:") || strings.Contains(cleaned, "[LEAD_EMAIL:") {
+		lead = &domain.ExtractedLeadInfo{}
+		// Extract LEAD_NAME
+		if idx := strings.Index(cleaned, "[LEAD_NAME:"); idx != -1 {
+			end := strings.Index(cleaned[idx:], "]")
+			if end != -1 {
+				namePart := cleaned[idx+11 : idx+end]
+				lead.Name = strings.TrimSpace(namePart)
+				cleaned = cleaned[:idx] + cleaned[idx+end+1:]
+			}
+		}
+		// Extract LEAD_EMAIL
+		if idx := strings.Index(cleaned, "[LEAD_EMAIL:"); idx != -1 {
+			end := strings.Index(cleaned[idx:], "]")
+			if end != -1 {
+				emailPart := cleaned[idx+12 : idx+end]
+				lead.Email = strings.TrimSpace(emailPart)
+				cleaned = cleaned[:idx] + cleaned[idx+end+1:]
+			}
+		}
+	}
+
 	cleaned = strings.TrimSpace(cleaned)
-	return cleaned, needsHuman, nil
+	if cleaned == "" {
+		return "", false, nil, fmt.Errorf("AI provider returned an empty response")
+	}
+	if !legacyMarkers {
+		return "", false, nil, fmt.Errorf("AI provider returned an invalid response format")
+	}
+	return cleaned, needsHuman, lead, nil
+}
+
+func responseConfidence(rawReply string) float64 {
+	start := strings.Index(rawReply, "{")
+	end := strings.LastIndex(rawReply, "}")
+	if start < 0 || end <= start {
+		return 0
+	}
+	var response structuredAIResponse
+	if err := json.Unmarshal([]byte(rawReply[start:end+1]), &response); err != nil {
+		return 0
+	}
+	return response.Confidence
+}
+
+// ExtractKnowledgeItemsFromText parses raw documents, FAQs, or business policies into structured Q&A items
+func (s *AIEngineService) ExtractKnowledgeItemsFromText(ctx context.Context, text string) ([]domain.AIKnowledgeItem, error) {
+	if !s.HasActiveProvider() {
+		return nil, fmt.Errorf("no AI provider configured")
+	}
+
+	systemPrompt := `You are an expert AI knowledge base parser for businesses and agencies.
+Analyze the provided text, document, FAQs, product list, or policy, and extract all factual Question & Answer (or Topic & Detail) knowledge items.
+Categories MUST be one of: "faq", "pricing", "product", "policy", "hours".
+
+Strictly output ONLY a valid JSON array of objects without any markdown formatting or commentary:
+[
+  {
+    "category": "pricing",
+    "question_or_topic": "What are your delivery fees?",
+    "answer_or_content": "Delivery to Lagos is ₦2,000 and ₦4,000 nationwide."
+  }
+]`
+
+	var rawOutput string
+	var err error
+
+	if s.geminiKey != "" {
+		rawOutput, err = s.callGemini(ctx, systemPrompt, "", text)
+		if err == nil && rawOutput != "" {
+			return parseExtractedKnowledgeJSON(rawOutput)
+		}
+		log.Printf("[AIEngine] ⚠️ Gemini knowledge extraction failed: %v. Trying Groq...\n", err)
+	}
+
+	if s.groqKey != "" {
+		rawOutput, err = s.callGroq(ctx, systemPrompt, "", text)
+		if err == nil && rawOutput != "" {
+			return parseExtractedKnowledgeJSON(rawOutput)
+		}
+		log.Printf("[AIEngine] ⚠️ Groq knowledge extraction failed: %v\n", err)
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract knowledge items: %w", err)
+	}
+	return nil, fmt.Errorf("all providers failed to extract knowledge items")
+}
+
+func parseExtractedKnowledgeJSON(raw string) ([]domain.AIKnowledgeItem, error) {
+	cleaned := strings.TrimSpace(raw)
+	// Strip markdown fences if present
+	if strings.HasPrefix(cleaned, "```json") {
+		cleaned = strings.TrimPrefix(cleaned, "```json")
+	} else if strings.HasPrefix(cleaned, "```") {
+		cleaned = strings.TrimPrefix(cleaned, "```")
+	}
+	cleaned = strings.TrimSuffix(cleaned, "```")
+	cleaned = strings.TrimSpace(cleaned)
+
+	start := strings.Index(cleaned, "[")
+	end := strings.LastIndex(cleaned, "]")
+	if start != -1 && end != -1 && end > start {
+		cleaned = cleaned[start : end+1]
+	}
+
+	var items []domain.AIKnowledgeItem
+	if err := json.Unmarshal([]byte(cleaned), &items); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal extracted JSON: %w (output: %s)", err, cleaned)
+	}
+
+	for i := range items {
+		items[i].IsActive = true
+		if items[i].Category == "" {
+			items[i].Category = "faq"
+		}
+	}
+	return items, nil
 }
 
 func (s *AIEngineService) buildSystemPrompt(cfg *domain.AIAgentConfig, knowledge []domain.AIKnowledgeItem) string {
@@ -225,6 +460,8 @@ func (s *AIEngineService) buildSystemPrompt(cfg *domain.AIAgentConfig, knowledge
 	b.WriteString("1. ONLY answer questions using the facts and information provided above. DO NOT invent prices, delivery policies, or products.\n")
 	b.WriteString(fmt.Sprintf("2. If the user asks something not covered in your knowledge base, or asks to speak with a human/agent/representative, politely respond with: %q and append [HANDOFF_TO_HUMAN] at the end.\n", handoffMsg))
 	b.WriteString("3. Keep responses concise and formatted cleanly for WhatsApp/Telegram (under 3-4 sentences when possible). Use bullet points for lists.\n")
+	b.WriteString("4. If the customer introduces themselves or shares an email address, include the extracted details in lead_info.\n")
+	b.WriteString("5. Return ONLY valid JSON with this exact shape: {\"response\":\"...\",\"should_handoff\":false,\"handoff_reason\":\"none\",\"confidence\":0.95,\"lead_info\":null}. Do not include markdown or extra commentary.\n")
 
 	return b.String()
 }
@@ -253,8 +490,9 @@ func (s *AIEngineService) callGemini(ctx context.Context, systemPrompt, transcri
 			},
 		},
 		"generationConfig": map[string]interface{}{
-			"temperature":     0.3,
-			"maxOutputTokens": 600,
+			"temperature":      0.3,
+			"maxOutputTokens":  600,
+			"responseMimeType": "application/json",
 		},
 	}
 
@@ -322,10 +560,11 @@ func (s *AIEngineService) callGroq(ctx context.Context, systemPrompt, transcript
 	})
 
 	payload := map[string]interface{}{
-		"model":       "openai/gpt-oss-120b",
-		"messages":    messages,
-		"temperature": 0.3,
-		"max_tokens":  600,
+		"model":           "openai/gpt-oss-120b",
+		"messages":        messages,
+		"temperature":     0.3,
+		"max_tokens":      600,
+		"response_format": map[string]string{"type": "json_object"},
 	}
 
 	bodyBytes, err := json.Marshal(payload)

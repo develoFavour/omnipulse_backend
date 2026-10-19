@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -175,6 +176,140 @@ func (r *PostgresAIAgentRepository) CreateKnowledgeItem(ctx context.Context, ite
 
 	if err != nil {
 		return fmt.Errorf("failed to create knowledge item: %w", err)
+	}
+	return nil
+}
+
+func (r *PostgresAIAgentRepository) BulkCreateKnowledgeItems(ctx context.Context, tenantID string, items []domain.AIKnowledgeItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO ai_knowledge_items (tenant_id, category, question_or_topic, answer_or_content, is_active)
+		VALUES ($1, $2, $3, $4, $5)
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to prepare bulk insert statement: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, it := range items {
+		cat := it.Category
+		if cat == "" {
+			cat = "faq"
+		}
+		if _, err := stmt.ExecContext(ctx, tenantID, cat, it.QuestionOrTopic, it.AnswerOrContent, true); err != nil {
+			return fmt.Errorf("failed to insert knowledge item: %w", err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+func (r *PostgresAIAgentRepository) CreateKnowledgeIngestionJob(ctx context.Context, tenantID, filename, contentType string, sourceData []byte) (*domain.KnowledgeIngestionJob, error) {
+	job := &domain.KnowledgeIngestionJob{
+		TenantID:    tenantID,
+		Filename:    filename,
+		ContentType: contentType,
+		Status:      domain.KnowledgeIngestionQueued,
+	}
+	err := r.db.QueryRowContext(ctx, `
+		INSERT INTO ai_knowledge_ingestion_jobs
+			(tenant_id, filename, content_type, source_data, status)
+		VALUES ($1, $2, $3, $4, 'queued')
+		RETURNING id, created_at
+	`, tenantID, filename, contentType, sourceData).Scan(&job.ID, &job.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create knowledge ingestion job: %w", err)
+	}
+	return job, nil
+}
+
+func (r *PostgresAIAgentRepository) GetKnowledgeIngestionJob(ctx context.Context, tenantID, jobID string) (*domain.KnowledgeIngestionJob, error) {
+	job := &domain.KnowledgeIngestionJob{}
+	var status string
+	var itemsJSON []byte
+	err := r.db.QueryRowContext(ctx, `
+		SELECT id, tenant_id, filename, content_type, status, extracted_items,
+		       COALESCE(error_message, ''), created_at, started_at, completed_at
+		FROM ai_knowledge_ingestion_jobs
+		WHERE id = $1 AND tenant_id = $2
+	`, jobID, tenantID).Scan(
+		&job.ID, &job.TenantID, &job.Filename, &job.ContentType, &status, &itemsJSON,
+		&job.ErrorMessage, &job.CreatedAt, &job.StartedAt, &job.CompletedAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("knowledge ingestion job not found")
+		}
+		return nil, fmt.Errorf("failed to get knowledge ingestion job: %w", err)
+	}
+	job.Status = domain.KnowledgeIngestionStatus(status)
+	if len(itemsJSON) > 0 {
+		if err := json.Unmarshal(itemsJSON, &job.Items); err != nil {
+			return nil, fmt.Errorf("failed to decode knowledge ingestion results: %w", err)
+		}
+	}
+	return job, nil
+}
+
+func (r *PostgresAIAgentRepository) ClaimKnowledgeIngestionJob(ctx context.Context, jobID string) (*domain.KnowledgeIngestionJob, error) {
+	job := &domain.KnowledgeIngestionJob{}
+	var status string
+	err := r.db.QueryRowContext(ctx, `
+		UPDATE ai_knowledge_ingestion_jobs
+		SET status = 'processing', started_at = NOW(), attempts = attempts + 1
+		WHERE id = $1
+		  AND attempts < 5
+		  AND (status = 'queued' OR (status = 'processing' AND started_at < NOW() - INTERVAL '10 minutes'))
+		RETURNING id, tenant_id, filename, content_type, source_data, created_at, started_at
+	`, jobID).Scan(
+		&job.ID, &job.TenantID, &job.Filename, &job.ContentType, &job.SourceData,
+		&job.CreatedAt, &job.StartedAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to claim knowledge ingestion job: %w", err)
+	}
+	status = string(domain.KnowledgeIngestionProcessing)
+	job.Status = domain.KnowledgeIngestionStatus(status)
+	return job, nil
+}
+
+func (r *PostgresAIAgentRepository) CompleteKnowledgeIngestionJob(ctx context.Context, jobID string, items []domain.AIKnowledgeItem) error {
+	itemsJSON, err := json.Marshal(items)
+	if err != nil {
+		return fmt.Errorf("failed to encode knowledge ingestion results: %w", err)
+	}
+	_, err = r.db.ExecContext(ctx, `
+		UPDATE ai_knowledge_ingestion_jobs
+		SET status = 'ready', extracted_items = $2, source_data = NULL,
+		    error_message = NULL, completed_at = NOW()
+		WHERE id = $1
+	`, jobID, itemsJSON)
+	if err != nil {
+		return fmt.Errorf("failed to complete knowledge ingestion job: %w", err)
+	}
+	return nil
+}
+
+func (r *PostgresAIAgentRepository) FailKnowledgeIngestionJob(ctx context.Context, jobID, message string) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE ai_knowledge_ingestion_jobs
+		SET status = 'failed', error_message = $2, source_data = NULL, completed_at = NOW()
+		WHERE id = $1
+	`, jobID, message)
+	if err != nil {
+		return fmt.Errorf("failed to mark knowledge ingestion job as failed: %w", err)
 	}
 	return nil
 }

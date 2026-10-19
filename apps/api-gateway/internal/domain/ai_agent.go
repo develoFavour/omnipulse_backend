@@ -46,13 +46,53 @@ type AIKnowledgeItem struct {
 	UpdatedAt       time.Time `json:"updated_at"`
 }
 
+type IngestDocumentRequest struct {
+	Content string `json:"content"`
+	Title   string `json:"title,omitempty"`
+}
+
+type KnowledgeIngestionStatus string
+
+const (
+	KnowledgeIngestionQueued     KnowledgeIngestionStatus = "queued"
+	KnowledgeIngestionProcessing KnowledgeIngestionStatus = "processing"
+	KnowledgeIngestionReady      KnowledgeIngestionStatus = "ready"
+	KnowledgeIngestionFailed     KnowledgeIngestionStatus = "failed"
+)
+
+type KnowledgeIngestionJob struct {
+	ID           string                   `json:"id"`
+	TenantID     string                   `json:"tenant_id,omitempty"`
+	Filename     string                   `json:"filename"`
+	ContentType  string                   `json:"content_type,omitempty"`
+	Status       KnowledgeIngestionStatus `json:"status"`
+	Items        []AIKnowledgeItem        `json:"items,omitempty"`
+	ErrorMessage string                   `json:"error_message,omitempty"`
+	CreatedAt    time.Time                `json:"created_at"`
+	StartedAt    *time.Time               `json:"started_at,omitempty"`
+	CompletedAt  *time.Time               `json:"completed_at,omitempty"`
+	SourceData   []byte                   `json:"-"`
+}
+
+type ExtractedLeadInfo struct {
+	Name  string `json:"name,omitempty"`
+	Email string `json:"email,omitempty"`
+}
+
 type AIAgentRepository interface {
 	GetConfig(ctx context.Context, tenantID string) (*AIAgentConfig, error)
 	SaveConfig(ctx context.Context, cfg *AIAgentConfig) error
 	ListKnowledgeItems(ctx context.Context, tenantID string) ([]AIKnowledgeItem, error)
 	CreateKnowledgeItem(ctx context.Context, item *AIKnowledgeItem) error
+	BulkCreateKnowledgeItems(ctx context.Context, tenantID string, items []AIKnowledgeItem) error
 	UpdateKnowledgeItem(ctx context.Context, item *AIKnowledgeItem) error
 	DeleteKnowledgeItem(ctx context.Context, tenantID, itemID string) error
+
+	CreateKnowledgeIngestionJob(ctx context.Context, tenantID, filename, contentType string, sourceData []byte) (*KnowledgeIngestionJob, error)
+	GetKnowledgeIngestionJob(ctx context.Context, tenantID, jobID string) (*KnowledgeIngestionJob, error)
+	ClaimKnowledgeIngestionJob(ctx context.Context, jobID string) (*KnowledgeIngestionJob, error)
+	CompleteKnowledgeIngestionJob(ctx context.Context, jobID string, items []AIKnowledgeItem) error
+	FailKnowledgeIngestionJob(ctx context.Context, jobID, message string) error
 
 	// Conversation AI state tracking
 	SetConversationAIState(ctx context.Context, tenantID, conversationID string, state string, pausedUntil *time.Time, needsHuman bool) error

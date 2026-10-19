@@ -30,6 +30,7 @@ type WebhookHandler struct {
 	broadcaster           domain.InboxBroadcaster
 	aiEngine              *service.AIEngineService
 	aiAgentRepo           domain.AIAgentRepository
+	aiDispatcher          service.AIReplyDispatcher
 }
 
 func (h *WebhookHandler) SetBroadcaster(b domain.InboxBroadcaster) {
@@ -42,6 +43,22 @@ func (h *WebhookHandler) SetAIEngine(aiEngine *service.AIEngineService) {
 
 func (h *WebhookHandler) SetAIAgentRepo(repo domain.AIAgentRepository) {
 	h.aiAgentRepo = repo
+}
+
+func (h *WebhookHandler) SetAIReplyDispatcher(dispatcher service.AIReplyDispatcher) {
+	h.aiDispatcher = dispatcher
+}
+
+func (h *WebhookHandler) ProcessAIReplyJob(ctx context.Context, job service.AIReplyJob) error {
+	if h.inboxRepo == nil {
+		return fmt.Errorf("inbox repository is unavailable")
+	}
+	conv, err := h.inboxRepo.GetConversation(ctx, job.TenantID, job.ConversationID)
+	if err != nil {
+		return err
+	}
+	h.handleTelegramAIResponse(job.TenantID, conv, job.Recipient, job.IncomingText)
+	return nil
 }
 
 func NewWebhookHandler(
@@ -65,7 +82,8 @@ func NewWebhookHandler(
 type TelegramWebhookPayload struct {
 	UpdateID int `json:"update_id"`
 	Message  struct {
-		From struct {
+		MessageID int `json:"message_id"`
+		From      struct {
 			ID        int64  `json:"id"`
 			FirstName string `json:"first_name"`
 			LastName  string `json:"last_name"`
@@ -218,15 +236,34 @@ func (h *WebhookHandler) HandleTelegram(w http.ResponseWriter, r *http.Request) 
 				Direction:      domain.MessageDirectionInbound,
 				SenderType:     domain.MessageSenderTypeContact,
 				Body:           payload.Message.Text,
-				Status:         "delivered",
+				PlatformMessageID: func() *string {
+					if payload.Message.MessageID == 0 {
+						return nil
+					}
+					id := strconv.Itoa(payload.Message.MessageID)
+					return &id
+				}(),
+				Status: "delivered",
 			}
 			_ = h.inboxRepo.CreateMessage(r.Context(), newMsg)
 			if h.broadcaster != nil {
 				h.broadcaster.BroadcastMessage(tenantID, conv, newMsg)
 			}
-			// Autonomous AI Business Assistant: handle inbound customer inquiries asynchronously
+			// Autonomous AI Business Assistant: enqueue inbound customer inquiries
 			if h.aiEngine != nil && h.aiAgentRepo != nil {
-				go h.handleTelegramAIResponse(tenantID, conv, chatIDStr, payload.Message.Text)
+				job := service.AIReplyJob{
+					TenantID: tenantID, ConversationID: conv.ID, Channel: "telegram",
+					Recipient: chatIDStr, IncomingText: payload.Message.Text,
+					PlatformID: strconv.Itoa(payload.Message.MessageID),
+				}
+				if h.aiDispatcher != nil {
+					if err := h.aiDispatcher.EnqueueAIReply(r.Context(), job); err != nil {
+						log.Printf("[Webhook/Telegram/AI] Queue unavailable, falling back to in-process reply: %v\n", err)
+						go h.handleTelegramAIResponse(tenantID, conv, chatIDStr, payload.Message.Text)
+					}
+				} else {
+					go h.handleTelegramAIResponse(tenantID, conv, chatIDStr, payload.Message.Text)
+				}
 			}
 			log.Printf("[Webhook/Telegram] 💬 Recorded inbound message for tenant %s conversation %s: %q\n", tenantID, conv.ID, payload.Message.Text)
 		} else {
@@ -462,9 +499,23 @@ func (h *WebhookHandler) handleTelegramAIResponse(tenantID string, conv *domain.
 	}
 
 	// 5. Generate reply with dual fallback
-	replyText, needsHuman, err := h.aiEngine.GenerateReply(ctx, cfg, knowledge, recentMsgs, incomingText)
+	replyText, needsHuman, leadInfo, err := h.aiEngine.GenerateReply(ctx, cfg, knowledge, recentMsgs, incomingText)
 	if err != nil || strings.TrimSpace(replyText) == "" {
 		return
+	}
+
+	// Auto-enrich audience contact details if lead info detected
+	if leadInfo != nil && leadInfo.Name != "" && conv.ContactID != "" {
+		_ = h.contactUC.RegisterContact(ctx, &domain.Contact{
+			ID:           conv.ContactID,
+			TenantID:     tenantID,
+			FirstName:    leadInfo.Name,
+			Channel:      "telegram",
+			RoutingValue: chatIDStr,
+			Source:       "telegram_lead_capture",
+			Status:       "active",
+		})
+		log.Printf("[Webhook/Telegram/AI] 🎯 Auto-captured lead name %q for chat %s\n", leadInfo.Name, chatIDStr)
 	}
 
 	// 6. Send reply to Telegram API
@@ -497,16 +548,33 @@ func (h *WebhookHandler) handleTelegramAIResponse(tenantID string, conv *domain.
 		return
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		log.Printf("[Webhook/Telegram/AI] ❌ Telegram rejected AI reply (status %d): %s\n", resp.StatusCode, string(body))
+		return
+	}
+	var telegramResponse struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			MessageID int `json:"message_id"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&telegramResponse); err != nil || !telegramResponse.OK {
+		log.Printf("[Webhook/Telegram/AI] ❌ Telegram returned an unsuccessful AI reply response\n")
+		return
+	}
 
 	// 7. Persist bot reply in database
+	platformMessageID := strconv.Itoa(telegramResponse.Result.MessageID)
 	botMsg := &domain.Message{
-		TenantID:       tenantID,
-		ConversationID: conv.ID,
-		Direction:      domain.MessageDirectionOutbound,
-		SenderType:     domain.MessageSenderTypeBot,
-		Body:           replyText,
-		Status:         "delivered",
-		CreatedAt:      time.Now().UTC(),
+		TenantID:          tenantID,
+		ConversationID:    conv.ID,
+		Direction:         domain.MessageDirectionOutbound,
+		SenderType:        domain.MessageSenderTypeBot,
+		Body:              replyText,
+		PlatformMessageID: &platformMessageID,
+		Status:            "delivered",
+		CreatedAt:         time.Now().UTC(),
 	}
 	_ = h.inboxRepo.CreateMessage(ctx, botMsg)
 

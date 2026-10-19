@@ -2,20 +2,34 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"omnipulse/apps/api-gateway/internal/domain"
+	"omnipulse/apps/api-gateway/internal/service"
 	"omnipulse/apps/api-gateway/internal/utils"
 )
 
 type AIAgentHandler struct {
-	repo domain.AIAgentRepository
+	repo                domain.AIAgentRepository
+	aiEngine            *service.AIEngineService
+	knowledgeDispatcher service.KnowledgeIngestionDispatcher
 }
 
 func NewAIAgentHandler(repo domain.AIAgentRepository) *AIAgentHandler {
 	return &AIAgentHandler{repo: repo}
+}
+
+func (h *AIAgentHandler) SetAIEngine(aiEngine *service.AIEngineService) {
+	h.aiEngine = aiEngine
+}
+
+func (h *AIAgentHandler) SetKnowledgeIngestionDispatcher(dispatcher service.KnowledgeIngestionDispatcher) {
+	h.knowledgeDispatcher = dispatcher
 }
 
 // GetConfig handles GET /api/v1/ai-agent/config
@@ -50,6 +64,30 @@ func (h *AIAgentHandler) SaveConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req.TenantID = tenantID
+	if req.OperationalMode == "" {
+		req.OperationalMode = domain.AIOperationalModeAfterHours
+	}
+	switch req.OperationalMode {
+	case domain.AIOperationalModeAlwaysOn, domain.AIOperationalModeAfterHours,
+		domain.AIOperationalModeIdleFallback, domain.AIOperationalModeCopilotOnly:
+	default:
+		utils.WriteError(w, http.StatusBadRequest, "Choose a valid AI operating mode")
+		return
+	}
+	if req.ConfidenceThreshold < 0 || req.ConfidenceThreshold > 1 {
+		utils.WriteError(w, http.StatusBadRequest, "Confidence threshold must be between 0 and 1")
+		return
+	}
+	if req.IdleTimeoutSeconds < 0 || req.IdleTimeoutSeconds > 86400 {
+		utils.WriteError(w, http.StatusBadRequest, "Idle timeout must be between 0 and 24 hours")
+		return
+	}
+	for _, day := range req.WorkDays {
+		if day < 1 || day > 7 {
+			utils.WriteError(w, http.StatusBadRequest, "Workdays must use values from 1 (Monday) to 7 (Sunday)")
+			return
+		}
+	}
 	if req.BusinessHoursStart == "" {
 		req.BusinessHoursStart = "09:00:00"
 	}
@@ -236,5 +274,220 @@ func (h *AIAgentHandler) ToggleConversationAI(w http.ResponseWriter, r *http.Req
 		"conversation_id": conversationID,
 		"ai_state":        req.AIState,
 		"paused_until":    pausedUntil,
+	})
+}
+
+// IngestDocument handles POST /api/v1/ai-agent/knowledge/ingest
+func (h *AIAgentHandler) IngestDocument(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok || tenantID == "" {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	if h.aiEngine == nil || !h.aiEngine.HasActiveProvider() {
+		utils.WriteError(w, http.StatusServiceUnavailable, "AI parsing engine is not configured (missing GEMINI_API_KEY / GROQ_API_KEY)")
+		return
+	}
+	if h.knowledgeDispatcher == nil {
+		utils.WriteError(w, http.StatusServiceUnavailable, "Document processing is temporarily unavailable. Please try again shortly.")
+		return
+	}
+
+	upload, err := extractKnowledgeUpload(r)
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(upload.data) == 0 {
+		utils.WriteError(w, http.StatusBadRequest, "Document or text content cannot be empty")
+		return
+	}
+
+	job, err := h.repo.CreateKnowledgeIngestionJob(r.Context(), tenantID, upload.filename, upload.contentType, upload.data)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "The document could not be queued for processing. Please try again.")
+		return
+	}
+
+	if err := h.knowledgeDispatcher.EnqueueKnowledgeIngestion(r.Context(), job.ID); err != nil {
+		_ = h.repo.FailKnowledgeIngestionJob(r.Context(), job.ID, "Document processing is temporarily unavailable. Please try again.")
+		utils.WriteError(w, http.StatusServiceUnavailable, "Document processing is temporarily unavailable. Please try again.")
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusAccepted, map[string]interface{}{
+		"message": "Your document is being processed. Check the job status to review the extracted knowledge.",
+		"job_id":  job.ID,
+		"status":  job.Status,
+	})
+}
+
+// GetKnowledgeIngestionJob returns the status and, when ready, proposed items
+// for an ingestion job. Results remain tenant-scoped.
+func (h *AIAgentHandler) GetKnowledgeIngestionJob(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok || tenantID == "" {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+	jobID := r.PathValue("id")
+	if jobID == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Missing ingestion job ID")
+		return
+	}
+
+	job, err := h.repo.GetKnowledgeIngestionJob(r.Context(), tenantID, jobID)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			utils.WriteError(w, http.StatusNotFound, "Document processing job not found")
+			return
+		}
+		utils.WriteError(w, http.StatusInternalServerError, "The document processing status could not be loaded")
+		return
+	}
+	utils.WriteJSON(w, http.StatusOK, job)
+}
+
+// ApproveKnowledgeItems persists a reviewed set of extracted knowledge items.
+func (h *AIAgentHandler) ApproveKnowledgeItems(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok || tenantID == "" {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	var req struct {
+		Items []domain.AIKnowledgeItem `json:"items"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "Invalid request payload")
+		return
+	}
+	if len(req.Items) == 0 {
+		utils.WriteError(w, http.StatusBadRequest, "At least one knowledge item is required")
+		return
+	}
+
+	for i := range req.Items {
+		if strings.TrimSpace(req.Items[i].QuestionOrTopic) == "" || strings.TrimSpace(req.Items[i].AnswerOrContent) == "" {
+			utils.WriteError(w, http.StatusBadRequest, fmt.Sprintf("Knowledge item %d is missing its topic or content", i+1))
+			return
+		}
+		req.Items[i].TenantID = tenantID
+		req.Items[i].IsActive = true
+	}
+
+	if err := h.repo.BulkCreateKnowledgeItems(r.Context(), tenantID, req.Items); err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "The reviewed knowledge could not be saved. Please try again.")
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusCreated, map[string]interface{}{
+		"message": "Knowledge items added successfully",
+		"count":   len(req.Items),
+	})
+}
+
+type knowledgeUpload struct {
+	filename    string
+	contentType string
+	data        []byte
+}
+
+func extractKnowledgeUpload(r *http.Request) (*knowledgeUpload, error) {
+	if strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "multipart/form-data") {
+		if err := r.ParseMultipartForm(service.MaxKnowledgeDocumentBytes + (1 << 20)); err != nil {
+			return nil, fmt.Errorf("could not read the uploaded document")
+		}
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			return nil, fmt.Errorf("please choose a document to upload")
+		}
+		defer file.Close()
+
+		limited := io.LimitReader(file, service.MaxKnowledgeDocumentBytes+1)
+		data, err := io.ReadAll(limited)
+		if err != nil {
+			return nil, fmt.Errorf("could not read the uploaded document")
+		}
+		if int64(len(data)) > service.MaxKnowledgeDocumentBytes {
+			return nil, fmt.Errorf("document exceeds the %d MB limit", service.MaxKnowledgeDocumentBytes/(1<<20))
+		}
+		filename := filepath.Base(header.Filename)
+		if filename == "." || filename == "" {
+			filename = "uploaded-document"
+		}
+		contentType := header.Header.Get("Content-Type")
+		if contentType == "" {
+			contentType = http.DetectContentType(data)
+		}
+		return &knowledgeUpload{filename: filename, contentType: contentType, data: data}, nil
+	}
+
+	var req domain.IngestDocumentRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, service.MaxKnowledgeDocumentBytes+1)).Decode(&req); err != nil {
+		return nil, fmt.Errorf("invalid request payload")
+	}
+	if int64(len(req.Content)) > service.MaxKnowledgeDocumentBytes {
+		return nil, fmt.Errorf("document exceeds the %d MB limit", service.MaxKnowledgeDocumentBytes/(1<<20))
+	}
+	filename := strings.TrimSpace(req.Title)
+	if filename == "" {
+		filename = "knowledge.txt"
+	}
+	if filepath.Ext(filename) == "" {
+		filename += ".txt"
+	}
+	return &knowledgeUpload{filename: filepath.Base(filename), contentType: "text/plain", data: []byte(req.Content)}, nil
+}
+
+type TestSimulateRequest struct {
+	Query string `json:"query"`
+}
+
+// TestSimulate handles POST /api/v1/ai-agent/simulate
+func (h *AIAgentHandler) TestSimulate(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok || tenantID == "" {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	if h.aiEngine == nil || !h.aiEngine.HasActiveProvider() {
+		utils.WriteError(w, http.StatusServiceUnavailable, "AI engine is not configured (missing GEMINI_API_KEY / GROQ_API_KEY)")
+		return
+	}
+
+	var req TestSimulateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "Invalid request payload")
+		return
+	}
+
+	if strings.TrimSpace(req.Query) == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Query cannot be empty")
+		return
+	}
+
+	cfg, err := h.repo.GetConfig(r.Context(), tenantID)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	knowledge, _ := h.repo.ListKnowledgeItems(r.Context(), tenantID)
+
+	reply, needsHuman, leadInfo, err := h.aiEngine.GenerateReply(r.Context(), cfg, knowledge, nil, req.Query)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("AI simulation failed: %v", err))
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"query":       req.Query,
+		"reply":       reply,
+		"needs_human": needsHuman,
+		"lead_info":   leadInfo,
 	})
 }

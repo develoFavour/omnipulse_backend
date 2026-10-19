@@ -313,6 +313,21 @@ func (r *PostgresInboxRepository) CreateMessage(ctx context.Context, msg *domain
 	if msg.CreatedAt.IsZero() {
 		msg.CreatedAt = time.Now().UTC()
 	}
+	if msg.PlatformMessageID != nil && *msg.PlatformMessageID != "" {
+		var existingID string
+		lookupErr := r.db.QueryRowContext(ctx, `
+			SELECT id FROM messages
+			WHERE tenant_id = $1 AND platform_message_id = $2
+			LIMIT 1
+		`, msg.TenantID, *msg.PlatformMessageID).Scan(&existingID)
+		if lookupErr == nil {
+			msg.ID = existingID
+			return nil
+		}
+		if lookupErr != sql.ErrNoRows {
+			return fmt.Errorf("failed to check for duplicate platform message: %w", lookupErr)
+		}
+	}
 
 	query := `
 		INSERT INTO messages (

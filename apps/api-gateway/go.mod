@@ -4,6 +4,7 @@ go 1.25.1
 
 require (
 	github.com/clerk/clerk-sdk-go/v2 v2.7.0
+	github.com/ledongthuc/pdf v0.0.0-20260907135840-6c8c28e0e8a0
 	github.com/joho/godotenv v1.5.1
 	github.com/lib/pq v1.12.3
 	github.com/nats-io/nats.go v1.52.0
