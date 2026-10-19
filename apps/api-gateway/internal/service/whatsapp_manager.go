@@ -17,6 +17,7 @@ import (
 	"omnipulse/apps/api-gateway/internal/domain"
 	"omnipulse/apps/api-gateway/internal/utils"
 
+	"github.com/lib/pq"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store"
@@ -122,7 +123,7 @@ func (m *WhatsAppManager) restoreExistingSessions() {
 	}
 
 	rows, err := m.db.Query(
-		`SELECT tenant_id, sender_identity, encrypted_credentials, status FROM tenant_channels WHERE platform_name = 'whatsapp' AND status = 'active'`,
+		`SELECT tenant_id, sender_identity, account_identity, encrypted_credentials, status FROM tenant_channels WHERE platform_name = 'whatsapp' AND status = 'active'`,
 	)
 	if err != nil {
 		log.Printf("[WhatsAppManager] Warning: failed to query tenant_channels: %v\n", err)
@@ -131,15 +132,16 @@ func (m *WhatsAppManager) restoreExistingSessions() {
 	defer rows.Close()
 
 	type chRecord struct {
-		tenantID       string
-		senderIdentity string
-		encCreds       []byte
-		status         string
+		tenantID        string
+		senderIdentity  string
+		accountIdentity string
+		encCreds        []byte
+		status          string
 	}
 	var channels []chRecord
 	for rows.Next() {
 		var ch chRecord
-		if err := rows.Scan(&ch.tenantID, &ch.senderIdentity, &ch.encCreds, &ch.status); err == nil {
+		if err := rows.Scan(&ch.tenantID, &ch.senderIdentity, &ch.accountIdentity, &ch.encCreds, &ch.status); err == nil {
 			channels = append(channels, ch)
 		}
 	}
@@ -151,31 +153,48 @@ func (m *WhatsAppManager) restoreExistingSessions() {
 
 		var matchedTenantID, matchedIdentity string
 		phone := dev.ID.User
+		phoneIdentity := domain.NormalizeWhatsAppPhoneIdentity(phone)
 
+		// The database ownership key is authoritative. Do not use the first
+		// matching row if a legacy/partially migrated database still contains
+		// ambiguous mappings.
+		var candidates []chRecord
 		for _, ch := range channels {
-			if strings.Contains(ch.senderIdentity, phone) {
-				matchedTenantID = ch.tenantID
-				matchedIdentity = ch.senderIdentity
-				break
+			if ch.accountIdentity == phoneIdentity {
+				candidates = append(candidates, ch)
 			}
-			if len(ch.encCreds) > 0 {
-				plain, decErr := utils.DecryptBytes(ch.encCreds, m.encryptionKey)
-				if decErr == nil {
-					var creds map[string]interface{}
-					if json.Unmarshal(plain, &creds) == nil {
-						if jidStr, _ := creds["jid"].(string); jidStr == dev.ID.String() {
-							matchedTenantID = ch.tenantID
-							matchedIdentity = ch.senderIdentity
-							break
-						}
-						if credPhone, _ := creds["phone"].(string); credPhone == phone {
-							matchedTenantID = ch.tenantID
-							matchedIdentity = ch.senderIdentity
-							break
+		}
+
+		// Legacy fallback for rows created before account_identity existed.
+		if len(candidates) == 0 {
+			for _, ch := range channels {
+				if strings.Contains(ch.senderIdentity, phone) {
+					candidates = append(candidates, ch)
+					continue
+				}
+				if len(ch.encCreds) > 0 {
+					plain, decErr := utils.DecryptBytes(ch.encCreds, m.encryptionKey)
+					if decErr == nil {
+						var creds map[string]interface{}
+						if json.Unmarshal(plain, &creds) == nil {
+							if jidStr, _ := creds["jid"].(string); jidStr == dev.ID.String() {
+								candidates = append(candidates, ch)
+								continue
+							}
+							if credPhone, _ := creds["phone"].(string); credPhone == phone {
+								candidates = append(candidates, ch)
+							}
 						}
 					}
 				}
 			}
+		}
+
+		if len(candidates) == 1 {
+			matchedTenantID = candidates[0].tenantID
+			matchedIdentity = candidates[0].senderIdentity
+		} else if len(candidates) > 1 {
+			log.Printf("[WhatsAppManager] Refusing to restore ambiguous device JID %s: matched %d active workspace mappings\n", dev.ID.String(), len(candidates))
 		}
 
 		if matchedTenantID == "" {
@@ -357,17 +376,26 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 				creds = encCreds
 			}
 
+			accountIdentity := domain.NormalizeWhatsAppPhoneIdentity(phone)
 			_, err := m.db.Exec(`
-				INSERT INTO tenant_channels (tenant_id, platform_name, sender_identity, encrypted_credentials, status, updated_at)
-				VALUES ($1, 'whatsapp', $2, $3, 'active', NOW())
+				INSERT INTO tenant_channels (tenant_id, platform_name, sender_identity, account_identity, encrypted_credentials, status, updated_at)
+				VALUES ($1, 'whatsapp', $2, $3, $4, 'active', NOW())
 				ON CONFLICT (tenant_id, platform_name)
 				DO UPDATE SET
 					sender_identity = EXCLUDED.sender_identity,
+					account_identity = EXCLUDED.account_identity,
 					encrypted_credentials = EXCLUDED.encrypted_credentials,
 					status = 'active',
 					updated_at = NOW()
-			`, tenantID, senderIdentity, creds)
+			`, tenantID, senderIdentity, accountIdentity, creds)
 			if err != nil {
+				var pqErr *pq.Error
+				if errors.As(err, &pqErr) && pqErr.Constraint == "uq_active_whatsapp_account_identity" {
+					log.Printf("[WhatsAppManager] Refusing WhatsApp pairing for tenant %s: this account is already connected to another workspace\n", tenantID)
+					m.clients.Delete(tenantID)
+					sess.client.Disconnect()
+					return
+				}
 				log.Printf("[WhatsAppManager] Error persisting paired channel to DB: %v\n", err)
 			}
 
@@ -820,8 +848,10 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 			sess.phone = ""
 			sess.mu.Unlock()
 
+			// A remote logout releases the account so it can be connected to a
+			// different workspace after the owner intentionally unlinks it.
 			_, _ = m.db.Exec(`
-				UPDATE tenant_channels SET status = 'inactive', updated_at = NOW()
+				DELETE FROM tenant_channels
 				WHERE tenant_id = $1 AND platform_name = 'whatsapp'
 			`, tenantID)
 		}
@@ -1098,7 +1128,7 @@ func (m *WhatsAppManager) Disconnect(ctx context.Context, tenantID string) error
 	}
 
 	_, err := m.db.ExecContext(ctx, `
-		UPDATE tenant_channels SET status = 'inactive', updated_at = NOW()
+		DELETE FROM tenant_channels
 		WHERE tenant_id = $1 AND platform_name = 'whatsapp'
 	`, tenantID)
 	return err

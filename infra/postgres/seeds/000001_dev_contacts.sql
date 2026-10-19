@@ -24,6 +24,6 @@ VALUES
     ('00000000-0000-0000-0000-000000000001', 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11', 'Q3 Product Launch Announcement', 'Hey, your early access code for OmniPulse is ready!', 'template_v1_launch', 'draft', 'direct_message', '["whatsapp","telegram"]', 3);
 
 -- Insert Mock Channel
-INSERT INTO tenant_channels (id, tenant_id, platform_name, sender_identity, encrypted_credentials, status)
+INSERT INTO tenant_channels (id, tenant_id, platform_name, sender_identity, account_identity, encrypted_credentials, status)
 VALUES
-	('c0eebc99-9c0b-4ef8-bb6d-6bb9bd380a22', 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11', 'whatsapp', '+1234567890', '{"token":"mock_wa"}', 'active');
+	('c0eebc99-9c0b-4ef8-bb6d-6bb9bd380a22', 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11', 'whatsapp', '+1234567890', 'phone:1234567890', '{"token":"mock_wa"}', 'active');

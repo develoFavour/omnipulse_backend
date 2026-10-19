@@ -3,8 +3,29 @@ package domain
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"time"
 )
+
+var ErrChannelIdentityAlreadyConnected = errors.New("channel identity is already connected to another workspace")
+
+// NormalizeWhatsAppPhoneIdentity returns the stable ownership key used to
+// ensure a WhatsApp account is connected to only one workspace.
+func NormalizeWhatsAppPhoneIdentity(phone string) string {
+	phone = strings.Split(phone, "@")[0]
+	phone = strings.Split(phone, ":")[0]
+	var digits strings.Builder
+	for _, r := range phone {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+		}
+	}
+	if digits.Len() == 0 {
+		return ""
+	}
+	return "phone:" + digits.String()
+}
 
 // Tenant represents an isolated business or personal creator workspace
 type Tenant struct {
@@ -31,6 +52,7 @@ type TenantChannel struct {
 	TenantID             string          `json:"tenant_id"`
 	PlatformName         string          `json:"platform_name"`
 	SenderIdentity       string          `json:"sender_identity"`
+	AccountIdentity      string          `json:"-"`
 	EncryptedCredentials json.RawMessage `json:"encrypted_credentials"`
 	Status               string          `json:"status"`
 	CreatedAt            time.Time       `json:"created_at"`

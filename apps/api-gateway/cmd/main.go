@@ -50,6 +50,26 @@ func main() {
 	}
 	logger.Printf("Attached to PostgreSQL database pool [Mode: %s].\n", cfg.Environment)
 
+	// WhatsApp account ownership is global: an active WhatsApp account may
+	// belong to only one workspace. This is idempotent for existing databases
+	// and intentionally fails startup if legacy duplicate mappings remain, so
+	// the application can never run without the protection in place.
+	if _, err := db.Exec(`
+		ALTER TABLE tenant_channels
+			ADD COLUMN IF NOT EXISTS account_identity VARCHAR(255);
+		UPDATE tenant_channels
+		SET account_identity = 'phone:' || NULLIF(regexp_replace(sender_identity, '[^0-9]', '', 'g'), '')
+		WHERE platform_name = 'whatsapp' AND account_identity IS NULL;
+		CREATE UNIQUE INDEX IF NOT EXISTS uq_active_whatsapp_account_identity
+			ON tenant_channels(account_identity)
+			WHERE platform_name = 'whatsapp'
+			  AND status = 'active'
+			  AND account_identity IS NOT NULL;
+	`); err != nil {
+		logger.Fatalf("[DB-MIGRATE] WhatsApp workspace ownership protection failed: %v", err)
+	}
+	logger.Println("[DB-MIGRATE] WhatsApp account ownership protection is active.")
+
 	// Idempotent schema migrations: ensure users.id supports Clerk string IDs and campaigns have selected_contact_ids
 	_, _ = db.Exec(`ALTER TABLE users ALTER COLUMN id DROP DEFAULT;`)
 	if _, err := db.Exec(`ALTER TABLE users ALTER COLUMN id TYPE VARCHAR(255) USING id::varchar(255);`); err != nil {

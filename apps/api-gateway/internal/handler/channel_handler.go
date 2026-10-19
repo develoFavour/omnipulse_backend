@@ -265,6 +265,10 @@ func (h *ChannelHandler) CreateChannel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.repo.CreateChannel(r.Context(), &payload); err != nil {
+		if errors.Is(err, domain.ErrChannelIdentityAlreadyConnected) {
+			utils.WriteError(w, http.StatusConflict, "This WhatsApp account is already connected to another workspace. Disconnect it there before connecting it here.")
+			return
+		}
 		utils.WriteError(w, http.StatusInternalServerError, "Failed to create channel")
 		return
 	}
@@ -722,6 +726,10 @@ func (h *ChannelHandler) HandleWhatsAppOAuthCallback(w http.ResponseWriter, r *h
 	}
 
 	if err := h.repo.CreateChannel(r.Context(), channel); err != nil {
+		if errors.Is(err, domain.ErrChannelIdentityAlreadyConnected) {
+			utils.WriteError(w, http.StatusConflict, "This WhatsApp account is already connected to another workspace. Disconnect it there before connecting it here.")
+			return
+		}
 		utils.WriteError(w, http.StatusInternalServerError, "Failed to save WhatsApp channel")
 		return
 	}

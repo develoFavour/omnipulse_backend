@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS tenant_channels (
     tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     platform_name VARCHAR(50) NOT NULL CHECK (platform_name IN ('whatsapp', 'telegram', 'instagram', 'x')),
     sender_identity VARCHAR(255) NOT NULL,
+    account_identity VARCHAR(255),
     encrypted_credentials JSONB NOT NULL,
     status VARCHAR(50) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'pending', 'suspended')),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -42,6 +43,11 @@ CREATE TABLE IF NOT EXISTS tenant_channels (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tenant_platform_unique ON tenant_channels(tenant_id, platform_name);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_active_whatsapp_account_identity
+    ON tenant_channels(account_identity)
+    WHERE platform_name = 'whatsapp'
+      AND status = 'active'
+      AND account_identity IS NOT NULL;
 
 
 CREATE TABLE IF NOT EXISTS contacts (
