@@ -70,6 +70,19 @@ func main() {
 	}
 	logger.Println("[DB-MIGRATE] WhatsApp account ownership protection is active.")
 
+	// Additive channel health metadata. These fields make connection state
+	// visible to the workspace without changing delivery behavior.
+	if _, err := db.Exec(`
+		ALTER TABLE tenant_channels ADD COLUMN IF NOT EXISTS health_status VARCHAR(50) NOT NULL DEFAULT 'unknown';
+		ALTER TABLE tenant_channels ADD COLUMN IF NOT EXISTS last_heartbeat_at TIMESTAMP WITH TIME ZONE;
+		ALTER TABLE tenant_channels ADD COLUMN IF NOT EXISTS last_successful_at TIMESTAMP WITH TIME ZONE;
+		ALTER TABLE tenant_channels ADD COLUMN IF NOT EXISTS last_error TEXT;
+		ALTER TABLE tenant_channels ADD COLUMN IF NOT EXISTS last_error_at TIMESTAMP WITH TIME ZONE;
+	`); err != nil {
+		logger.Fatalf("[DB-MIGRATE] Channel health metadata migration failed: %v", err)
+	}
+	logger.Println("[DB-MIGRATE] Channel health metadata is available.")
+
 	// Idempotent schema migrations: ensure users.id supports Clerk string IDs and campaigns have selected_contact_ids
 	_, _ = db.Exec(`ALTER TABLE users ALTER COLUMN id DROP DEFAULT;`)
 	if _, err := db.Exec(`ALTER TABLE users ALTER COLUMN id TYPE VARCHAR(255) USING id::varchar(255);`); err != nil {

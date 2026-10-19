@@ -62,7 +62,7 @@ func (r *PostgresChannelRepository) CreateChannel(ctx context.Context, channel *
 
 func (r *PostgresChannelRepository) ListByTenant(ctx context.Context, tenantID string) ([]domain.TenantChannel, error) {
 	query := `
-		SELECT id, tenant_id, platform_name, sender_identity, account_identity, encrypted_credentials, status, created_at, updated_at
+		SELECT id, tenant_id, platform_name, sender_identity, account_identity, encrypted_credentials, status, COALESCE(health_status, 'unknown'), last_heartbeat_at, last_successful_at, COALESCE(last_error, ''), last_error_at, created_at, updated_at
 		FROM tenant_channels
 		WHERE tenant_id = $1
 		ORDER BY created_at DESC;
@@ -77,7 +77,7 @@ func (r *PostgresChannelRepository) ListByTenant(ctx context.Context, tenantID s
 	for rows.Next() {
 		var c domain.TenantChannel
 		err := rows.Scan(
-			&c.ID, &c.TenantID, &c.PlatformName, &c.SenderIdentity, &c.AccountIdentity, &c.EncryptedCredentials, &c.Status, &c.CreatedAt, &c.UpdatedAt,
+			&c.ID, &c.TenantID, &c.PlatformName, &c.SenderIdentity, &c.AccountIdentity, &c.EncryptedCredentials, &c.Status, &c.HealthStatus, &c.LastHeartbeatAt, &c.LastSuccessfulAt, &c.LastError, &c.LastErrorAt, &c.CreatedAt, &c.UpdatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan row into channel domain: %w", err)
@@ -114,7 +114,7 @@ func (r *PostgresChannelRepository) CountActiveByTenant(ctx context.Context, ten
 
 func (r *PostgresChannelRepository) FindActiveByPlatform(ctx context.Context, tenantID, platform string) (*domain.TenantChannel, error) {
 	query := `
-		SELECT id, tenant_id, platform_name, sender_identity, account_identity, encrypted_credentials, status, created_at, updated_at
+		SELECT id, tenant_id, platform_name, sender_identity, account_identity, encrypted_credentials, status, COALESCE(health_status, 'unknown'), last_heartbeat_at, last_successful_at, COALESCE(last_error, ''), last_error_at, created_at, updated_at
 		FROM tenant_channels
 		WHERE tenant_id = $1 AND platform_name = $2 AND status = 'active'
 		ORDER BY created_at DESC
@@ -122,7 +122,7 @@ func (r *PostgresChannelRepository) FindActiveByPlatform(ctx context.Context, te
 	`
 	var c domain.TenantChannel
 	err := r.db.QueryRowContext(ctx, query, tenantID, platform).Scan(
-		&c.ID, &c.TenantID, &c.PlatformName, &c.SenderIdentity, &c.AccountIdentity, &c.EncryptedCredentials, &c.Status, &c.CreatedAt, &c.UpdatedAt,
+		&c.ID, &c.TenantID, &c.PlatformName, &c.SenderIdentity, &c.AccountIdentity, &c.EncryptedCredentials, &c.Status, &c.HealthStatus, &c.LastHeartbeatAt, &c.LastSuccessfulAt, &c.LastError, &c.LastErrorAt, &c.CreatedAt, &c.UpdatedAt,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {

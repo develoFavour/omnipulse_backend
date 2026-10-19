@@ -799,11 +799,26 @@ func (h *ChannelHandler) HandleWhatsAppStatus(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	utils.WriteJSON(w, http.StatusOK, map[string]interface{}{
+	response := map[string]interface{}{
 		"status": status,
 		"phone":  phone,
 		"name":   name,
-	})
+	}
+	// Include durable health metadata when available. The live status above
+	// remains authoritative for compatibility with the QR pairing flow.
+	if channels, listErr := h.repo.ListByTenant(r.Context(), tenantID); listErr == nil {
+		for _, channel := range channels {
+			if channel.PlatformName == "whatsapp" {
+				response["health_status"] = channel.HealthStatus
+				response["last_heartbeat_at"] = channel.LastHeartbeatAt
+				response["last_successful_at"] = channel.LastSuccessfulAt
+				response["last_error"] = channel.LastError
+				response["last_error_at"] = channel.LastErrorAt
+				break
+			}
+		}
+	}
+	utils.WriteJSON(w, http.StatusOK, response)
 }
 
 // HandleWhatsAppDisconnect logs out and disconnects the tenant's WhatsApp device session

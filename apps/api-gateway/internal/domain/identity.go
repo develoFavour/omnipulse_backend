@@ -55,6 +55,11 @@ type TenantChannel struct {
 	AccountIdentity      string          `json:"-"`
 	EncryptedCredentials json.RawMessage `json:"encrypted_credentials"`
 	Status               string          `json:"status"`
+	HealthStatus         string          `json:"health_status,omitempty"`
+	LastHeartbeatAt      *time.Time      `json:"last_heartbeat_at,omitempty"`
+	LastSuccessfulAt     *time.Time      `json:"last_successful_at,omitempty"`
+	LastError            string          `json:"last_error,omitempty"`
+	LastErrorAt          *time.Time      `json:"last_error_at,omitempty"`
 	CreatedAt            time.Time       `json:"created_at"`
 	UpdatedAt            time.Time       `json:"updated_at"`
 }

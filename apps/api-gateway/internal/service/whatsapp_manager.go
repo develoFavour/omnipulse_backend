@@ -51,6 +51,36 @@ type tenantSession struct {
 	mu         sync.RWMutex
 }
 
+func (m *WhatsAppManager) updateChannelHealth(ctx context.Context, tenantID, healthStatus, lastError string, successful bool) {
+	if successful {
+		_, err := m.db.ExecContext(ctx, `
+			UPDATE tenant_channels
+			SET health_status = $2,
+				last_heartbeat_at = NOW(),
+				last_successful_at = NOW(),
+				last_error = NULL,
+				last_error_at = NULL,
+				updated_at = NOW()
+			WHERE tenant_id = $1 AND platform_name = 'whatsapp'`, tenantID, healthStatus)
+		if err != nil {
+			log.Printf("[WhatsAppManager] Failed to persist healthy state for tenant %s: %v\n", tenantID, err)
+		}
+		return
+	}
+
+	_, err := m.db.ExecContext(ctx, `
+		UPDATE tenant_channels
+		SET health_status = $2,
+			last_heartbeat_at = NOW(),
+			last_error = NULLIF($3, ''),
+			last_error_at = CASE WHEN NULLIF($3, '') IS NULL THEN NULL ELSE NOW() END,
+			updated_at = NOW()
+		WHERE tenant_id = $1 AND platform_name = 'whatsapp'`, tenantID, healthStatus, lastError)
+	if err != nil {
+		log.Printf("[WhatsAppManager] Failed to persist channel health for tenant %s: %v\n", tenantID, err)
+	}
+}
+
 func NewWhatsAppManager(db *sql.DB, encryptionKey string) (*WhatsAppManager, error) {
 	// Set official companion OS properties for WhatsApp Web protocol
 	store.SetOSInfo("Chrome (Windows)", [3]uint32{128, 0, 0})
@@ -329,6 +359,7 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 		switch evt := rawEvt.(type) {
 		case *events.Connected:
 			log.Printf("[WhatsAppManager] Tenant %s connected to WhatsApp servers\n", tenantID)
+			m.updateChannelHealth(context.Background(), tenantID, "healthy", "", true)
 			// On reconnect, asynchronously sync contacts from the local store.
 			// After reconnection the whatsmeow store may have fresher LID→phone mappings.
 			go func() {
@@ -397,6 +428,8 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 					return
 				}
 				log.Printf("[WhatsAppManager] Error persisting paired channel to DB: %v\n", err)
+			} else {
+				m.updateChannelHealth(context.Background(), tenantID, "healthy", "", true)
 			}
 
 		case *events.HistorySync:
@@ -829,11 +862,16 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 			sess.qrCode = ""
 			sess.phone = ""
 			sess.mu.Unlock()
+			m.updateChannelHealth(context.Background(), tenantID, "reconnect_required", "WhatsApp was disconnected. Reconnect this channel to resume messaging.", false)
 
-			// A remote logout releases the account so it can be connected to a
-			// different workspace after the owner intentionally unlinks it.
+			// Keep the channel record so the workspace can see that recovery is
+			// required. Suspending it releases the partial unique ownership lock,
+			// so the account can still be intentionally connected elsewhere.
 			_, _ = m.db.Exec(`
-				DELETE FROM tenant_channels
+				UPDATE tenant_channels
+				SET status = 'suspended', health_status = 'reconnect_required',
+					last_error = 'WhatsApp was disconnected. Reconnect this channel to resume messaging.',
+					last_error_at = NOW(), updated_at = NOW()
 				WHERE tenant_id = $1 AND platform_name = 'whatsapp'
 			`, tenantID)
 		}
