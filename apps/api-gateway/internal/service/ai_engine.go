@@ -138,6 +138,13 @@ func (s *AIEngineService) GenerateReply(
 	}
 
 	knowledge = rankKnowledgeItems(knowledge, incomingText, 8)
+	activeKnowledge := 0
+	for _, item := range knowledge {
+		if item.IsActive {
+			activeKnowledge++
+		}
+	}
+	log.Printf("[AIEngine] Reply context prepared: knowledge_selected=%d active=%d operational_mode=%q confidence_threshold=%.2f", len(knowledge), activeKnowledge, cfg.OperationalMode, cfg.ConfidenceThreshold)
 	systemPrompt := s.buildSystemPrompt(cfg, knowledge)
 
 	// Build conversation history transcript (last 6 messages max)
@@ -163,6 +170,8 @@ func (s *AIEngineService) GenerateReply(
 		if err == nil && reply != "" {
 			processed, handoff, extractedLead, processErr := s.postProcessReply(reply)
 			if processErr == nil {
+				confidence, handoffReason, structured := responseMetadata(reply)
+				log.Printf("[AIEngine] Gemini response processed: structured=%v confidence=%.2f handoff=%v reason=%q knowledge_selected=%d", structured, confidence, handoff, handoffReason, len(knowledge))
 				if confidence := responseConfidence(reply); cfg.ConfidenceThreshold > 0 && confidence < cfg.ConfidenceThreshold {
 					fallback := cfg.UnsupportedQueryMessage
 					if fallback == "" {
@@ -183,6 +192,8 @@ func (s *AIEngineService) GenerateReply(
 		if err == nil && reply != "" {
 			processed, handoff, extractedLead, processErr := s.postProcessReply(reply)
 			if processErr == nil {
+				confidence, handoffReason, structured := responseMetadata(reply)
+				log.Printf("[AIEngine] Groq response processed: structured=%v confidence=%.2f handoff=%v reason=%q knowledge_selected=%d", structured, confidence, handoff, handoffReason, len(knowledge))
 				if confidence := responseConfidence(reply); cfg.ConfidenceThreshold > 0 && confidence < cfg.ConfidenceThreshold {
 					fallback := cfg.UnsupportedQueryMessage
 					if fallback == "" {
@@ -221,7 +232,7 @@ func rankKnowledgeItems(items []domain.AIKnowledgeItem, query string, limit int)
 		if !item.IsActive {
 			continue
 		}
-		textTokens := knowledgeTokens(item.QuestionOrTopic + " " + item.AnswerOrContent)
+		textTokens := knowledgeTokens(item.Category + " " + item.QuestionOrTopic + " " + item.AnswerOrContent)
 		score := 0
 		for token := range queryTokens {
 			if _, found := textTokens[token]; found {
@@ -282,10 +293,12 @@ func (s *AIEngineService) postProcessReply(rawReply string) (string, bool, *doma
 		if end := strings.LastIndex(jsonCandidate, "}"); end > start {
 			var structured structuredAIResponse
 			if err := json.Unmarshal([]byte(jsonCandidate[start:end+1]), &structured); err == nil {
-				if strings.TrimSpace(structured.Response) == "" {
+				markerFound := strings.Contains(structured.Response, "[HANDOFF_TO_HUMAN]")
+				cleanedResponse := stripInternalMarkers(structured.Response)
+				if cleanedResponse == "" {
 					return "", false, nil, fmt.Errorf("AI provider returned an empty response")
 				}
-				return strings.TrimSpace(structured.Response), structured.ShouldHandoff, structured.LeadInfo, nil
+				return cleanedResponse, structured.ShouldHandoff || markerFound, structured.LeadInfo, nil
 			}
 		}
 	}
@@ -318,7 +331,7 @@ func (s *AIEngineService) postProcessReply(rawReply string) (string, bool, *doma
 		}
 	}
 
-	cleaned = strings.TrimSpace(cleaned)
+	cleaned = stripInternalMarkers(cleaned)
 	if cleaned == "" {
 		return "", false, nil, fmt.Errorf("AI provider returned an empty response")
 	}
@@ -326,6 +339,23 @@ func (s *AIEngineService) postProcessReply(rawReply string) (string, bool, *doma
 		return "", false, nil, fmt.Errorf("AI provider returned an invalid response format")
 	}
 	return cleaned, needsHuman, lead, nil
+}
+
+func stripInternalMarkers(value string) string {
+	return strings.TrimSpace(strings.ReplaceAll(value, "[HANDOFF_TO_HUMAN]", ""))
+}
+
+func responseMetadata(rawReply string) (confidence float64, handoffReason string, structured bool) {
+	start := strings.Index(rawReply, "{")
+	end := strings.LastIndex(rawReply, "}")
+	if start < 0 || end <= start {
+		return 0, "", false
+	}
+	var response structuredAIResponse
+	if err := json.Unmarshal([]byte(rawReply[start:end+1]), &response); err != nil {
+		return 0, "", false
+	}
+	return response.Confidence, response.HandoffReason, true
 }
 
 func responseConfidence(rawReply string) float64 {
@@ -349,44 +379,44 @@ func (s *AIEngineService) ExtractKnowledgeItemsFromText(ctx context.Context, tex
 	return s.extractKnowledgeItemsChunked(ctx, text)
 
 	/*
-		systemPrompt := `You are an expert AI knowledge base parser for businesses and agencies.
-	Analyze the provided text, document, FAQs, product list, or policy, and extract all factual Question & Answer (or Topic & Detail) knowledge items.
-	Categories MUST be one of: "faq", "pricing", "product", "policy", "hours".
+			systemPrompt := `You are an expert AI knowledge base parser for businesses and agencies.
+		Analyze the provided text, document, FAQs, product list, or policy, and extract all factual Question & Answer (or Topic & Detail) knowledge items.
+		Categories MUST be one of: "faq", "pricing", "product", "policy", "hours".
 
-	Strictly output ONLY a valid JSON array of objects without any markdown formatting or commentary:
-	[
-	  {
-	    "category": "pricing",
-	    "question_or_topic": "What are your delivery fees?",
-	    "answer_or_content": "Delivery to Lagos is ₦2,000 and ₦4,000 nationwide."
-	  }
-	]`
+		Strictly output ONLY a valid JSON array of objects without any markdown formatting or commentary:
+		[
+		  {
+		    "category": "pricing",
+		    "question_or_topic": "What are your delivery fees?",
+		    "answer_or_content": "Delivery to Lagos is ₦2,000 and ₦4,000 nationwide."
+		  }
+		]`
 
-		var rawOutput string
-		var err error
-		log.Printf("[AIEngine] Knowledge extraction started (text_bytes=%d, gemini_configured=%t, groq_configured=%t)", len(text), s.geminiKey != "", s.groqKey != "")
+			var rawOutput string
+			var err error
+			log.Printf("[AIEngine] Knowledge extraction started (text_bytes=%d, gemini_configured=%t, groq_configured=%t)", len(text), s.geminiKey != "", s.groqKey != "")
 
-		if s.geminiKey != "" {
-			rawOutput, err = s.callGemini(ctx, systemPrompt, "", text)
-			if err == nil && rawOutput != "" {
-				return parseExtractedKnowledgeJSON(rawOutput)
+			if s.geminiKey != "" {
+				rawOutput, err = s.callGemini(ctx, systemPrompt, "", text)
+				if err == nil && rawOutput != "" {
+					return parseExtractedKnowledgeJSON(rawOutput)
+				}
+				log.Printf("[AIEngine] ⚠️ Gemini knowledge extraction failed: %v. Trying Groq...\n", err)
 			}
-			log.Printf("[AIEngine] ⚠️ Gemini knowledge extraction failed: %v. Trying Groq...\n", err)
-		}
 
-		if s.groqKey != "" {
-			rawOutput, err = s.callGroq(ctx, systemPrompt, "", text)
-			if err == nil && rawOutput != "" {
-				return parseExtractedKnowledgeJSON(rawOutput)
+			if s.groqKey != "" {
+				rawOutput, err = s.callGroq(ctx, systemPrompt, "", text)
+				if err == nil && rawOutput != "" {
+					return parseExtractedKnowledgeJSON(rawOutput)
+				}
+				log.Printf("[AIEngine] ⚠️ Groq knowledge extraction failed: %v\n", err)
 			}
-			log.Printf("[AIEngine] ⚠️ Groq knowledge extraction failed: %v\n", err)
-		}
 
-		if err != nil {
-			log.Printf("[AIEngine] Knowledge extraction failed after all configured providers: %v", err)
-			return nil, fmt.Errorf("failed to extract knowledge items: %w", err)
-		}
-		return nil, fmt.Errorf("all providers failed to extract knowledge items")
+			if err != nil {
+				log.Printf("[AIEngine] Knowledge extraction failed after all configured providers: %v", err)
+				return nil, fmt.Errorf("failed to extract knowledge items: %w", err)
+			}
+			return nil, fmt.Errorf("all providers failed to extract knowledge items")
 	*/
 }
 
@@ -597,10 +627,13 @@ func (s *AIEngineService) buildSystemPrompt(cfg *domain.AIAgentConfig, knowledge
 
 	b.WriteString("\n=== STRICT RULES ===\n")
 	b.WriteString("1. ONLY answer questions using the facts and information provided above. DO NOT invent prices, delivery policies, or products.\n")
-	b.WriteString(fmt.Sprintf("2. If the user asks something not covered in your knowledge base, or asks to speak with a human/agent/representative, politely respond with: %q and append [HANDOFF_TO_HUMAN] at the end.\n", handoffMsg))
-	b.WriteString("3. Keep responses concise and formatted cleanly for WhatsApp/Telegram (under 3-4 sentences when possible). Use bullet points for lists.\n")
-	b.WriteString("4. If the customer introduces themselves or shares an email address, include the extracted details in lead_info.\n")
-	b.WriteString("5. Return ONLY valid JSON with this exact shape: {\"response\":\"...\",\"should_handoff\":false,\"handoff_reason\":\"none\",\"confidence\":0.95,\"lead_info\":null}. Do not include markdown or extra commentary.\n")
+	b.WriteString("2. Only hand off when the user explicitly asks for a human/agent/representative, or when the issue truly requires human action. Do not hand off merely because a question is broad or ambiguous.\n")
+	b.WriteString("3. If the user asks about a product or service generally and the knowledge base contains relevant facts, answer with those facts. If multiple products could match, ask which one they mean.\n")
+	b.WriteString("4. If the knowledge base does not contain enough information and the user did not ask for a human, explain what information is missing and ask a concise clarifying question. Set should_handoff to false.\n")
+	b.WriteString(fmt.Sprintf("5. When a human handoff is genuinely required, respond politely with: %q. Do not include internal markers in the response field; set should_handoff to true instead.\n", handoffMsg))
+	b.WriteString("6. Keep responses concise and formatted cleanly for WhatsApp/Telegram (under 3-4 sentences when possible). Use bullet points for lists.\n")
+	b.WriteString("7. If the customer introduces themselves or shares an email address, include the extracted details in lead_info.\n")
+	b.WriteString("8. Return ONLY valid JSON with this exact shape: {\"response\":\"...\",\"should_handoff\":false,\"handoff_reason\":\"none\",\"confidence\":0.95,\"lead_info\":null}. Do not include markdown or extra commentary.\n")
 
 	return b.String()
 }

@@ -487,7 +487,7 @@ func (h *WebhookHandler) handleTelegramAIResponse(tenantID string, conv *domain.
 	}
 
 	// 2. Check conversation AI state
-	aiState, pausedUntil, _, err := h.aiAgentRepo.GetConversationAIState(ctx, tenantID, conv.ID)
+	aiState, pausedUntil, needsHuman, err := h.aiAgentRepo.GetConversationAIState(ctx, tenantID, conv.ID)
 	if err == nil {
 		if aiState == "paused_by_human" {
 			if pausedUntil != nil && time.Now().Before(*pausedUntil) {
@@ -497,6 +497,9 @@ func (h *WebhookHandler) handleTelegramAIResponse(tenantID string, conv *domain.
 			_ = h.aiAgentRepo.SetConversationAIState(ctx, tenantID, conv.ID, "active", nil, false)
 		} else if aiState == "disabled" {
 			log.Printf("[Webhook/Telegram/AI] Skipping reply for conversation %s: AI is disabled for this conversation\n", conv.ID)
+			return
+		} else if aiState == "escalated" || needsHuman {
+			log.Printf("[Webhook/Telegram/AI] Skipping reply for conversation %s: conversation is awaiting human attention\n", conv.ID)
 			return
 		}
 	}

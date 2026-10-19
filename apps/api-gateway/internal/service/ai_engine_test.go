@@ -18,6 +18,17 @@ func TestPostProcessReplyValidatesStructuredJSON(t *testing.T) {
 	}
 }
 
+func TestPostProcessReplyStripsInternalHandoffMarker(t *testing.T) {
+	engine := &AIEngineService{}
+	reply, handoff, _, err := engine.postProcessReply(`{"response":"I am transferring you now. [HANDOFF_TO_HUMAN]","should_handoff":true,"handoff_reason":"requested_agent","confidence":0.91}`)
+	if err != nil {
+		t.Fatalf("postProcessReply returned error: %v", err)
+	}
+	if reply != "I am transferring you now." || !handoff {
+		t.Fatalf("unexpected sanitized handoff: reply=%q handoff=%v", reply, handoff)
+	}
+}
+
 func TestPostProcessReplyRejectsUnstructuredText(t *testing.T) {
 	engine := &AIEngineService{}
 	if _, _, _, err := engine.postProcessReply("I think we deliver nationwide."); err == nil {
@@ -33,6 +44,17 @@ func TestRankKnowledgeItemsReturnsRelevantBoundedItems(t *testing.T) {
 	got := rankKnowledgeItems(items, "What is the delivery fee?", 1)
 	if len(got) != 1 || got[0].QuestionOrTopic != "Delivery fees" {
 		t.Fatalf("unexpected ranked knowledge items: %+v", got)
+	}
+}
+
+func TestRankKnowledgeItemsMatchesCategory(t *testing.T) {
+	items := []domain.AIKnowledgeItem{
+		{Category: "product", QuestionOrTopic: "Biteselah", AnswerOrContent: "A fintech platform.", IsActive: true},
+		{Category: "policy", QuestionOrTopic: "Refunds", AnswerOrContent: "Refunds are reviewed by the team.", IsActive: true},
+	}
+	got := rankKnowledgeItems(items, "Tell me about your product", 1)
+	if len(got) != 1 || got[0].Category != "product" {
+		t.Fatalf("expected product category to be matched, got %+v", got)
 	}
 }
 

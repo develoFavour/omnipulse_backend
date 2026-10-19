@@ -632,12 +632,8 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 
 			if evt.Info.IsFromMe {
 				// Message was sent from this connected WhatsApp account (phone or web)
-				if evt.Info.Chat.Server == types.DefaultUserServer && evt.Info.Chat.User != "" {
-					contactPhone = evt.Info.Chat.User
-					direction = domain.MessageDirectionOutbound
-					senderType = domain.MessageSenderTypeAgent
-				} else if evt.Info.Chat.Server == types.HiddenUserServer && evt.Info.Chat.User != "" {
-					contactPhone = evt.Info.Chat.User
+				if evt.Info.Chat.User != "" {
+					contactPhone = m.resolveWhatsAppContactPhone(context.Background(), sess, evt.Info.Chat, tenantID)
 					direction = domain.MessageDirectionOutbound
 					senderType = domain.MessageSenderTypeAgent
 				}
@@ -645,26 +641,12 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 				// Inbound message received from contact (1-on-1 chats)
 				if !evt.Info.IsGroup {
 					pushName = evt.Info.PushName
-					// 1. Check for standard phone number on s.whatsapp.net
-					if evt.Info.Chat.Server == types.DefaultUserServer && evt.Info.Chat.User != "" {
-						contactPhone = evt.Info.Chat.User
-					} else if evt.Info.Sender.Server == types.DefaultUserServer && evt.Info.Sender.User != "" {
-						contactPhone = evt.Info.Sender.User
-					} else if sess.client != nil && sess.client.Store != nil {
-						// 2. Try resolving phone number from LID store
-						queryCtx, qCancel := context.WithTimeout(context.Background(), 2*time.Second)
-						if pn, err := sess.client.Store.GetAltJID(queryCtx, evt.Info.Chat); err == nil && pn.Server == types.DefaultUserServer && pn.User != "" {
-							contactPhone = pn.User
-							m.resolveAndMigrateLID(tenantID, evt.Info.Chat.User, contactPhone)
-							log.Printf("[WhatsAppManager] 🔀 Resolved LID %s to phone %s via AltJID\n", evt.Info.Chat.String(), pn.User)
-						} else if sess.client.Store.LIDs != nil {
-							if pn, err := sess.client.Store.LIDs.GetPNForLID(queryCtx, evt.Info.Chat); err == nil && pn.Server == types.DefaultUserServer && pn.User != "" {
-								contactPhone = pn.User
-								m.resolveAndMigrateLID(tenantID, evt.Info.Chat.User, contactPhone)
-								log.Printf("[WhatsAppManager] 🔀 Resolved LID %s to phone %s via LIDStore\n", evt.Info.Chat.String(), pn.User)
-							}
-						}
-						qCancel()
+					// Use the same canonical identity resolver for inbound and outbound
+					// events. WhatsApp may represent the same person as a phone JID in
+					// one event and a LID JID in another.
+					contactPhone = m.resolveWhatsAppContactPhone(context.Background(), sess, evt.Info.Chat, tenantID)
+					if contactPhone == "" {
+						contactPhone = m.resolveWhatsAppContactPhone(context.Background(), sess, evt.Info.Sender, tenantID)
 					}
 
 					// 3. If phone number could not be resolved from LID store, use the LID identifier directly
@@ -902,6 +884,40 @@ func extractMessageText(msg *waE2E.Message) string {
 		return "[Location]"
 	}
 	return ""
+}
+
+// resolveWhatsAppContactPhone returns the canonical phone identifier for a
+// WhatsApp chat JID. LIDs are device-scoped identifiers and must not be used
+// as the contact key when WhatsApp can provide the corresponding phone JID.
+func (m *WhatsAppManager) resolveWhatsAppContactPhone(ctx context.Context, sess *tenantSession, jid types.JID, tenantID string) string {
+	if jid.User == "" {
+		return ""
+	}
+	if jid.Server == types.DefaultUserServer {
+		return jid.User
+	}
+	if jid.Server != types.HiddenUserServer || sess == nil || sess.client == nil || sess.client.Store == nil {
+		return jid.User
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	if alt, err := sess.client.Store.GetAltJID(lookupCtx, jid); err == nil && alt.Server == types.DefaultUserServer && alt.User != "" {
+		m.resolveAndMigrateLID(tenantID, jid.User, alt.User)
+		log.Printf("[WhatsAppManager] 🔀 Resolved LID %s to phone %s via AltJID\n", jid.String(), alt.User)
+		return alt.User
+	}
+	if sess.client.Store.LIDs != nil {
+		if phoneJID, err := sess.client.Store.LIDs.GetPNForLID(lookupCtx, jid); err == nil && phoneJID.Server == types.DefaultUserServer && phoneJID.User != "" {
+			m.resolveAndMigrateLID(tenantID, jid.User, phoneJID.User)
+			log.Printf("[WhatsAppManager] 🔀 Resolved LID %s to phone %s via LIDStore\n", jid.String(), phoneJID.User)
+			return phoneJID.User
+		}
+	}
+
+	// Keep the raw LID only as a last resort. The next mapped event will migrate
+	// this temporary contact to the canonical phone identifier.
+	return jid.User
 }
 
 // resolveAndMigrateLID updates any contact previously stored under a raw LID routing value
@@ -1412,7 +1428,7 @@ func (m *WhatsAppManager) handleAIAutoResponse(tenantID string, conv *domain.Con
 	}
 
 	// 2. Check conversation-level AI state (e.g. human agent paused it)
-	aiState, pausedUntil, _, err := m.aiAgentRepo.GetConversationAIState(ctx, tenantID, conv.ID)
+	aiState, pausedUntil, needsHuman, err := m.aiAgentRepo.GetConversationAIState(ctx, tenantID, conv.ID)
 	if err == nil {
 		if aiState == "paused_by_human" {
 			if pausedUntil != nil && time.Now().Before(*pausedUntil) {
@@ -1423,6 +1439,9 @@ func (m *WhatsAppManager) handleAIAutoResponse(tenantID string, conv *domain.Con
 			_ = m.aiAgentRepo.SetConversationAIState(ctx, tenantID, conv.ID, "active", nil, false)
 		} else if aiState == "disabled" {
 			log.Printf("[WhatsAppManager/AI] Skipping reply for conversation %s: AI is disabled for this conversation\n", conv.ID)
+			return nil
+		} else if aiState == "escalated" || needsHuman {
+			log.Printf("[WhatsAppManager/AI] Skipping reply for conversation %s: conversation is awaiting human attention\n", conv.ID)
 			return nil
 		}
 	}
