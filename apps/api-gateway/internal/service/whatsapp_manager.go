@@ -1490,8 +1490,17 @@ func (m *WhatsAppManager) handleAIAutoResponse(tenantID string, conv *domain.Con
 		return nil
 	}
 
-	// 4. Fetch business knowledge items
-	knowledge, err := m.aiAgentRepo.ListKnowledgeItems(ctx, tenantID)
+	// 4. Fetch only relevant business knowledge for this message when the
+	// repository supports optimized retrieval. Keep the full-list fallback for
+	// compatibility with alternate repositories and tests.
+	var knowledge []domain.AIKnowledgeItem
+	if retriever, ok := m.aiAgentRepo.(domain.AIKnowledgeRetriever); ok {
+		knowledge, err = retriever.SearchKnowledgeItems(ctx, tenantID, incomingText, 8)
+		log.Printf("[WhatsAppManager/AI] Knowledge retrieval: mode=full_text selected=%d", len(knowledge))
+	} else {
+		knowledge, err = m.aiAgentRepo.ListKnowledgeItems(ctx, tenantID)
+		log.Printf("[WhatsAppManager/AI] Knowledge retrieval: mode=fallback_full_list selected=%d", len(knowledge))
+	}
 	if err != nil {
 		return err
 	}

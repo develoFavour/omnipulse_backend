@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/lib/pq"
@@ -148,7 +149,7 @@ func (r *PostgresAIAgentRepository) SetEnabled(ctx context.Context, tenantID str
 
 func (r *PostgresAIAgentRepository) ListKnowledgeItems(ctx context.Context, tenantID string) ([]domain.AIKnowledgeItem, error) {
 	query := `
-		SELECT id, tenant_id, category, question_or_topic, answer_or_content, is_active, created_at, updated_at
+		SELECT id, tenant_id, category, question_or_topic, answer_or_content, source_document, source_section, source_excerpt, is_active, created_at, updated_at
 		FROM ai_knowledge_items
 		WHERE tenant_id = $1
 		ORDER BY created_at DESC
@@ -166,11 +167,57 @@ func (r *PostgresAIAgentRepository) ListKnowledgeItems(ctx context.Context, tena
 		if err := rows.Scan(
 			&item.ID, &item.TenantID, &item.Category,
 			&item.QuestionOrTopic, &item.AnswerOrContent,
+			&item.SourceDocument, &item.SourceSection, &item.SourceExcerpt,
 			&item.IsActive, &item.CreatedAt, &item.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan knowledge item: %w", err)
 		}
 		items = append(items, item)
+	}
+	return items, nil
+}
+
+// SearchKnowledgeItems performs tenant-scoped, database-side full-text
+// retrieval so live conversations do not load an entire knowledge base into
+// the API process. The existing lexical ranking remains the fallback for
+// repositories that do not implement this optional port.
+func (r *PostgresAIAgentRepository) SearchKnowledgeItems(ctx context.Context, tenantID, query string, limit int) ([]domain.AIKnowledgeItem, error) {
+	if limit <= 0 || limit > 20 {
+		limit = 8
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return []domain.AIKnowledgeItem{}, nil
+	}
+
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, tenant_id, category, question_or_topic, answer_or_content, source_document, source_section, source_excerpt, is_active, created_at, updated_at
+		FROM ai_knowledge_items
+		WHERE tenant_id = $1
+		  AND is_active = TRUE
+		  AND to_tsvector('simple', COALESCE(category, '') || ' ' || question_or_topic || ' ' || answer_or_content)
+		      @@ plainto_tsquery('simple', $2)
+		ORDER BY ts_rank(
+			to_tsvector('simple', COALESCE(category, '') || ' ' || question_or_topic || ' ' || answer_or_content),
+			plainto_tsquery('simple', $2)
+		) DESC, updated_at DESC
+		LIMIT $3
+	`, tenantID, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to search knowledge items: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]domain.AIKnowledgeItem, 0, limit)
+	for rows.Next() {
+		var item domain.AIKnowledgeItem
+		if err := rows.Scan(&item.ID, &item.TenantID, &item.Category, &item.QuestionOrTopic, &item.AnswerOrContent, &item.SourceDocument, &item.SourceSection, &item.SourceExcerpt, &item.IsActive, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan searched knowledge item: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read searched knowledge items: %w", err)
 	}
 	return items, nil
 }
@@ -193,7 +240,7 @@ func (r *PostgresAIAgentRepository) ListKnowledgeItemsPage(ctx context.Context, 
 		return nil, fmt.Errorf("failed to count knowledge items: %w", err)
 	}
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, tenant_id, category, question_or_topic, answer_or_content, is_active, created_at, updated_at
+		SELECT id, tenant_id, category, question_or_topic, answer_or_content, source_document, source_section, source_excerpt, is_active, created_at, updated_at
 		FROM ai_knowledge_items
 		WHERE tenant_id = $1
 		  AND ($2 = '' OR question_or_topic ILIKE $3 OR answer_or_content ILIKE $3)
@@ -208,7 +255,7 @@ func (r *PostgresAIAgentRepository) ListKnowledgeItemsPage(ctx context.Context, 
 	items := make([]domain.AIKnowledgeItem, 0, limit)
 	for rows.Next() {
 		var item domain.AIKnowledgeItem
-		if err := rows.Scan(&item.ID, &item.TenantID, &item.Category, &item.QuestionOrTopic, &item.AnswerOrContent, &item.IsActive, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.TenantID, &item.Category, &item.QuestionOrTopic, &item.AnswerOrContent, &item.SourceDocument, &item.SourceSection, &item.SourceExcerpt, &item.IsActive, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan knowledge item page: %w", err)
 		}
 		items = append(items, item)
@@ -221,14 +268,14 @@ func (r *PostgresAIAgentRepository) ListKnowledgeItemsPage(ctx context.Context, 
 
 func (r *PostgresAIAgentRepository) CreateKnowledgeItem(ctx context.Context, item *domain.AIKnowledgeItem) error {
 	query := `
-		INSERT INTO ai_knowledge_items (tenant_id, category, question_or_topic, answer_or_content, is_active)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO ai_knowledge_items (tenant_id, category, question_or_topic, answer_or_content, source_document, source_section, source_excerpt, is_active)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING id, created_at, updated_at
 	`
 
 	err := r.db.QueryRowContext(
 		ctx, query,
-		item.TenantID, item.Category, item.QuestionOrTopic, item.AnswerOrContent, item.IsActive,
+		item.TenantID, item.Category, item.QuestionOrTopic, item.AnswerOrContent, item.SourceDocument, item.SourceSection, item.SourceExcerpt, item.IsActive,
 	).Scan(&item.ID, &item.CreatedAt, &item.UpdatedAt)
 
 	if err != nil {
@@ -249,8 +296,8 @@ func (r *PostgresAIAgentRepository) BulkCreateKnowledgeItems(ctx context.Context
 	defer tx.Rollback()
 
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO ai_knowledge_items (tenant_id, category, question_or_topic, answer_or_content, is_active)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO ai_knowledge_items (tenant_id, category, question_or_topic, answer_or_content, source_document, source_section, source_excerpt, is_active)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`)
 	if err != nil {
 		return fmt.Errorf("failed to prepare bulk insert statement: %w", err)
@@ -262,7 +309,7 @@ func (r *PostgresAIAgentRepository) BulkCreateKnowledgeItems(ctx context.Context
 		if cat == "" {
 			cat = "faq"
 		}
-		if _, err := stmt.ExecContext(ctx, tenantID, cat, it.QuestionOrTopic, it.AnswerOrContent, true); err != nil {
+		if _, err := stmt.ExecContext(ctx, tenantID, cat, it.QuestionOrTopic, it.AnswerOrContent, it.SourceDocument, it.SourceSection, it.SourceExcerpt, true); err != nil {
 			return fmt.Errorf("failed to insert knowledge item: %w", err)
 		}
 	}
@@ -418,14 +465,14 @@ func (r *PostgresAIAgentRepository) FailKnowledgeIngestionJob(ctx context.Contex
 func (r *PostgresAIAgentRepository) UpdateKnowledgeItem(ctx context.Context, item *domain.AIKnowledgeItem) error {
 	query := `
 		UPDATE ai_knowledge_items
-		SET category = $1, question_or_topic = $2, answer_or_content = $3, is_active = $4, updated_at = NOW()
+		SET category = $1, question_or_topic = $2, answer_or_content = $3, source_document = $4, source_section = $5, source_excerpt = $6, is_active = $7, updated_at = NOW()
 		WHERE id = $5 AND tenant_id = $6
 		RETURNING updated_at
 	`
 
 	err := r.db.QueryRowContext(
 		ctx, query,
-		item.Category, item.QuestionOrTopic, item.AnswerOrContent, item.IsActive, item.ID, item.TenantID,
+		item.Category, item.QuestionOrTopic, item.AnswerOrContent, item.SourceDocument, item.SourceSection, item.SourceExcerpt, item.IsActive, item.ID, item.TenantID,
 	).Scan(&item.UpdatedAt)
 
 	if err != nil {

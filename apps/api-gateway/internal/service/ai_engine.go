@@ -219,8 +219,8 @@ func (s *AIEngineService) GenerateReply(
 // deterministic lexical match for the current MVP; a pgvector-backed retriever
 // can replace this function later without changing the AI orchestration API.
 func rankKnowledgeItems(items []domain.AIKnowledgeItem, query string, limit int) []domain.AIKnowledgeItem {
-	if limit <= 0 || len(items) <= limit {
-		return items
+	if limit <= 0 {
+		return nil
 	}
 	queryTokens := knowledgeTokens(query)
 	type scoredItem struct {
@@ -234,9 +234,12 @@ func rankKnowledgeItems(items []domain.AIKnowledgeItem, query string, limit int)
 		}
 		textTokens := knowledgeTokens(item.Category + " " + item.QuestionOrTopic + " " + item.AnswerOrContent)
 		score := 0
+		if strings.Contains(strings.ToLower(item.QuestionOrTopic), strings.ToLower(strings.TrimSpace(query))) {
+			score += 3
+		}
 		for token := range queryTokens {
 			if _, found := textTokens[token]; found {
-				score++
+				score += 1
 			}
 		}
 		if score > 0 {
@@ -373,10 +376,16 @@ func responseConfidence(rawReply string) float64 {
 
 // ExtractKnowledgeItemsFromText parses raw documents, FAQs, or business policies into structured Q&A items
 func (s *AIEngineService) ExtractKnowledgeItemsFromText(ctx context.Context, text string) ([]domain.AIKnowledgeItem, error) {
+	return s.ExtractKnowledgeItemsFromDocument(ctx, "", text)
+}
+
+// ExtractKnowledgeItemsFromDocument preserves the source document and section
+// that produced each suggestion so a reviewer can verify the extracted fact.
+func (s *AIEngineService) ExtractKnowledgeItemsFromDocument(ctx context.Context, sourceDocument, text string) ([]domain.AIKnowledgeItem, error) {
 	if !s.HasActiveProvider() {
 		return nil, fmt.Errorf("no AI provider configured")
 	}
-	return s.extractKnowledgeItemsChunked(ctx, text)
+	return s.extractKnowledgeItemsChunked(ctx, sourceDocument, text)
 
 	/*
 			systemPrompt := `You are an expert AI knowledge base parser for businesses and agencies.
@@ -420,7 +429,7 @@ func (s *AIEngineService) ExtractKnowledgeItemsFromText(ctx context.Context, tex
 	*/
 }
 
-func (s *AIEngineService) extractKnowledgeItemsChunked(ctx context.Context, text string) ([]domain.AIKnowledgeItem, error) {
+func (s *AIEngineService) extractKnowledgeItemsChunked(ctx context.Context, sourceDocument, text string) ([]domain.AIKnowledgeItem, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return nil, fmt.Errorf("document contains no readable text")
@@ -458,6 +467,7 @@ Strictly output ONLY a valid JSON array of objects without any markdown formatti
 			if providerErr == nil && rawOutput != "" {
 				items, parseErr := parseExtractedKnowledgeJSON(rawOutput)
 				if parseErr == nil {
+					annotateKnowledgeItems(items, sourceDocument, index+1, chunk)
 					allItems = append(allItems, items...)
 					log.Printf("[AIEngine] Knowledge chunk %d/%d completed (chars=%d, items=%d)", index+1, len(chunks), len(chunk), len(items))
 					continue
@@ -471,6 +481,7 @@ Strictly output ONLY a valid JSON array of objects without any markdown formatti
 			if providerErr == nil && rawOutput != "" {
 				items, parseErr := parseExtractedKnowledgeJSON(rawOutput)
 				if parseErr == nil {
+					annotateKnowledgeItems(items, sourceDocument, index+1, chunk)
 					allItems = append(allItems, items...)
 					log.Printf("[AIEngine] Knowledge chunk %d/%d completed (chars=%d, items=%d)", index+1, len(chunks), len(chunk), len(items))
 					continue
@@ -482,6 +493,21 @@ Strictly output ONLY a valid JSON array of objects without any markdown formatti
 		return nil, fmt.Errorf("failed to extract knowledge from document section %d: %w", index+1, providerErr)
 	}
 	return mergeKnowledgeItems(allItems), nil
+}
+
+func annotateKnowledgeItems(items []domain.AIKnowledgeItem, sourceDocument string, section int, chunk string) {
+	if strings.TrimSpace(sourceDocument) == "" {
+		return
+	}
+	excerpt := strings.TrimSpace(chunk)
+	if len(excerpt) > 280 {
+		excerpt = excerpt[:280] + "…"
+	}
+	for i := range items {
+		items[i].SourceDocument = sourceDocument
+		items[i].SourceSection = fmt.Sprintf("Section %d", section)
+		items[i].SourceExcerpt = excerpt
+	}
 }
 
 func chunkKnowledgeText(text string, maxChars, overlap int) ([]string, error) {

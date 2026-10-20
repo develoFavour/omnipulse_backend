@@ -42,6 +42,9 @@ type AIKnowledgeItem struct {
 	Category        string    `json:"category"` // "faq", "pricing", "product", "policy", "hours"
 	QuestionOrTopic string    `json:"question_or_topic"`
 	AnswerOrContent string    `json:"answer_or_content"`
+	SourceDocument  string    `json:"source_document,omitempty"`
+	SourceSection   string    `json:"source_section,omitempty"`
+	SourceExcerpt   string    `json:"source_excerpt,omitempty"`
 	IsActive        bool      `json:"is_active"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
@@ -116,4 +119,10 @@ type AIAgentRepository interface {
 	// Conversation AI state tracking
 	SetConversationAIState(ctx context.Context, tenantID, conversationID string, state string, pausedUntil *time.Time, needsHuman bool) error
 	GetConversationAIState(ctx context.Context, tenantID, conversationID string) (state string, pausedUntil *time.Time, needsHuman bool, err error)
+}
+
+// AIKnowledgeRetriever is an optional optimized retrieval port. Callers can
+// fall back to ListKnowledgeItems when a repository does not implement it.
+type AIKnowledgeRetriever interface {
+	SearchKnowledgeItems(ctx context.Context, tenantID, query string, limit int) ([]AIKnowledgeItem, error)
 }

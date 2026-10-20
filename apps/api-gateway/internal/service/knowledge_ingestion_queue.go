@@ -120,7 +120,7 @@ func (w *KnowledgeIngestionWorker) process(ctx context.Context, jobID string) er
 		return nil
 	}
 
-	items, err := w.aiEngine.ExtractKnowledgeItemsFromText(ctx, text)
+	items, err := w.aiEngine.ExtractKnowledgeItemsFromDocument(ctx, job.Filename, text)
 	if err != nil {
 		log.Printf("[KNOWLEDGE-QUEUE] AI knowledge extraction failed for job %s: %v", jobID, err)
 		if failErr := fail("The document could not be analyzed right now. Please try again."); failErr != nil {

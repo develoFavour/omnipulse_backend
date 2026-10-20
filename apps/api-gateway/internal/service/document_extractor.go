@@ -293,9 +293,13 @@ func extractDOCXText(data []byte) (string, error) {
 				out.WriteByte('\t')
 			case "br", "cr":
 				out.WriteByte('\n')
+			case "tc":
+				if out.Len() > 0 {
+					out.WriteByte('\t')
+				}
 			}
 		case xml.EndElement:
-			if value.Name.Local == "p" {
+			if value.Name.Local == "p" || value.Name.Local == "tr" {
 				out.WriteByte('\n')
 			}
 		}

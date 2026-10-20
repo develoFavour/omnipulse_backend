@@ -380,6 +380,12 @@ func main() {
 			updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 		);
 		CREATE INDEX IF NOT EXISTS idx_ai_knowledge_tenant ON ai_knowledge_items(tenant_id, is_active);
+		ALTER TABLE ai_knowledge_items ADD COLUMN IF NOT EXISTS source_document TEXT NOT NULL DEFAULT '';
+		ALTER TABLE ai_knowledge_items ADD COLUMN IF NOT EXISTS source_section VARCHAR(255) NOT NULL DEFAULT '';
+		ALTER TABLE ai_knowledge_items ADD COLUMN IF NOT EXISTS source_excerpt TEXT NOT NULL DEFAULT '';
+		CREATE INDEX IF NOT EXISTS idx_ai_knowledge_full_text ON ai_knowledge_items USING GIN (
+			to_tsvector('simple', COALESCE(category, '') || ' ' || question_or_topic || ' ' || answer_or_content)
+		) WHERE is_active = TRUE;
 		CREATE TABLE IF NOT EXISTS ai_knowledge_ingestion_jobs (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
