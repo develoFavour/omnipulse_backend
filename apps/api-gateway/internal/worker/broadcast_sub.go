@@ -89,6 +89,8 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 
 	log.Printf("[BROADCAST-WORKER] 📨 Received dispatch task: campaign=%s contact=%s (%s) platform=%s\n",
 		task.CampaignID, task.ContactID, task.RoutingValue, task.TargetPlatform)
+	log.Printf("[DELIVERY-AUDIT] stage=broadcast event=received campaign=%s contact=%s platform=%s\n",
+		task.CampaignID, task.ContactID, task.TargetPlatform)
 
 	// Guard 0: Compliance Opt-Out Guard.
 	// MessageRail compliance guarantee: check if recipient has opted out or is blacklisted for this workspace.
@@ -99,6 +101,8 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 			WHERE tenant_id = $1 AND (id::text = $2 OR routing_value = $3) AND status = 'opted_out'
 		)`, task.TenantID, task.ContactID, task.RoutingValue).Scan(&isOptedOut)
 	if err == nil && isOptedOut {
+		log.Printf("[DELIVERY-AUDIT] stage=broadcast decision=suppressed campaign=%s contact=%s platform=%s reason=local_opt_out_guard\n",
+			task.CampaignID, task.ContactID, task.TargetPlatform)
 		reason := "Recipient has explicitly opted out — message suppressed by MessageRail compliance engine"
 		log.Printf("[🛡️ COMPLIANCE SUPPRESSED] Blocked message to %s (%s) on %s for tenant %s: Explicit Opt-Out detected.\n",
 			task.FirstName, task.RoutingValue, task.TargetPlatform, task.TenantID)
@@ -117,6 +121,10 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 		}
 		_ = msg.Ack()
 		return
+	}
+	if err != nil {
+		log.Printf("[DELIVERY-AUDIT] stage=broadcast decision=local_opt_out_lookup_error campaign=%s contact=%s platform=%s action=continue_existing_flow\n",
+			task.CampaignID, task.ContactID, task.TargetPlatform)
 	}
 
 	// Guard 1: Check Database Campaign State.
@@ -143,6 +151,8 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 		"SELECT EXISTS(SELECT 1 FROM campaign_deliveries WHERE campaign_id = $1 AND routing_value = $2 AND platform = $3 AND status = 'delivered')",
 		task.CampaignID, task.RoutingValue, task.TargetPlatform).Scan(&alreadyDelivered)
 	if alreadyDelivered {
+		log.Printf("[DELIVERY-AUDIT] stage=broadcast decision=duplicate_guard campaign=%s contact=%s platform=%s action=skip\n",
+			task.CampaignID, task.ContactID, task.TargetPlatform)
 		log.Printf("[BROADCAST-WORKER] 🛑 Recipient %s (%s) already confirmed delivered for campaign %s — skipping duplicate send\n",
 			task.FirstName, task.RoutingValue, task.CampaignID)
 		_ = msg.Ack()
@@ -383,6 +393,8 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 
 		maxRetries := uint64(3)
 		if isTransient && deliveryAttempts < maxRetries {
+			log.Printf("[DELIVERY-AUDIT] stage=broadcast decision=retry campaign=%s contact=%s platform=%s attempt=%d\n",
+				task.CampaignID, task.ContactID, task.TargetPlatform, deliveryAttempts)
 			backoff := time.Duration(deliveryAttempts*3) * time.Second
 			log.Printf("[BROADCAST-WORKER] ⚠️ Transient failure for %s (%s): %s (attempt %d/%d). Scheduling retry with %v backoff...\n",
 				task.FirstName, task.RoutingValue, *errMsg, deliveryAttempts, maxRetries, backoff)
@@ -422,6 +434,8 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 		Status:       status,
 		ErrorMessage: errMsg,
 	}
+	log.Printf("[DELIVERY-AUDIT] stage=broadcast event=provider_result campaign=%s contact=%s platform=%s status=%s\n",
+		task.CampaignID, task.ContactID, task.TargetPlatform, status)
 
 	resultBytes, _ := json.Marshal(result)
 	_, pubErr := c.js.Publish("dispatch.result", resultBytes)
