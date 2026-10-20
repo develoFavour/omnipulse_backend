@@ -59,3 +59,25 @@ Before adding database constraints or changing event routing, inspect the produc
 - suppressed or failed results that are missing from campaign reports.
 
 No production data was modified as part of this baseline.
+
+READ-ONLY DATABASE AUDIT RESULTS
+
+The audit was run against the configured Neon database on 2026-10-20. It queried aggregate counts only and made no database changes:
+
+- Campaign delivery rows: 250
+- Duplicate delivery groups: 51
+- Orphan delivery rows: 0
+- Campaign counter mismatches: 0
+- Stale active channels: 2
+- Reconnect-required channels: 0
+- Delivery status enum values: sent, delivered, failed
+- Suppressed delivery rows: 0 (the current enum has no suppressed state)
+- Failed delivery rows: 10
+- Unknown delivery statuses: 0
+
+Interpretation:
+
+- The 51 duplicate groups must be investigated before adding any outbound uniqueness constraint. They may represent legitimate repeated attempts, duplicate audit rows, or multiple destinations; the audit intentionally did not inspect row content.
+- The two stale active channels need a tenant-safe follow-up check before changing status automatically.
+- The database currently cannot persist a `suppressed` delivery status, so compliance suppression is not represented in the campaign delivery enum.
+- Campaign counters and referential integrity are currently consistent at aggregate level.
