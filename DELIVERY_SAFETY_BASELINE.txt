@@ -1,0 +1,61 @@
+Delivery Safety Baseline
+
+Status: Stage 0 baseline, no delivery behavior changed
+Branch: safety/stage-0-baseline
+Date: 2026-10-20
+
+BASELINE TEST RESULTS
+
+The existing test suites pass from their individual Go modules:
+
+- apps/api-gateway: passed
+- apps/broadcast-worker: passed (no test files)
+- apps/compliance-engine: passed (no test files)
+- shared: passed (no test files)
+
+The repository is a Go workspace containing multiple modules, so go test ./... must be run from each module directory rather than the workspace root.
+
+CURRENT DELIVERY FLOW
+
+API campaign dispatch
+    -> campaign.dispatched (NATS JetStream)
+    -> broadcast-delivery-pool consumer
+    -> provider adapter (WhatsApp/Telegram)
+    -> dispatch.result
+    -> telemetry-gateway-group consumer
+    -> campaign_deliveries and campaign counters
+
+The compliance engine also consumes campaign.dispatched in its own queue group, checks opt-out state, and publishes campaign.approved. The current broadcast consumer subscribes directly to campaign.dispatched, so the compliance approval event is not currently the exclusive prerequisite for delivery. This is recorded as a risk only; it is intentionally not changed in Stage 0.
+
+EXISTING SAFEGUARDS OBSERVED
+
+- Active contacts are selected for campaign fan-out.
+- The delivery worker checks contact opt-out state before provider delivery.
+- Inbound messages have a tenant-scoped unique platform-message ID constraint.
+- The delivery worker avoids resending a recipient already recorded as delivered.
+- Transient delivery failures are retried with backoff.
+- Permanent failures are published to campaign.dlq.
+- WhatsApp channel health stores heartbeat, last successful time, and reconnect-required state.
+- Scheduled campaigns can be cancelled before dispatch.
+- Campaign reports and CSV delivery exports exist.
+
+KNOWN STAGE 0 RISKS TO VERIFY BEFORE BEHAVIOR CHANGES
+
+1. Compliance approval is not yet an authoritative delivery gate because two consumers read the original dispatch subject.
+2. Outbound duplicate prevention is a read-then-send check and does not yet provide an atomic idempotency guarantee.
+3. WhatsApp status has a database fallback that may report an active stored channel even when a live session cannot be established.
+4. Campaign reporting does not yet expose every operational state separately, including approved, suppressed, queued, provider-accepted, and unreconciled.
+5. DLQ and retry behavior exists in the worker, but operator-facing replay and selective retry controls are not yet established.
+
+PENDING READ-ONLY CHECKS
+
+Before adding database constraints or changing event routing, inspect the production database for:
+
+- duplicate (campaign_id, contact_id, platform) delivery rows;
+- delivery rows without a campaign or tenant relationship;
+- campaigns whose processed count differs from their delivery rows;
+- campaigns with pending NATS work but terminal database status;
+- stale active WhatsApp channels with no recent heartbeat;
+- suppressed or failed results that are missing from campaign reports.
+
+No production data was modified as part of this baseline.
