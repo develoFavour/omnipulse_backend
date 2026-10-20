@@ -81,3 +81,23 @@ Interpretation:
 - The two stale active channels need a tenant-safe follow-up check before changing status automatically.
 - The database currently cannot persist a `suppressed` delivery status, so compliance suppression is not represented in the campaign delivery enum.
 - Campaign counters and referential integrity are currently consistent at aggregate level.
+
+DUPLICATE CLASSIFICATION RESULTS
+
+An additional aggregate-only audit classified the 51 duplicate groups without printing identifiers, routing values, message content, or timestamps:
+
+- Duplicate groups: 51
+- Excess rows beyond the first record in each group: 189
+- Same-status groups: 44
+- Mixed-status groups: 7
+- Groups containing sent rows: 0
+- Groups containing delivered rows: 51
+- Groups containing failed rows: 7
+- Same-status groups within five seconds: 0
+- Same-status groups more than five seconds apart: 44
+- Mixed-status groups within five seconds: 0
+- Mixed-status groups more than five seconds apart: 7
+- WhatsApp contact groups: 43
+- Telegram contact groups: 8
+
+The grouping key was campaign, contact, platform, routing value, and target type. Therefore these are not legitimate cross-platform duplicates. The seven mixed-status groups may represent failed-then-delivered retry histories. The 44 delivered-only groups are more consistent with repeated audit records or repeated sends, but row-level timestamps and provider message IDs are required to distinguish those possibilities. No uniqueness constraint should be added until that distinction is resolved.
