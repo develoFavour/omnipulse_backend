@@ -98,17 +98,23 @@ func (c *CampaignConsumer) processMessage(ctx context.Context, msg *nats.Msg) {
 		_ = msg.Term() // Terminate message: tells NATS to throw it away and never retry it
 		return
 	}
+	log.Printf("[DELIVERY-AUDIT] stage=compliance event=received campaign=%s contact=%s platform=%s\n",
+		task.CampaignID, task.ContactID, task.TargetPlatform)
 
 	// ⚡ CRITICAL RISK EVALUATION BLOCK ⚡
 	// Query Redis at sub-millisecond speeds to check if this user has opted out
 	isBlacklisted, err := c.compliance.IsOptedOut(msgCtx, task.TargetPlatform, task.RoutingValue)
 	if err != nil {
 		log.Printf("[WORKER-ERROR] Redis tracking cluster lookup failed for customer %s: %v. Re-queueing message.\n", task.ContactID, err)
+		log.Printf("[DELIVERY-AUDIT] stage=compliance decision=lookup_error campaign=%s contact=%s platform=%s action=retry\n",
+			task.CampaignID, task.ContactID, task.TargetPlatform)
 		_ = msg.Nak() // Negative Acknowledgment: tells NATS to safely retry this message in a moment
 		return
 	}
 
 	if isBlacklisted {
+		log.Printf("[DELIVERY-AUDIT] stage=compliance decision=suppressed campaign=%s contact=%s platform=%s reason=opt_out\n",
+			task.CampaignID, task.ContactID, task.TargetPlatform)
 		log.Printf("[🛡️ COMPLIANCE BLOCKED] Suppressed message to %s (%s) on %s. Reason: Explicit Opt-Out detected.\n",
 			task.FirstName, task.RoutingValue, task.TargetPlatform)
 
@@ -124,9 +130,13 @@ func (c *CampaignConsumer) processMessage(ctx context.Context, msg *nats.Msg) {
 	_, err = c.js.Publish("campaign.approved", msg.Data)
 	if err != nil {
 		log.Printf("[WORKER-ERROR] Failed to push approved item forward onto NATS: %v. Re-queueing.\n", err)
+		log.Printf("[DELIVERY-AUDIT] stage=compliance decision=approved_publish_error campaign=%s contact=%s platform=%s action=retry\n",
+			task.CampaignID, task.ContactID, task.TargetPlatform)
 		_ = msg.Nak()
 		return
 	}
+	log.Printf("[DELIVERY-AUDIT] stage=compliance decision=approved_event_published campaign=%s contact=%s platform=%s\n",
+		task.CampaignID, task.ContactID, task.TargetPlatform)
 
 	_ = msg.Ack() // Complete the processing lifecycle loop
 }

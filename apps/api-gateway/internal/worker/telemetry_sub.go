@@ -110,6 +110,8 @@ func (c *TelemetryConsumer) processReceipt(ctx context.Context, msg *nats.Msg) {
 		_ = msg.Term()
 		return
 	}
+	log.Printf("[DELIVERY-AUDIT] stage=telemetry event=result_received campaign=%s contact=%s platform=%s status=%s\n",
+		result.CampaignID, result.ContactID, result.Platform, result.Status)
 
 	// Persist the transaction line record into PostgreSQL
 	err := c.repo.RecordDeliveryResult(dbCtx, &result)
@@ -118,6 +120,8 @@ func (c *TelemetryConsumer) processReceipt(ctx context.Context, msg *nats.Msg) {
 		_ = msg.Nak()
 		return
 	}
+	log.Printf("[DELIVERY-AUDIT] stage=telemetry event=ledger_persisted campaign=%s contact=%s platform=%s status=%s\n",
+		result.CampaignID, result.ContactID, result.Platform, result.Status)
 
 	// Fetch fresh campaign stats and broadcast live progress to WebSocket clients
 	stats, _ := c.repo.GetCampaignStats(dbCtx, "", result.CampaignID)
