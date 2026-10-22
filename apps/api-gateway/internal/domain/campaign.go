@@ -52,6 +52,9 @@ type CampaignRepository interface {
 	UpdateStatus(ctx context.Context, tenantID, id string, status string) error
 	SetDispatching(ctx context.Context, tenantID, id string, totalTargets int) error
 	SetScheduled(ctx context.Context, tenantID, id string, scheduledAt time.Time) error
+	PauseCampaign(ctx context.Context, tenantID, id string) error
+	ResumeCampaign(ctx context.Context, tenantID, id string) error
+	CancelCampaign(ctx context.Context, tenantID, id string) error
 	RecordDeliveryResult(ctx context.Context, res *contracts.TargetDeliveryResult) error
 	GetCampaignStats(ctx context.Context, tenantID, campaignID string) (*CampaignStats, error)
 	ListDeliveriesByCampaign(ctx context.Context, tenantID, campaignID string, limit, offset int) ([]*CampaignDelivery, error)

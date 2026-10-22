@@ -93,6 +93,41 @@ func (u *CampaignUseCase) CancelScheduledCampaign(ctx context.Context, tenantID,
 	return u.campaignRepo.CancelScheduledCampaign(ctx, tenantID, campaignID)
 }
 
+func (u *CampaignUseCase) PauseCampaign(ctx context.Context, tenantID, campaignID string) error {
+	campaign, err := u.campaignRepo.GetByID(ctx, tenantID, campaignID)
+	if err != nil {
+		return err
+	}
+	if campaign.Status != "processing" {
+		return fmt.Errorf("only an active campaign can be paused (current status: %s)", campaign.Status)
+	}
+	return u.campaignRepo.PauseCampaign(ctx, tenantID, campaignID)
+}
+
+func (u *CampaignUseCase) ResumeCampaign(ctx context.Context, tenantID, campaignID string) error {
+	campaign, err := u.campaignRepo.GetByID(ctx, tenantID, campaignID)
+	if err != nil {
+		return err
+	}
+	if campaign.Status != "paused" {
+		return fmt.Errorf("only a paused campaign can be resumed (current status: %s)", campaign.Status)
+	}
+	return u.campaignRepo.ResumeCampaign(ctx, tenantID, campaignID)
+}
+
+func (u *CampaignUseCase) CancelCampaign(ctx context.Context, tenantID, campaignID string) error {
+	campaign, err := u.campaignRepo.GetByID(ctx, tenantID, campaignID)
+	if err != nil {
+		return err
+	}
+	switch campaign.Status {
+	case "draft", "scheduled", "pending_approval", "approved":
+		return u.campaignRepo.CancelCampaign(ctx, tenantID, campaignID)
+	default:
+		return fmt.Errorf("only a pending campaign can be cancelled (current status: %s)", campaign.Status)
+	}
+}
+
 // TriggerScheduledDispatch is called by SchedulerService for campaigns whose scheduled_at has elapsed.
 // It re-uses the same TriggerDispatch path so the full fan-out logic is shared.
 func (u *CampaignUseCase) TriggerScheduledDispatch(ctx context.Context, campaign *domain.Campaign) error {
@@ -121,7 +156,7 @@ func (u *CampaignUseCase) TriggerDispatch(ctx context.Context, tenantID, campaig
 	log.Printf("[DISPATCH-TRACE] Campaign found: title=%q status=%s channels=%s destinations=%s contacts=%s\n",
 		campaign.Title, campaign.Status, campaign.SelectedChannels, campaign.SelectedTelegramDestinationIDs, campaign.SelectedContactIDs)
 
-	if campaign.Status == "processing" || campaign.Status == "completed" {
+	if campaign.Status == "processing" || campaign.Status == "completed" || campaign.Status == "paused" || campaign.Status == "cancelled" {
 		log.Printf("[DISPATCH-TRACE] ❌ Rejected: status already %s\n", campaign.Status)
 		return fmt.Errorf("campaign execution rejected: status is already %s", campaign.Status)
 	}

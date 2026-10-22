@@ -397,6 +397,52 @@ func (r *PostgresCampaignRepository) SetScheduled(ctx context.Context, tenantID,
 	return nil
 }
 
+func (r *PostgresCampaignRepository) PauseCampaign(ctx context.Context, tenantID, id string) error {
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE campaigns
+		SET status = 'paused', updated_at = CURRENT_TIMESTAMP
+		WHERE tenant_id = $1 AND id = $2 AND status = 'processing'
+	`, tenantID, id)
+	if err != nil {
+		return fmt.Errorf("failed to pause campaign: %w", err)
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return ErrCampaignNotFound
+	}
+	return nil
+}
+
+func (r *PostgresCampaignRepository) ResumeCampaign(ctx context.Context, tenantID, id string) error {
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE campaigns
+		SET status = 'processing', updated_at = CURRENT_TIMESTAMP
+		WHERE tenant_id = $1 AND id = $2 AND status = 'paused'
+	`, tenantID, id)
+	if err != nil {
+		return fmt.Errorf("failed to resume campaign: %w", err)
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return ErrCampaignNotFound
+	}
+	return nil
+}
+
+func (r *PostgresCampaignRepository) CancelCampaign(ctx context.Context, tenantID, id string) error {
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE campaigns
+		SET status = 'cancelled', scheduled_at = NULL, updated_at = CURRENT_TIMESTAMP
+		WHERE tenant_id = $1 AND id = $2
+		  AND status IN ('draft', 'scheduled', 'pending_approval', 'approved')
+	`, tenantID, id)
+	if err != nil {
+		return fmt.Errorf("failed to cancel campaign: %w", err)
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return ErrCampaignNotFound
+	}
+	return nil
+}
+
 func nullableContactID(res *contracts.TargetDeliveryResult) interface{} {
 	if res.TargetType == "telegram_destination" || res.ContactID == "" {
 		return nil

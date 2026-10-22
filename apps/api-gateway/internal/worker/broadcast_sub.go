@@ -107,24 +107,83 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 		log.Printf("[🛡️ COMPLIANCE SUPPRESSED] Blocked message to %s (%s) on %s for tenant %s: Explicit Opt-Out detected.\n",
 			task.FirstName, task.RoutingValue, task.TargetPlatform, task.TenantID)
 
+		// The current production delivery_status_enum does not include a
+		// "suppressed" value. Keep the compliance outcome auditable as a
+		// failed delivery until the enum can be migrated safely.
 		suppressedResult := contracts.TargetDeliveryResult{
 			CampaignID:   task.CampaignID,
 			ContactID:    task.ContactID,
 			TargetType:   deliveryNormalizedTargetType(task.TargetType),
 			Platform:     task.TargetPlatform,
 			RoutingValue: task.RoutingValue,
-			Status:       "suppressed",
+			Status:       "failed",
 			ErrorMessage: &reason,
 		}
 		if resultBytes, mErr := json.Marshal(suppressedResult); mErr == nil {
-			_, _ = c.js.Publish("dispatch.result", resultBytes)
+			if _, publishErr := c.js.Publish("dispatch.result", resultBytes); publishErr != nil {
+				log.Printf("[BROADCAST-WORKER-ERROR] Failed to publish compliance-suppressed result: %v\n", publishErr)
+				_ = msg.Nak()
+				return
+			}
+		} else {
+			log.Printf("[BROADCAST-WORKER-ERROR] Failed to encode compliance-suppressed result: %v\n", mErr)
+			_ = msg.Nak()
+			return
 		}
 		_ = msg.Ack()
 		return
 	}
 	if err != nil {
-		log.Printf("[DELIVERY-AUDIT] stage=broadcast decision=local_opt_out_lookup_error campaign=%s contact=%s platform=%s action=continue_existing_flow\n",
+		// Compliance must fail closed. If consent cannot be verified, never
+		// call an external provider. Record the outcome through the normal
+		// telemetry path and acknowledge the task to prevent a retry storm.
+		reason := "Delivery paused because recipient consent could not be verified"
+		log.Printf("[DELIVERY-AUDIT] stage=broadcast decision=compliance_unavailable campaign=%s contact=%s platform=%s action=blocked\n",
 			task.CampaignID, task.ContactID, task.TargetPlatform)
+		log.Printf("[COMPLIANCE-GUARD] Blocked delivery for %s (%s): consent lookup failed: %v\n",
+			task.FirstName, task.RoutingValue, err)
+
+		blockedResult := contracts.TargetDeliveryResult{
+			CampaignID:   task.CampaignID,
+			ContactID:    task.ContactID,
+			TargetType:   deliveryNormalizedTargetType(task.TargetType),
+			Platform:     task.TargetPlatform,
+			RoutingValue: task.RoutingValue,
+			Status:       "failed",
+			ErrorMessage: &reason,
+		}
+		if resultBytes, mErr := json.Marshal(blockedResult); mErr == nil {
+			if _, publishErr := c.js.Publish("dispatch.result", resultBytes); publishErr != nil {
+				log.Printf("[BROADCAST-WORKER-ERROR] Failed to publish compliance-blocked result: %v\n", publishErr)
+				_ = msg.Nak()
+				return
+			}
+		} else {
+			log.Printf("[BROADCAST-WORKER-ERROR] Failed to encode compliance-blocked result: %v\n", mErr)
+			_ = msg.Nak()
+			return
+		}
+		_ = msg.Ack()
+		return
+	}
+
+	// Recovery controls are enforced immediately before any provider call.
+	// Paused tasks remain in the durable stream for resume; cancelled tasks
+	// are acknowledged and discarded without external delivery.
+	var currentCampaignStatus string
+	if err := c.db.QueryRowContext(msgCtx, "SELECT status FROM campaigns WHERE id = $1", task.CampaignID).Scan(&currentCampaignStatus); err == nil {
+		switch currentCampaignStatus {
+		case "paused":
+			log.Printf("[DELIVERY-AUDIT] stage=broadcast decision=paused campaign=%s contact=%s platform=%s action=defer\n",
+				task.CampaignID, task.ContactID, task.TargetPlatform)
+			_ = msg.NakWithDelay(5 * time.Second)
+			return
+		case "cancelled":
+			log.Printf("[DELIVERY-AUDIT] stage=broadcast decision=cancelled campaign=%s contact=%s platform=%s action=drop\n",
+				task.CampaignID, task.ContactID, task.TargetPlatform)
+			_ = msg.Ack()
+			return
+		}
 	}
 
 	// Guard 1: Check Database Campaign State.

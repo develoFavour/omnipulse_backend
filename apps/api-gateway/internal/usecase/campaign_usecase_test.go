@@ -18,6 +18,9 @@ type mockCampaignRepo struct {
 	updateStatusFunc              func(ctx context.Context, tenantID, id, status string) error
 	setDispatchingFunc            func(ctx context.Context, tenantID, id string, totalTargets int) error
 	setScheduledFunc              func(ctx context.Context, tenantID, id string, scheduledAt time.Time) error
+	pauseCampaignFunc             func(ctx context.Context, tenantID, id string) error
+	resumeCampaignFunc            func(ctx context.Context, tenantID, id string) error
+	cancelCampaignFunc            func(ctx context.Context, tenantID, id string) error
 	recordDeliveryResultFunc      func(ctx context.Context, res *contracts.TargetDeliveryResult) error
 	getCampaignStatsFunc          func(ctx context.Context, tenantID, campaignID string) (*domain.CampaignStats, error)
 	listDeliveriesByCampaignFunc  func(ctx context.Context, tenantID, campaignID string, limit, offset int) ([]*domain.CampaignDelivery, error)
@@ -63,6 +66,24 @@ func (m *mockCampaignRepo) SetDispatching(ctx context.Context, tenantID, id stri
 func (m *mockCampaignRepo) SetScheduled(ctx context.Context, tenantID, id string, scheduledAt time.Time) error {
 	if m.setScheduledFunc != nil {
 		return m.setScheduledFunc(ctx, tenantID, id, scheduledAt)
+	}
+	return nil
+}
+func (m *mockCampaignRepo) PauseCampaign(ctx context.Context, tenantID, id string) error {
+	if m.pauseCampaignFunc != nil {
+		return m.pauseCampaignFunc(ctx, tenantID, id)
+	}
+	return nil
+}
+func (m *mockCampaignRepo) ResumeCampaign(ctx context.Context, tenantID, id string) error {
+	if m.resumeCampaignFunc != nil {
+		return m.resumeCampaignFunc(ctx, tenantID, id)
+	}
+	return nil
+}
+func (m *mockCampaignRepo) CancelCampaign(ctx context.Context, tenantID, id string) error {
+	if m.cancelCampaignFunc != nil {
+		return m.cancelCampaignFunc(ctx, tenantID, id)
 	}
 	return nil
 }

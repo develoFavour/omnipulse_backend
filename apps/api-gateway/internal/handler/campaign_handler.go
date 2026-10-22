@@ -142,6 +142,56 @@ func (h *CampaignHandler) DispatchCampaign(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+func (h *CampaignHandler) PauseCampaign(w http.ResponseWriter, r *http.Request) {
+	h.transitionCampaign(w, r, "pause")
+}
+
+func (h *CampaignHandler) ResumeCampaign(w http.ResponseWriter, r *http.Request) {
+	h.transitionCampaign(w, r, "resume")
+}
+
+func (h *CampaignHandler) CancelCampaign(w http.ResponseWriter, r *http.Request) {
+	h.transitionCampaign(w, r, "cancel")
+}
+
+func (h *CampaignHandler) transitionCampaign(w http.ResponseWriter, r *http.Request, action string) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok || tenantID == "" {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+	campaignID := r.PathValue("id")
+	if campaignID == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Missing campaign ID")
+		return
+	}
+
+	var err error
+	switch action {
+	case "pause":
+		err = h.useCase.PauseCampaign(r.Context(), tenantID, campaignID)
+	case "resume":
+		err = h.useCase.ResumeCampaign(r.Context(), tenantID, campaignID)
+	case "cancel":
+		err = h.useCase.CancelCampaign(r.Context(), tenantID, campaignID)
+	}
+	if err != nil {
+		if errors.Is(err, repository.ErrCampaignNotFound) {
+			utils.WriteError(w, http.StatusNotFound, "Campaign not found or is no longer in a controllable state")
+			return
+		}
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	status := map[string]string{"pause": "paused", "resume": "processing", "cancel": "cancelled"}[action]
+	utils.WriteJSON(w, http.StatusOK, map[string]string{
+		"message":     fmt.Sprintf("Campaign %s successfully", action),
+		"campaign_id": campaignID,
+		"status":      status,
+	})
+}
+
 func (h *CampaignHandler) GetCampaignStats(w http.ResponseWriter, r *http.Request) {
 	tenantID, ok := r.Context().Value(TenantIDKey).(string)
 	if !ok {
