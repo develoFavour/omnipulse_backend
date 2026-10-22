@@ -167,6 +167,25 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 		return
 	}
 
+	// Recovery controls are enforced immediately before any provider call.
+	// Paused tasks remain in the durable stream for resume; cancelled tasks
+	// are acknowledged and discarded without external delivery.
+	var currentCampaignStatus string
+	if err := c.db.QueryRowContext(msgCtx, "SELECT status FROM campaigns WHERE id = $1", task.CampaignID).Scan(&currentCampaignStatus); err == nil {
+		switch currentCampaignStatus {
+		case "paused":
+			log.Printf("[DELIVERY-AUDIT] stage=broadcast decision=paused campaign=%s contact=%s platform=%s action=defer\n",
+				task.CampaignID, task.ContactID, task.TargetPlatform)
+			_ = msg.NakWithDelay(5 * time.Second)
+			return
+		case "cancelled":
+			log.Printf("[DELIVERY-AUDIT] stage=broadcast decision=cancelled campaign=%s contact=%s platform=%s action=drop\n",
+				task.CampaignID, task.ContactID, task.TargetPlatform)
+			_ = msg.Ack()
+			return
+		}
+	}
+
 	// Guard 1: Check Database Campaign State.
 	// If the campaign is already marked 'completed' or 'failed', NEVER dispatch again.
 	var campaignStatus string

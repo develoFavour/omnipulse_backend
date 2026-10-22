@@ -6,7 +6,7 @@
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 CREATE TYPE platform_type AS ENUM ('whatsapp', 'telegram', 'x', 'instagram');
-CREATE TYPE campaign_status AS ENUM ('draft', 'scheduled', 'pending', 'processing', 'completed', 'failed');
+CREATE TYPE campaign_status AS ENUM ('draft', 'scheduled', 'pending', 'processing', 'paused', 'cancelled', 'completed', 'failed');
 CREATE TYPE dispatch_status AS ENUM ('queued', 'in_flight', 'rate_limited', 'delivered', 'failed');
 CREATE TYPE campaign_delivery_type AS ENUM ('direct_message', 'public_post');
 CREATE TYPE delivery_status_enum AS ENUM ('sent', 'delivered', 'failed');
