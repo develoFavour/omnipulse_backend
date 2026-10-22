@@ -105,6 +105,8 @@ func main() {
 		ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP WITH TIME ZONE;
 		ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
 		DO $$ BEGIN
+			ALTER TYPE campaign_status ADD VALUE IF NOT EXISTS 'paused';
+			ALTER TYPE campaign_status ADD VALUE IF NOT EXISTS 'cancelled';
 			ALTER TYPE campaign_status ADD VALUE IF NOT EXISTS 'pending_approval';
 			ALTER TYPE campaign_status ADD VALUE IF NOT EXISTS 'approved';
 			ALTER TYPE campaign_status ADD VALUE IF NOT EXISTS 'rejected';
@@ -767,6 +769,7 @@ func main() {
 	mux.HandleFunc("POST /api/v1/campaigns/{id}/pause", campaignHandler.PauseCampaign)
 	mux.HandleFunc("POST /api/v1/campaigns/{id}/resume", campaignHandler.ResumeCampaign)
 	mux.HandleFunc("POST /api/v1/campaigns/{id}/cancel", campaignHandler.CancelCampaign)
+	mux.HandleFunc("DELETE /api/v1/campaigns/{id}/draft", campaignHandler.DeleteDraft)
 	mux.HandleFunc("POST /api/v1/campaigns/{id}/schedule", campaignHandler.ScheduleCampaign)
 	mux.HandleFunc("DELETE /api/v1/campaigns/{id}/schedule", campaignHandler.CancelScheduledCampaign)
 	mux.HandleFunc("POST /api/v1/campaigns/{id}/submit", campaignHandler.SubmitForApproval)
