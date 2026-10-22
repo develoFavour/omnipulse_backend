@@ -128,6 +128,17 @@ func (u *CampaignUseCase) CancelCampaign(ctx context.Context, tenantID, campaign
 	}
 }
 
+func (u *CampaignUseCase) DeleteDraft(ctx context.Context, tenantID, campaignID string) error {
+	campaign, err := u.campaignRepo.GetByID(ctx, tenantID, campaignID)
+	if err != nil {
+		return err
+	}
+	if campaign.Status != "draft" {
+		return fmt.Errorf("only a draft campaign can be deleted (current status: %s)", campaign.Status)
+	}
+	return u.campaignRepo.DeleteDraft(ctx, tenantID, campaignID)
+}
+
 // TriggerScheduledDispatch is called by SchedulerService for campaigns whose scheduled_at has elapsed.
 // It re-uses the same TriggerDispatch path so the full fan-out logic is shared.
 func (u *CampaignUseCase) TriggerScheduledDispatch(ctx context.Context, campaign *domain.Campaign) error {

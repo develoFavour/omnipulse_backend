@@ -21,6 +21,7 @@ type mockCampaignRepo struct {
 	pauseCampaignFunc             func(ctx context.Context, tenantID, id string) error
 	resumeCampaignFunc            func(ctx context.Context, tenantID, id string) error
 	cancelCampaignFunc            func(ctx context.Context, tenantID, id string) error
+	deleteDraftFunc               func(ctx context.Context, tenantID, id string) error
 	recordDeliveryResultFunc      func(ctx context.Context, res *contracts.TargetDeliveryResult) error
 	getCampaignStatsFunc          func(ctx context.Context, tenantID, campaignID string) (*domain.CampaignStats, error)
 	listDeliveriesByCampaignFunc  func(ctx context.Context, tenantID, campaignID string, limit, offset int) ([]*domain.CampaignDelivery, error)
@@ -84,6 +85,12 @@ func (m *mockCampaignRepo) ResumeCampaign(ctx context.Context, tenantID, id stri
 func (m *mockCampaignRepo) CancelCampaign(ctx context.Context, tenantID, id string) error {
 	if m.cancelCampaignFunc != nil {
 		return m.cancelCampaignFunc(ctx, tenantID, id)
+	}
+	return nil
+}
+func (m *mockCampaignRepo) DeleteDraft(ctx context.Context, tenantID, id string) error {
+	if m.deleteDraftFunc != nil {
+		return m.deleteDraftFunc(ctx, tenantID, id)
 	}
 	return nil
 }

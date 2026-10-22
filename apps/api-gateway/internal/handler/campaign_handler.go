@@ -154,6 +154,33 @@ func (h *CampaignHandler) CancelCampaign(w http.ResponseWriter, r *http.Request)
 	h.transitionCampaign(w, r, "cancel")
 }
 
+func (h *CampaignHandler) DeleteDraft(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok || tenantID == "" {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+	campaignID := r.PathValue("id")
+	if campaignID == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Missing campaign ID")
+		return
+	}
+
+	if err := h.useCase.DeleteDraft(r.Context(), tenantID, campaignID); err != nil {
+		if errors.Is(err, repository.ErrCampaignNotFound) {
+			utils.WriteError(w, http.StatusNotFound, "Draft not found or it is no longer a draft")
+			return
+		}
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]string{
+		"message":     "Draft deleted successfully",
+		"campaign_id": campaignID,
+	})
+}
+
 func (h *CampaignHandler) transitionCampaign(w http.ResponseWriter, r *http.Request, action string) {
 	tenantID, ok := r.Context().Value(TenantIDKey).(string)
 	if !ok || tenantID == "" {

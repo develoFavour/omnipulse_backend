@@ -443,6 +443,20 @@ func (r *PostgresCampaignRepository) CancelCampaign(ctx context.Context, tenantI
 	return nil
 }
 
+func (r *PostgresCampaignRepository) DeleteDraft(ctx context.Context, tenantID, id string) error {
+	result, err := r.db.ExecContext(ctx, `
+		DELETE FROM campaigns
+		WHERE tenant_id = $1 AND id = $2 AND status = 'draft'
+	`, tenantID, id)
+	if err != nil {
+		return fmt.Errorf("failed to delete draft: %w", err)
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return ErrCampaignNotFound
+	}
+	return nil
+}
+
 func nullableContactID(res *contracts.TargetDeliveryResult) interface{} {
 	if res.TargetType == "telegram_destination" || res.ContactID == "" {
 		return nil
