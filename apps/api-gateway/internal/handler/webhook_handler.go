@@ -511,7 +511,17 @@ func (h *WebhookHandler) handleTelegramAIResponse(tenantID string, conv *domain.
 	}
 
 	// 4. Knowledge base & history
-	knowledge, _ := h.aiAgentRepo.ListKnowledgeItems(ctx, tenantID)
+	var knowledge []domain.AIKnowledgeItem
+	if retriever, ok := h.aiAgentRepo.(domain.AIKnowledgeRetriever); ok {
+		knowledge, err = retriever.SearchKnowledgeItems(ctx, tenantID, incomingText, 8)
+		log.Printf("[Webhook/Telegram/AI] Knowledge retrieval: mode=full_text selected=%d\n", len(knowledge))
+	} else {
+		knowledge, err = h.aiAgentRepo.ListKnowledgeItems(ctx, tenantID)
+		log.Printf("[Webhook/Telegram/AI] Knowledge retrieval: mode=fallback_full_list selected=%d\n", len(knowledge))
+	}
+	if err != nil {
+		log.Printf("[Webhook/Telegram/AI] Failed to fetch knowledge items for tenant %s: %v\n", tenantID, err)
+	}
 	recentMsgs, _ := h.inboxRepo.ListMessages(ctx, tenantID, conv.ID, 6, 0)
 	for i, j := 0, len(recentMsgs)-1; i < j; i, j = i+1, j-1 {
 		recentMsgs[i], recentMsgs[j] = recentMsgs[j], recentMsgs[i]

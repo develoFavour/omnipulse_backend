@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,12 +14,37 @@ import (
 	"omnipulse/apps/api-gateway/internal/domain"
 )
 
-type PostgresAIAgentRepository struct {
-	db *sql.DB
+type EmbeddingProvider interface {
+	GenerateEmbedding(ctx context.Context, text string) ([]float32, error)
 }
 
-func NewPostgresAIAgentRepository(db *sql.DB) domain.AIAgentRepository {
+type PostgresAIAgentRepository struct {
+	db                *sql.DB
+	embeddingProvider EmbeddingProvider
+}
+
+func NewPostgresAIAgentRepository(db *sql.DB) *PostgresAIAgentRepository {
 	return &PostgresAIAgentRepository{db: db}
+}
+
+func (r *PostgresAIAgentRepository) SetEmbeddingProvider(provider EmbeddingProvider) {
+	r.embeddingProvider = provider
+}
+
+func formatVector(vec []float32) string {
+	if len(vec) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteByte('[')
+	for i, v := range vec {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(strconv.FormatFloat(float64(v), 'f', 6, 32))
+	}
+	b.WriteByte(']')
+	return b.String()
 }
 
 func (r *PostgresAIAgentRepository) GetConfig(ctx context.Context, tenantID string) (*domain.AIAgentConfig, error) {
@@ -177,10 +204,10 @@ func (r *PostgresAIAgentRepository) ListKnowledgeItems(ctx context.Context, tena
 	return items, nil
 }
 
-// SearchKnowledgeItems performs tenant-scoped, database-side full-text
-// retrieval so live conversations do not load an entire knowledge base into
-// the API process. The existing lexical ranking remains the fallback for
-// repositories that do not implement this optional port.
+// SearchKnowledgeItems performs Reciprocal Rank Fusion (RRF) Hybrid Search combining:
+// 1. pgvector semantic cosine similarity (<=>) for synonyms, dialects, and intent.
+// 2. PostgreSQL tsvector GIN full-text search (ts_rank) for exact keywords, codes, and SKUs.
+// If the embedding provider is throttled or fails, it gracefully falls back to tsvector full-text search.
 func (r *PostgresAIAgentRepository) SearchKnowledgeItems(ctx context.Context, tenantID, query string, limit int) ([]domain.AIKnowledgeItem, error) {
 	if limit <= 0 || limit > 20 {
 		limit = 8
@@ -190,6 +217,72 @@ func (r *PostgresAIAgentRepository) SearchKnowledgeItems(ctx context.Context, te
 		return []domain.AIKnowledgeItem{}, nil
 	}
 
+	// 1. Attempt semantic embedding generation
+	var queryEmbedding []float32
+	if r.embeddingProvider != nil {
+		emb, err := r.embeddingProvider.GenerateEmbedding(ctx, query)
+		if err == nil && len(emb) > 0 {
+			queryEmbedding = emb
+		} else {
+			log.Printf("[KnowledgeSearch] Embedding unavailable for query (falling back to lexical full-text): %v\n", err)
+		}
+	}
+
+	// 2. If embedding is available, run Hybrid Search with Reciprocal Rank Fusion (RRF)
+	if len(queryEmbedding) > 0 {
+		vecStr := formatVector(queryEmbedding)
+		hybridQuery := `
+			WITH semantic_search AS (
+				SELECT id, 
+				       ROW_NUMBER() OVER (ORDER BY embedding <=> $2::vector) as rank_semantic
+				FROM ai_knowledge_items
+				WHERE tenant_id = $1 AND is_active = TRUE AND embedding IS NOT NULL
+				LIMIT 16
+			),
+			lexical_search AS (
+				SELECT id,
+				       ROW_NUMBER() OVER (
+					       ORDER BY ts_rank(
+						       to_tsvector('simple', COALESCE(category, '') || ' ' || question_or_topic || ' ' || answer_or_content),
+						       plainto_tsquery('simple', $3)
+					       ) DESC, updated_at DESC
+				       ) as rank_lexical
+				FROM ai_knowledge_items
+				WHERE tenant_id = $1 AND is_active = TRUE
+				  AND to_tsvector('simple', COALESCE(category, '') || ' ' || question_or_topic || ' ' || answer_or_content)
+				      @@ plainto_tsquery('simple', $3)
+				LIMIT 16
+			)
+			SELECT k.id, k.tenant_id, k.category, k.question_or_topic, k.answer_or_content, 
+			       k.source_document, k.source_section, k.source_excerpt, k.is_active, k.created_at, k.updated_at
+			FROM ai_knowledge_items k
+			LEFT JOIN semantic_search s ON k.id = s.id
+			LEFT JOIN lexical_search l ON k.id = l.id
+			WHERE s.id IS NOT NULL OR l.id IS NOT NULL
+			ORDER BY (COALESCE(1.0 / (60 + s.rank_semantic), 0.0) + COALESCE(1.0 / (60 + l.rank_lexical), 0.0)) DESC
+			LIMIT $4
+		`
+		rows, err := r.db.QueryContext(ctx, hybridQuery, tenantID, vecStr, query, limit)
+		if err == nil {
+			defer rows.Close()
+			items := make([]domain.AIKnowledgeItem, 0, limit)
+			for rows.Next() {
+				var item domain.AIKnowledgeItem
+				if err := rows.Scan(&item.ID, &item.TenantID, &item.Category, &item.QuestionOrTopic, &item.AnswerOrContent, &item.SourceDocument, &item.SourceSection, &item.SourceExcerpt, &item.IsActive, &item.CreatedAt, &item.UpdatedAt); err != nil {
+					return nil, fmt.Errorf("failed to scan hybrid knowledge item: %w", err)
+				}
+				items = append(items, item)
+			}
+			if err := rows.Err(); err == nil && len(items) > 0 {
+				log.Printf("[KnowledgeSearch] Hybrid search returned %d items (semantic + lexical)\n", len(items))
+				return items, nil
+			}
+		} else {
+			log.Printf("[KnowledgeSearch] Hybrid query encountered error (%v), falling back to pure full-text\n", err)
+		}
+	}
+
+	// 3. Fallback: Standard PostgreSQL tsvector full-text search
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, tenant_id, category, question_or_topic, answer_or_content, source_document, source_section, source_excerpt, is_active, created_at, updated_at
 		FROM ai_knowledge_items
@@ -267,19 +360,42 @@ func (r *PostgresAIAgentRepository) ListKnowledgeItemsPage(ctx context.Context, 
 }
 
 func (r *PostgresAIAgentRepository) CreateKnowledgeItem(ctx context.Context, item *domain.AIKnowledgeItem) error {
+	var vecStr string
+	if len(item.Embedding) > 0 {
+		vecStr = formatVector(item.Embedding)
+	} else if r.embeddingProvider != nil {
+		textToEmbed := item.QuestionOrTopic + "\n" + item.AnswerOrContent
+		if emb, err := r.embeddingProvider.GenerateEmbedding(ctx, textToEmbed); err == nil && len(emb) > 0 {
+			item.Embedding = emb
+			vecStr = formatVector(emb)
+		}
+	}
+
 	query := `
-		INSERT INTO ai_knowledge_items (tenant_id, category, question_or_topic, answer_or_content, source_document, source_section, source_excerpt, is_active)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO ai_knowledge_items (tenant_id, category, question_or_topic, answer_or_content, source_document, source_section, source_excerpt, is_active, embedding)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CASE WHEN $9 != '' THEN $9::vector ELSE NULL END)
 		RETURNING id, created_at, updated_at
 	`
 
 	err := r.db.QueryRowContext(
 		ctx, query,
-		item.TenantID, item.Category, item.QuestionOrTopic, item.AnswerOrContent, item.SourceDocument, item.SourceSection, item.SourceExcerpt, item.IsActive,
+		item.TenantID, item.Category, item.QuestionOrTopic, item.AnswerOrContent, item.SourceDocument, item.SourceSection, item.SourceExcerpt, item.IsActive, vecStr,
 	).Scan(&item.ID, &item.CreatedAt, &item.UpdatedAt)
 
 	if err != nil {
-		return fmt.Errorf("failed to create knowledge item: %w", err)
+		// Fallback without vector column in case host has not applied pgvector column
+		fallbackQuery := `
+			INSERT INTO ai_knowledge_items (tenant_id, category, question_or_topic, answer_or_content, source_document, source_section, source_excerpt, is_active)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			RETURNING id, created_at, updated_at
+		`
+		err = r.db.QueryRowContext(
+			ctx, fallbackQuery,
+			item.TenantID, item.Category, item.QuestionOrTopic, item.AnswerOrContent, item.SourceDocument, item.SourceSection, item.SourceExcerpt, item.IsActive,
+		).Scan(&item.ID, &item.CreatedAt, &item.UpdatedAt)
+		if err != nil {
+			return fmt.Errorf("failed to create knowledge item: %w", err)
+		}
 	}
 	return nil
 }
@@ -296,11 +412,19 @@ func (r *PostgresAIAgentRepository) BulkCreateKnowledgeItems(ctx context.Context
 	defer tx.Rollback()
 
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO ai_knowledge_items (tenant_id, category, question_or_topic, answer_or_content, source_document, source_section, source_excerpt, is_active)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO ai_knowledge_items (tenant_id, category, question_or_topic, answer_or_content, source_document, source_section, source_excerpt, is_active, embedding)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CASE WHEN $9 != '' THEN $9::vector ELSE NULL END)
 	`)
+	useFallback := false
 	if err != nil {
-		return fmt.Errorf("failed to prepare bulk insert statement: %w", err)
+		useFallback = true
+		stmt, err = tx.PrepareContext(ctx, `
+			INSERT INTO ai_knowledge_items (tenant_id, category, question_or_topic, answer_or_content, source_document, source_section, source_excerpt, is_active)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		`)
+		if err != nil {
+			return fmt.Errorf("failed to prepare bulk insert statement: %w", err)
+		}
 	}
 	defer stmt.Close()
 
@@ -309,8 +433,23 @@ func (r *PostgresAIAgentRepository) BulkCreateKnowledgeItems(ctx context.Context
 		if cat == "" {
 			cat = "faq"
 		}
-		if _, err := stmt.ExecContext(ctx, tenantID, cat, it.QuestionOrTopic, it.AnswerOrContent, it.SourceDocument, it.SourceSection, it.SourceExcerpt, true); err != nil {
-			return fmt.Errorf("failed to insert knowledge item: %w", err)
+		if !useFallback {
+			var vecStr string
+			if len(it.Embedding) > 0 {
+				vecStr = formatVector(it.Embedding)
+			} else if r.embeddingProvider != nil {
+				textToEmbed := it.QuestionOrTopic + "\n" + it.AnswerOrContent
+				if emb, embErr := r.embeddingProvider.GenerateEmbedding(ctx, textToEmbed); embErr == nil && len(emb) > 0 {
+					vecStr = formatVector(emb)
+				}
+			}
+			if _, err := stmt.ExecContext(ctx, tenantID, cat, it.QuestionOrTopic, it.AnswerOrContent, it.SourceDocument, it.SourceSection, it.SourceExcerpt, true, vecStr); err != nil {
+				return fmt.Errorf("failed to insert knowledge item: %w", err)
+			}
+		} else {
+			if _, err := stmt.ExecContext(ctx, tenantID, cat, it.QuestionOrTopic, it.AnswerOrContent, it.SourceDocument, it.SourceSection, it.SourceExcerpt, true); err != nil {
+				return fmt.Errorf("failed to insert knowledge item: %w", err)
+			}
 		}
 	}
 
@@ -463,20 +602,45 @@ func (r *PostgresAIAgentRepository) FailKnowledgeIngestionJob(ctx context.Contex
 }
 
 func (r *PostgresAIAgentRepository) UpdateKnowledgeItem(ctx context.Context, item *domain.AIKnowledgeItem) error {
+	var vecStr string
+	if len(item.Embedding) > 0 {
+		vecStr = formatVector(item.Embedding)
+	} else if r.embeddingProvider != nil {
+		textToEmbed := item.QuestionOrTopic + "\n" + item.AnswerOrContent
+		if emb, err := r.embeddingProvider.GenerateEmbedding(ctx, textToEmbed); err == nil && len(emb) > 0 {
+			item.Embedding = emb
+			vecStr = formatVector(emb)
+		}
+	}
+
 	query := `
 		UPDATE ai_knowledge_items
-		SET category = $1, question_or_topic = $2, answer_or_content = $3, source_document = $4, source_section = $5, source_excerpt = $6, is_active = $7, updated_at = NOW()
-		WHERE id = $5 AND tenant_id = $6
+		SET category = $1, question_or_topic = $2, answer_or_content = $3, source_document = $4, source_section = $5, source_excerpt = $6, is_active = $7,
+		    embedding = CASE WHEN $8 != '' THEN $8::vector ELSE embedding END,
+		    updated_at = NOW()
+		WHERE id = $9 AND tenant_id = $10
 		RETURNING updated_at
 	`
 
 	err := r.db.QueryRowContext(
 		ctx, query,
-		item.Category, item.QuestionOrTopic, item.AnswerOrContent, item.SourceDocument, item.SourceSection, item.SourceExcerpt, item.IsActive, item.ID, item.TenantID,
+		item.Category, item.QuestionOrTopic, item.AnswerOrContent, item.SourceDocument, item.SourceSection, item.SourceExcerpt, item.IsActive, vecStr, item.ID, item.TenantID,
 	).Scan(&item.UpdatedAt)
 
 	if err != nil {
-		return fmt.Errorf("failed to update knowledge item: %w", err)
+		fallbackQuery := `
+			UPDATE ai_knowledge_items
+			SET category = $1, question_or_topic = $2, answer_or_content = $3, source_document = $4, source_section = $5, source_excerpt = $6, is_active = $7, updated_at = NOW()
+			WHERE id = $8 AND tenant_id = $9
+			RETURNING updated_at
+		`
+		err = r.db.QueryRowContext(
+			ctx, fallbackQuery,
+			item.Category, item.QuestionOrTopic, item.AnswerOrContent, item.SourceDocument, item.SourceSection, item.SourceExcerpt, item.IsActive, item.ID, item.TenantID,
+		).Scan(&item.UpdatedAt)
+		if err != nil {
+			return fmt.Errorf("failed to update knowledge item: %w", err)
+		}
 	}
 	return nil
 }

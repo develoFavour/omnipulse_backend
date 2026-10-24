@@ -254,18 +254,30 @@ CREATE TABLE IF NOT EXISTS ai_agent_configs (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE EXTENSION IF NOT EXISTS vector;
+
 CREATE TABLE IF NOT EXISTS ai_knowledge_items (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     category VARCHAR(64) NOT NULL DEFAULT 'faq',
     question_or_topic VARCHAR(500) NOT NULL,
     answer_or_content TEXT NOT NULL,
+    source_document TEXT NOT NULL DEFAULT '',
+    source_section VARCHAR(255) NOT NULL DEFAULT '',
+    source_excerpt TEXT NOT NULL DEFAULT '',
+    embedding vector(768),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_ai_knowledge_tenant ON ai_knowledge_items(tenant_id, is_active);
+CREATE INDEX IF NOT EXISTS idx_ai_knowledge_full_text ON ai_knowledge_items USING GIN (
+    to_tsvector('simple', COALESCE(category, '') || ' ' || question_or_topic || ' ' || answer_or_content)
+) WHERE is_active = TRUE;
+CREATE INDEX IF NOT EXISTS idx_ai_knowledge_embedding ON ai_knowledge_items USING hnsw (
+    embedding vector_cosine_ops
+) WHERE is_active = TRUE;
 
 CREATE TABLE IF NOT EXISTS ai_knowledge_ingestion_jobs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

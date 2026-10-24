@@ -45,6 +45,7 @@ type AIKnowledgeItem struct {
 	SourceDocument  string    `json:"source_document,omitempty"`
 	SourceSection   string    `json:"source_section,omitempty"`
 	SourceExcerpt   string    `json:"source_excerpt,omitempty"`
+	Embedding       []float32 `json:"-"`
 	IsActive        bool      `json:"is_active"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`

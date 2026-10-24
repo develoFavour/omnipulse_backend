@@ -1,8 +1,10 @@
 package service
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"omnipulse/apps/api-gateway/internal/domain"
 )
@@ -90,5 +92,32 @@ func TestMergeKnowledgeItemsRemovesOnlyExactDuplicates(t *testing.T) {
 	}
 	if items[2].Category != "faq" {
 		t.Fatalf("expected missing category to default to faq, got %q", items[2].Category)
+	}
+}
+
+func TestEmbeddingCircuitBreakerRejectsWhenThrottled(t *testing.T) {
+	engine := &AIEngineService{
+		geminiKey:               "test-key",
+		embeddingThrottledUntil: time.Now().Add(30 * time.Second),
+	}
+
+	if engine.IsEmbeddingAvailable() {
+		t.Fatal("expected IsEmbeddingAvailable to be false while circuit is open")
+	}
+
+	_, err := engine.GenerateEmbedding(context.Background(), "test question")
+	if err != ErrEmbeddingThrottled {
+		t.Fatalf("expected ErrEmbeddingThrottled, got: %v", err)
+	}
+}
+
+func TestEmbeddingRejectsEmptyText(t *testing.T) {
+	engine := &AIEngineService{
+		geminiKey: "test-key",
+	}
+
+	_, err := engine.GenerateEmbedding(context.Background(), "   ")
+	if err == nil {
+		t.Fatal("expected error when embedding empty text")
 	}
 }
