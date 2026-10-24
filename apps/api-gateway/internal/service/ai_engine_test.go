@@ -121,3 +121,48 @@ func TestEmbeddingRejectsEmptyText(t *testing.T) {
 		t.Fatal("expected error when embedding empty text")
 	}
 }
+
+func TestParseExtractedKnowledgeJSONHandlesSingleObject(t *testing.T) {
+	// The exact Groq response shape that previously caused a failure
+	raw := `{
+    "category": "pricing",
+    "question_or_topic": "What is the price and feature limit of the Starter Plan?",
+    "answer_or_content": "Starter Plan costs $29 per month, includes up to 1,000 monthly active conversations, 1 connected WhatsApp Business number, 1 Telegram bot, a standard AI knowledge base with up to 50 curated business facts, and 5 team member seats."
+  }`
+	items, err := parseExtractedKnowledgeJSON(raw)
+	if err != nil {
+		t.Fatalf("parseExtractedKnowledgeJSON returned error for single object: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if items[0].Category != "pricing" || !strings.Contains(items[0].AnswerOrContent, "$29") {
+		t.Fatalf("unexpected parsed item: %+v", items[0])
+	}
+}
+
+func TestParseExtractedKnowledgeJSONHandlesWrappedItems(t *testing.T) {
+	raw := `{"items": [
+		{"category": "hours", "question_or_topic": "What are your business hours?", "answer_or_content": "Mon-Fri 8am-6pm WAT."}
+	]}`
+	items, err := parseExtractedKnowledgeJSON(raw)
+	if err != nil {
+		t.Fatalf("parseExtractedKnowledgeJSON returned error for wrapped items: %v", err)
+	}
+	if len(items) != 1 || items[0].Category != "hours" {
+		t.Fatalf("unexpected parsed items: %+v", items)
+	}
+}
+
+func TestParseExtractedKnowledgeJSONHandlesDirectArray(t *testing.T) {
+	raw := `[
+		{"category": "policy", "question_or_topic": "What is your refund policy?", "answer_or_content": "14-day money-back guarantee."}
+	]`
+	items, err := parseExtractedKnowledgeJSON(raw)
+	if err != nil {
+		t.Fatalf("parseExtractedKnowledgeJSON returned error for direct array: %v", err)
+	}
+	if len(items) != 1 || items[0].Category != "policy" {
+		t.Fatalf("unexpected parsed items: %+v", items)
+	}
+}
