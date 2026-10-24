@@ -9,15 +9,20 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"omnipulse/apps/api-gateway/internal/domain"
 )
 
+var ErrEmbeddingThrottled = fmt.Errorf("gemini embedding rate limit reached; circuit open")
+
 type AIEngineService struct {
-	geminiKey string
-	groqKey   string
-	client    *http.Client
+	geminiKey               string
+	groqKey                 string
+	client                  *http.Client
+	embeddingThrottledUntil time.Time
+	embeddingMu             sync.RWMutex
 }
 
 const (
@@ -806,4 +811,103 @@ func (s *AIEngineService) callGroq(ctx context.Context, systemPrompt, transcript
 	}
 
 	return "", fmt.Errorf("groq returned no choices")
+}
+
+// GenerateEmbedding calls Google Gemini text-embedding-004 to create a 768-dimensional vector.
+// It includes an automatic circuit breaker: if rate-limited (HTTP 429) or quota exhausted,
+// it opens the circuit for 60 seconds and returns ErrEmbeddingThrottled, enabling callers
+// to seamlessly fall back to tsvector full-text search without blocking customer interactions.
+func (s *AIEngineService) GenerateEmbedding(ctx context.Context, text string) ([]float32, error) {
+	if s == nil || s.geminiKey == "" {
+		return nil, fmt.Errorf("gemini provider is not configured for embeddings")
+	}
+
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil, fmt.Errorf("cannot embed empty text")
+	}
+	// Limit text length to prevent exceeding token limits
+	if len(text) > 4000 {
+		text = text[:4000]
+	}
+
+	// 1. Circuit breaker check
+	s.embeddingMu.RLock()
+	throttledUntil := s.embeddingThrottledUntil
+	s.embeddingMu.RUnlock()
+
+	if time.Now().Before(throttledUntil) {
+		return nil, ErrEmbeddingThrottled
+	}
+
+	// 2. Build Gemini embedding request
+	url := "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent"
+	payload := map[string]interface{}{
+		"model": "models/text-embedding-004",
+		"content": map[string]interface{}{
+			"parts": []map[string]interface{}{
+				{"text": text},
+			},
+		},
+	}
+
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode embedding payload: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create embedding request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-goog-api-key", s.geminiKey)
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("embedding http request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, _ := io.ReadAll(resp.Body)
+
+	// 3. Handle rate limits and quota exhaustion (HTTP 429 or 503)
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable ||
+		strings.Contains(string(respBytes), "RESOURCE_EXHAUSTED") || strings.Contains(string(respBytes), "quota") {
+		s.embeddingMu.Lock()
+		s.embeddingThrottledUntil = time.Now().Add(60 * time.Second)
+		s.embeddingMu.Unlock()
+		log.Printf("[AIEngine] ⚠️ Gemini embedding quota/rate limit reached (status %d). Circuit opened for 60s (falling back to tsvector search)", resp.StatusCode)
+		return nil, ErrEmbeddingThrottled
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("gemini embedding error (status %d): %s", resp.StatusCode, string(respBytes))
+	}
+
+	var geminiResp struct {
+		Embedding struct {
+			Values []float32 `json:"values"`
+		} `json:"embedding"`
+	}
+
+	if err := json.Unmarshal(respBytes, &geminiResp); err != nil {
+		return nil, fmt.Errorf("failed to decode gemini embedding response: %w", err)
+	}
+
+	if len(geminiResp.Embedding.Values) == 0 {
+		return nil, fmt.Errorf("empty embedding vector returned by gemini")
+	}
+
+	return geminiResp.Embedding.Values, nil
+}
+
+// IsEmbeddingAvailable checks if embeddings can currently be generated
+func (s *AIEngineService) IsEmbeddingAvailable() bool {
+	if s == nil || s.geminiKey == "" {
+		return false
+	}
+	s.embeddingMu.RLock()
+	defer s.embeddingMu.RUnlock()
+	return !time.Now().Before(s.embeddingThrottledUntil)
 }

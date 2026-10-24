@@ -424,6 +424,20 @@ func main() {
 		logger.Println("[DB-MIGRATE] Successfully ensured AI Business Assistant tables and conversation columns exist.")
 	}
 
+	// Ensure pgvector extension and embedding column exist if supported by the host
+	if _, err := db.Exec(`CREATE EXTENSION IF NOT EXISTS vector;`); err != nil {
+		logger.Printf("[DB-MIGRATE] ℹ️ pgvector extension not available on this Postgres host (%v); continuing with GIN full-text search fallback.\n", err)
+	} else {
+		if _, err := db.Exec(`
+			ALTER TABLE ai_knowledge_items ADD COLUMN IF NOT EXISTS embedding vector(768);
+			CREATE INDEX IF NOT EXISTS idx_ai_knowledge_embedding ON ai_knowledge_items USING hnsw (embedding vector_cosine_ops) WHERE is_active = TRUE;
+		`); err != nil {
+			logger.Printf("[DB-MIGRATE] pgvector column/index setup: %v\n", err)
+		} else {
+			logger.Println("[DB-MIGRATE] ✅ pgvector extension and HNSW cosine index verified for semantic hybrid search.")
+		}
+	}
+
 	// 2. Initialize NATS JetStream Event Broker Adapter
 	natsPublisher, err := event.NewJetStreamPublisher(cfg.NatsURL, cfg.NatsCreds)
 	if err != nil {
@@ -485,6 +499,7 @@ func main() {
 	aiEngine := service.NewAIEngineService(cfg.GeminiAPIKey, cfg.GroqAPIKey)
 	aiAgentHandler.SetAIEngine(aiEngine)
 	aiAgentHandler.SetKnowledgeIngestionDispatcher(knowledgeDispatcher)
+	aiAgentRepo.SetEmbeddingProvider(aiEngine)
 	if aiEngine.HasActiveProvider() {
 		logger.Printf("[AI-ENGINE] 🤖 Dual-engine AI Business Assistant initialized (Gemini: %v, Groq: %v)\n", cfg.GeminiAPIKey != "", cfg.GroqAPIKey != "")
 	} else {
