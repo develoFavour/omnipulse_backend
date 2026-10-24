@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -453,14 +454,16 @@ Do not omit prices, names, limits, eligibility rules, locations, dates, contact 
 Do not invent information and do not refer to facts outside the provided section.
 Categories MUST be one of: "faq", "pricing", "product", "policy", "hours".
 
-Strictly output ONLY a valid JSON array of objects without any markdown formatting or commentary:
-[
-  {
-    "category": "pricing",
-    "question_or_topic": "What are your delivery fees?",
-    "answer_or_content": "Delivery to Lagos is ₦2,000 and ₦4,000 nationwide."
-  }
-]`
+Strictly output ONLY a valid JSON object containing an "items" array:
+{
+  "items": [
+    {
+      "category": "pricing",
+      "question_or_topic": "What are your delivery fees?",
+      "answer_or_content": "Delivery to Lagos is ₦2,000 and ₦4,000 nationwide."
+    }
+  ]
+}`
 
 	log.Printf("[AIEngine] Knowledge extraction started (text_bytes=%d, chunks=%d, gemini_configured=%t, groq_configured=%t)", len(text), len(chunks), s.geminiKey != "", s.groqKey != "")
 	allItems := make([]domain.AIKnowledgeItem, 0)
@@ -589,24 +592,78 @@ func parseExtractedKnowledgeJSON(raw string) ([]domain.AIKnowledgeItem, error) {
 	cleaned = strings.TrimSuffix(cleaned, "```")
 	cleaned = strings.TrimSpace(cleaned)
 
+	// Attempt 1: Direct JSON array [...]
+	var directList []domain.AIKnowledgeItem
+	if err := json.Unmarshal([]byte(cleaned), &directList); err == nil && len(directList) > 0 {
+		return sanitizeKnowledgeItems(directList), nil
+	}
+
+	// Attempt 2: Object with "items", "data", "knowledge", or "facts" wrapper (standard Groq json_object format)
+	var wrapper struct {
+		Items     []domain.AIKnowledgeItem `json:"items"`
+		Knowledge []domain.AIKnowledgeItem `json:"knowledge"`
+		Data      []domain.AIKnowledgeItem `json:"data"`
+		Facts     []domain.AIKnowledgeItem `json:"facts"`
+	}
+	if err := json.Unmarshal([]byte(cleaned), &wrapper); err == nil {
+		if len(wrapper.Items) > 0 {
+			return sanitizeKnowledgeItems(wrapper.Items), nil
+		}
+		if len(wrapper.Knowledge) > 0 {
+			return sanitizeKnowledgeItems(wrapper.Knowledge), nil
+		}
+		if len(wrapper.Data) > 0 {
+			return sanitizeKnowledgeItems(wrapper.Data), nil
+		}
+		if len(wrapper.Facts) > 0 {
+			return sanitizeKnowledgeItems(wrapper.Facts), nil
+		}
+	}
+
+	// Attempt 3: Single JSON object { "category": "...", ... } directly returned by model
+	var single domain.AIKnowledgeItem
+	if err := json.Unmarshal([]byte(cleaned), &single); err == nil {
+		if strings.TrimSpace(single.QuestionOrTopic) != "" || strings.TrimSpace(single.AnswerOrContent) != "" {
+			return sanitizeKnowledgeItems([]domain.AIKnowledgeItem{single}), nil
+		}
+	}
+
+	// Attempt 4: Slice substring between '[' and ']'
 	start := strings.Index(cleaned, "[")
 	end := strings.LastIndex(cleaned, "]")
 	if start != -1 && end != -1 && end > start {
-		cleaned = cleaned[start : end+1]
+		var subList []domain.AIKnowledgeItem
+		if err := json.Unmarshal([]byte(cleaned[start:end+1]), &subList); err == nil && len(subList) > 0 {
+			return sanitizeKnowledgeItems(subList), nil
+		}
 	}
 
-	var items []domain.AIKnowledgeItem
-	if err := json.Unmarshal([]byte(cleaned), &items); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal extracted JSON: %w (output: %s)", err, cleaned)
+	// Attempt 5: Single object substring between '{' and '}'
+	objStart := strings.Index(cleaned, "{")
+	objEnd := strings.LastIndex(cleaned, "}")
+	if objStart != -1 && objEnd != -1 && objEnd > objStart {
+		var subObj domain.AIKnowledgeItem
+		if err := json.Unmarshal([]byte(cleaned[objStart:objEnd+1]), &subObj); err == nil {
+			if strings.TrimSpace(subObj.QuestionOrTopic) != "" || strings.TrimSpace(subObj.AnswerOrContent) != "" {
+				return sanitizeKnowledgeItems([]domain.AIKnowledgeItem{subObj}), nil
+			}
+		}
 	}
 
+	return nil, fmt.Errorf("failed to unmarshal extracted JSON: unexpected structure (output: %s)", cleaned)
+}
+
+func sanitizeKnowledgeItems(items []domain.AIKnowledgeItem) []domain.AIKnowledgeItem {
 	for i := range items {
 		items[i].IsActive = true
+		items[i].Category = strings.ToLower(strings.TrimSpace(items[i].Category))
 		if items[i].Category == "" {
 			items[i].Category = "faq"
 		}
+		items[i].QuestionOrTopic = strings.TrimSpace(items[i].QuestionOrTopic)
+		items[i].AnswerOrContent = strings.TrimSpace(items[i].AnswerOrContent)
 	}
-	return items, nil
+	return items
 }
 
 func (s *AIEngineService) buildSystemPrompt(cfg *domain.AIAgentConfig, knowledge []domain.AIKnowledgeItem) string {
@@ -671,7 +728,11 @@ func (s *AIEngineService) buildSystemPrompt(cfg *domain.AIAgentConfig, knowledge
 
 // callGemini executes a prompt against Google Gemini REST API
 func (s *AIEngineService) callGemini(ctx context.Context, systemPrompt, transcript, incomingText string) (string, error) {
-	url := "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"
+	model := os.Getenv("GEMINI_MODEL")
+	if model == "" {
+		model = "gemini-1.5-flash"
+	}
+	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", model)
 
 	userPrompt := incomingText
 	if transcript != "" {
