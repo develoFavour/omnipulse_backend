@@ -1504,6 +1504,12 @@ func (m *WhatsAppManager) handleAIAutoResponse(tenantID string, conv *domain.Con
 	if err != nil {
 		return err
 	}
+	if len(knowledge) == 0 {
+		if fallbackKnowledge, fallbackErr := m.aiAgentRepo.ListKnowledgeItems(ctx, tenantID); fallbackErr == nil && len(fallbackKnowledge) > 0 {
+			knowledge = fallbackKnowledge
+			log.Printf("[WhatsAppManager/AI] Knowledge retrieval: search returned 0, fell back to active list (selected=%d)", len(knowledge))
+		}
+	}
 
 	// 5. Fetch recent conversation history (last 6 messages) for context
 	recentMsgs, err := m.inboxRepo.ListMessages(ctx, tenantID, conv.ID, 6, 0)

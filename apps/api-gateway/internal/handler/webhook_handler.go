@@ -522,6 +522,12 @@ func (h *WebhookHandler) handleTelegramAIResponse(tenantID string, conv *domain.
 	if err != nil {
 		log.Printf("[Webhook/Telegram/AI] Failed to fetch knowledge items for tenant %s: %v\n", tenantID, err)
 	}
+	if len(knowledge) == 0 {
+		if fallbackKnowledge, fallbackErr := h.aiAgentRepo.ListKnowledgeItems(ctx, tenantID); fallbackErr == nil && len(fallbackKnowledge) > 0 {
+			knowledge = fallbackKnowledge
+			log.Printf("[Webhook/Telegram/AI] Knowledge retrieval: search returned 0, fell back to active list (selected=%d)\n", len(knowledge))
+		}
+	}
 	recentMsgs, _ := h.inboxRepo.ListMessages(ctx, tenantID, conv.ID, 6, 0)
 	for i, j := 0, len(recentMsgs)-1; i < j; i, j = i+1, j-1 {
 		recentMsgs[i], recentMsgs[j] = recentMsgs[j], recentMsgs[i]

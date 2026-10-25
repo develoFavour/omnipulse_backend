@@ -275,6 +275,7 @@ func (r *PostgresAIAgentRepository) SearchKnowledgeItems(ctx context.Context, te
 			}
 			if err := rows.Err(); err == nil && len(items) > 0 {
 				log.Printf("[KnowledgeSearch] Hybrid search returned %d items (semantic + lexical)\n", len(items))
+				r.backfillKnowledgeItems(ctx, tenantID, &items, limit)
 				return items, nil
 			}
 		} else {
@@ -312,7 +313,48 @@ func (r *PostgresAIAgentRepository) SearchKnowledgeItems(ctx context.Context, te
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("failed to read searched knowledge items: %w", err)
 	}
+	r.backfillKnowledgeItems(ctx, tenantID, &items, limit)
 	return items, nil
+}
+
+func (r *PostgresAIAgentRepository) backfillKnowledgeItems(ctx context.Context, tenantID string, items *[]domain.AIKnowledgeItem, limit int) {
+	if len(*items) >= limit {
+		return
+	}
+	existingIDs := make(map[string]bool, len(*items))
+	for _, it := range *items {
+		existingIDs[it.ID] = true
+	}
+	backfillRows, err := r.db.QueryContext(ctx, `
+		SELECT id, tenant_id, category, question_or_topic, answer_or_content, source_document, source_section, source_excerpt, is_active, created_at, updated_at
+		FROM ai_knowledge_items
+		WHERE tenant_id = $1 AND is_active = TRUE
+		ORDER BY 
+			CASE 
+				WHEN category = 'product' THEN 1 
+				WHEN category = 'faq' THEN 2 
+				WHEN category = 'pricing' THEN 3
+				ELSE 4 
+			END,
+			created_at ASC
+		LIMIT $2
+	`, tenantID, limit*2)
+	if err != nil {
+		return
+	}
+	defer backfillRows.Close()
+	for backfillRows.Next() {
+		var it domain.AIKnowledgeItem
+		if err := backfillRows.Scan(&it.ID, &it.TenantID, &it.Category, &it.QuestionOrTopic, &it.AnswerOrContent, &it.SourceDocument, &it.SourceSection, &it.SourceExcerpt, &it.IsActive, &it.CreatedAt, &it.UpdatedAt); err == nil {
+			if !existingIDs[it.ID] {
+				existingIDs[it.ID] = true
+				*items = append(*items, it)
+				if len(*items) >= limit {
+					break
+				}
+			}
+		}
+	}
 }
 
 func (r *PostgresAIAgentRepository) ListKnowledgeItemsPage(ctx context.Context, tenantID, search, category string, limit, offset int) (*domain.KnowledgePage, error) {
