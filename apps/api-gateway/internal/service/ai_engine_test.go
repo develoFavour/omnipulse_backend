@@ -60,6 +60,29 @@ func TestRankKnowledgeItemsMatchesCategory(t *testing.T) {
 	}
 }
 
+func TestRankKnowledgeItemsBackfillsWhenQueryHasNoTokens(t *testing.T) {
+	items := []domain.AIKnowledgeItem{
+		{ID: "1", Category: "faq", QuestionOrTopic: "Company Overview", AnswerOrContent: "MessageRail is an omnichannel platform.", IsActive: true},
+		{ID: "2", Category: "pricing", QuestionOrTopic: "Starter Plan", AnswerOrContent: "Costs $29/mo.", IsActive: true},
+	}
+	// Conversational follow-up where query has only stop words / conversational particles
+	got := rankKnowledgeItems(items, "Is that all?", 2)
+	if len(got) != 2 {
+		t.Fatalf("expected backfill to return all active items, got %d", len(got))
+	}
+}
+
+func TestRankKnowledgeItemsProductIntentBoost(t *testing.T) {
+	items := []domain.AIKnowledgeItem{
+		{ID: "1", Category: "faq", QuestionOrTopic: "Company Overview", AnswerOrContent: "MessageRail is an omnichannel platform.", IsActive: true},
+		{ID: "2", Category: "hours", QuestionOrTopic: "Support Hours", AnswerOrContent: "8am to 6pm.", IsActive: true},
+	}
+	got := rankKnowledgeItems(items, "Tell me about your product?", 1)
+	if len(got) != 1 || got[0].QuestionOrTopic != "Company Overview" {
+		t.Fatalf("expected Company Overview to be boosted, got %+v", got)
+	}
+}
+
 func TestChunkKnowledgeTextPreservesDocumentContent(t *testing.T) {
 	text := strings.Repeat("A factual sentence with important business details. ", 300)
 	chunks, err := chunkKnowledgeText(text, 100, 10)

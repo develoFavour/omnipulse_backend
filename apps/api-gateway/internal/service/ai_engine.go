@@ -143,7 +143,12 @@ func (s *AIEngineService) GenerateReply(
 		return "", false, nil, fmt.Errorf("no AI provider configured (set GEMINI_API_KEY or GROQ_API_KEY)")
 	}
 
-	knowledge = rankKnowledgeItems(knowledge, incomingText, 8)
+	// Contextual ranking: include recent messages so follow-ups ("Is that all?", "How much?") retain conversation context
+	rankingQuery := incomingText
+	for i := len(recentMessages) - 1; i >= 0 && i >= len(recentMessages)-3; i-- {
+		rankingQuery += " " + recentMessages[i].Body
+	}
+	knowledge = rankKnowledgeItems(knowledge, rankingQuery, 8)
 	activeKnowledge := 0
 	for _, item := range knowledge {
 		if item.IsActive {
@@ -221,37 +226,84 @@ func (s *AIEngineService) GenerateReply(
 	return s.postProcessReply(reply)
 }
 
-// rankKnowledgeItems keeps the prompt tenant-scoped and bounded. It uses a
-// deterministic lexical match for the current MVP; a pgvector-backed retriever
-// can replace this function later without changing the AI orchestration API.
+var commonStopWords = map[string]struct{}{
+	"the": {}, "and": {}, "for": {}, "that": {}, "this": {}, "with": {},
+	"your": {}, "you": {}, "are": {}, "was": {}, "have": {}, "from": {},
+	"they": {}, "will": {}, "would": {}, "could": {}, "should": {}, "there": {},
+	"their": {}, "about": {}, "what": {}, "when": {}, "where": {}, "which": {},
+	"tell": {}, "know": {}, "some": {}, "been": {}, "how": {}, "can": {},
+	"our": {}, "all": {}, "any": {}, "who": {}, "give": {},
+}
+
+// rankKnowledgeItems keeps the prompt tenant-scoped and bounded. It uses
+// lexical matching with intent boosts and automatically backfills active items
+// so conversational queries and follow-ups never leave the AI context empty.
 func rankKnowledgeItems(items []domain.AIKnowledgeItem, query string, limit int) []domain.AIKnowledgeItem {
 	if limit <= 0 {
 		return nil
 	}
+	queryLower := strings.ToLower(strings.TrimSpace(query))
 	queryTokens := knowledgeTokens(query)
+
 	type scoredItem struct {
 		item  domain.AIKnowledgeItem
 		score int
 	}
 	scored := make([]scoredItem, 0, len(items))
+
+	// Detect conversational inquiry intent signals
+	wantsProduct := strings.Contains(queryLower, "product") || strings.Contains(queryLower, "service") ||
+		strings.Contains(queryLower, "what do you do") || strings.Contains(queryLower, "offer") ||
+		strings.Contains(queryLower, "overview") || strings.Contains(queryLower, "features") ||
+		strings.Contains(queryLower, "about")
+	wantsPricing := strings.Contains(queryLower, "price") || strings.Contains(queryLower, "pricing") ||
+		strings.Contains(queryLower, "cost") || strings.Contains(queryLower, "plan") ||
+		strings.Contains(queryLower, "subscription") || strings.Contains(queryLower, "fee") ||
+		strings.Contains(queryLower, "pay")
+	wantsHours := strings.Contains(queryLower, "hour") || strings.Contains(queryLower, "open") ||
+		strings.Contains(queryLower, "time") || strings.Contains(queryLower, "contact") ||
+		strings.Contains(queryLower, "support")
+	wantsPolicy := strings.Contains(queryLower, "refund") || strings.Contains(queryLower, "cancel") ||
+		strings.Contains(queryLower, "return") || strings.Contains(queryLower, "guarantee")
+
 	for _, item := range items {
 		if !item.IsActive {
 			continue
 		}
 		textTokens := knowledgeTokens(item.Category + " " + item.QuestionOrTopic + " " + item.AnswerOrContent)
+		topicLower := strings.ToLower(item.QuestionOrTopic)
+		catLower := strings.ToLower(item.Category)
 		score := 0
-		if strings.Contains(strings.ToLower(item.QuestionOrTopic), strings.ToLower(strings.TrimSpace(query))) {
-			score += 3
+
+		if queryLower != "" && strings.Contains(topicLower, queryLower) {
+			score += 5
 		}
+
 		for token := range queryTokens {
 			if _, found := textTokens[token]; found {
-				score += 1
+				score += 2
 			}
 		}
+
+		// Intent category boosts
+		if wantsProduct && (catLower == "product" || strings.Contains(topicLower, "overview") || strings.Contains(topicLower, "product")) {
+			score += 4
+		}
+		if wantsPricing && (catLower == "pricing" || strings.Contains(topicLower, "plan") || strings.Contains(topicLower, "price")) {
+			score += 4
+		}
+		if wantsHours && (catLower == "hours" || strings.Contains(topicLower, "hour") || strings.Contains(topicLower, "support")) {
+			score += 4
+		}
+		if wantsPolicy && (catLower == "policy" || strings.Contains(topicLower, "refund") || strings.Contains(topicLower, "cancel")) {
+			score += 4
+		}
+
 		if score > 0 {
 			scored = append(scored, scoredItem{item: item, score: score})
 		}
 	}
+
 	for i := 0; i < len(scored); i++ {
 		for j := i + 1; j < len(scored); j++ {
 			if scored[j].score > scored[i].score {
@@ -259,13 +311,33 @@ func rankKnowledgeItems(items []domain.AIKnowledgeItem, query string, limit int)
 			}
 		}
 	}
-	if len(scored) > limit {
-		scored = scored[:limit]
-	}
-	result := make([]domain.AIKnowledgeItem, 0, len(scored))
+
+	result := make([]domain.AIKnowledgeItem, 0, limit)
+	seenIDs := make(map[string]bool)
 	for _, entry := range scored {
-		result = append(result, entry.item)
+		if !seenIDs[entry.item.ID] {
+			seenIDs[entry.item.ID] = true
+			result = append(result, entry.item)
+			if len(result) >= limit {
+				break
+			}
+		}
 	}
+
+	// Backfill with other active knowledge items so the system prompt is never starved of context
+	if len(result) < limit {
+		for _, item := range items {
+			if !item.IsActive || seenIDs[item.ID] {
+				continue
+			}
+			seenIDs[item.ID] = true
+			result = append(result, item)
+			if len(result) >= limit {
+				break
+			}
+		}
+	}
+
 	return result
 }
 
@@ -275,7 +347,9 @@ func knowledgeTokens(value string) map[string]struct{} {
 		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
 	}) {
 		if len(token) >= 3 {
-			result[token] = struct{}{}
+			if _, isStop := commonStopWords[token]; !isStop {
+				result[token] = struct{}{}
+			}
 		}
 	}
 	return result
@@ -716,12 +790,13 @@ func (s *AIEngineService) buildSystemPrompt(cfg *domain.AIAgentConfig, knowledge
 	b.WriteString("\n=== STRICT RULES ===\n")
 	b.WriteString("1. ONLY answer questions using the facts and information provided above. DO NOT invent prices, delivery policies, or products.\n")
 	b.WriteString("2. Only hand off when the user explicitly asks for a human/agent/representative, or when the issue truly requires human action. Do not hand off merely because a question is broad or ambiguous.\n")
-	b.WriteString("3. If the user asks about a product or service generally and the knowledge base contains relevant facts, answer with those facts. If multiple products could match, ask which one they mean.\n")
-	b.WriteString("4. If the knowledge base does not contain enough information and the user did not ask for a human, explain what information is missing and ask a concise clarifying question. Set should_handoff to false.\n")
-	b.WriteString(fmt.Sprintf("5. When a human handoff is genuinely required, respond politely with: %q. Do not include internal markers in the response field; set should_handoff to true instead.\n", handoffMsg))
-	b.WriteString("6. Keep responses concise and formatted cleanly for WhatsApp/Telegram (under 3-4 sentences when possible). Use bullet points for lists.\n")
-	b.WriteString("7. If the customer introduces themselves or shares an email address, include the extracted details in lead_info.\n")
-	b.WriteString("8. Return ONLY valid JSON with this exact shape: {\"response\":\"...\",\"should_handoff\":false,\"handoff_reason\":\"none\",\"confidence\":0.95,\"lead_info\":null}. Do not include markdown or extra commentary.\n")
+	b.WriteString(fmt.Sprintf("3. When asked generally about 'your product', 'your services', 'what do you do', or overview inquiries, introduce %s and summarize its core features, value proposition, and benefits using the Business Overview and Knowledge Base. If there is one primary product or platform described, present it directly. Never ask 'which specific product do you mean?' unless the user specifically asks to choose between multiple distinct product names.\n", businessName))
+	b.WriteString("4. Maintain conversation context across messages. If the customer asks follow-up questions such as 'Is that all?', 'What else?', 'Tell me more', 'How much does it cost?', or 'What plans do you offer?', refer back to the context already discussed and share additional details, features, subscription plans, pricing, or policies from the knowledge base. Never claim you lack context or details about a product or service already introduced in this conversation.\n")
+	b.WriteString("5. If a specific factual detail is missing from the knowledge base and the user did not ask for a human, share what you do know about related offerings, explain what detail is not listed, and offer to check with a team member. Set should_handoff to false.\n")
+	b.WriteString(fmt.Sprintf("6. When a human handoff is genuinely required, respond politely with: %q. Do not include internal markers in the response field; set should_handoff to true instead.\n", handoffMsg))
+	b.WriteString("7. Keep responses concise, warm, and formatted cleanly for WhatsApp/Telegram (under 3-4 sentences when possible). Use bullet points for lists.\n")
+	b.WriteString("8. If the customer introduces themselves or shares an email address, include the extracted details in lead_info.\n")
+	b.WriteString("9. Return ONLY valid JSON with this exact shape: {\"response\":\"...\",\"should_handoff\":false,\"handoff_reason\":\"none\",\"confidence\":0.95,\"lead_info\":null}. Do not include markdown or extra commentary.\n")
 
 	return b.String()
 }
@@ -824,8 +899,13 @@ func (s *AIEngineService) callGroq(ctx context.Context, systemPrompt, transcript
 		"content": incomingText,
 	})
 
+	groqModel := os.Getenv("GROQ_MODEL")
+	if groqModel == "" {
+		groqModel = "llama-3.3-70b-versatile"
+	}
+
 	payload := map[string]interface{}{
-		"model":           "openai/gpt-oss-120b",
+		"model":           groqModel,
 		"messages":        messages,
 		"temperature":     0.3,
 		"max_tokens":      knowledgeOutputTokens,
