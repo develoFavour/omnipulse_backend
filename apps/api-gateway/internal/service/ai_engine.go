@@ -894,14 +894,19 @@ func (s *AIEngineService) callGroq(ctx context.Context, systemPrompt, transcript
 		})
 	}
 
+	userContent := incomingText
+	if !strings.Contains(strings.ToLower(userContent), "json") {
+		userContent = fmt.Sprintf("%s\n\n(Respond strictly with a valid JSON object matching the requested schema)", userContent)
+	}
+
 	messages = append(messages, map[string]string{
 		"role":    "user",
-		"content": incomingText,
+		"content": userContent,
 	})
 
 	groqModel := os.Getenv("GROQ_MODEL")
 	if groqModel == "" {
-		groqModel = "llama-3.3-70b-versatile"
+		groqModel = "openai/gpt-oss-120b"
 	}
 
 	payload := map[string]interface{}{
@@ -1012,13 +1017,15 @@ func (s *AIEngineService) GenerateEmbedding(ctx context.Context, text string) ([
 
 	respBytes, _ := io.ReadAll(resp.Body)
 
-	// 3. Handle rate limits and quota exhaustion (HTTP 429 or 503)
+	// 3. Handle rate limits, quota exhaustion, or unauthenticated/unsupported errors (HTTP 429, 503, 404, 401)
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable ||
-		strings.Contains(string(respBytes), "RESOURCE_EXHAUSTED") || strings.Contains(string(respBytes), "quota") {
+		resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusUnauthorized ||
+		strings.Contains(string(respBytes), "RESOURCE_EXHAUSTED") || strings.Contains(string(respBytes), "quota") ||
+		strings.Contains(string(respBytes), "not found") || strings.Contains(string(respBytes), "API key not valid") {
 		s.embeddingMu.Lock()
-		s.embeddingThrottledUntil = time.Now().Add(60 * time.Second)
+		s.embeddingThrottledUntil = time.Now().Add(5 * time.Minute)
 		s.embeddingMu.Unlock()
-		log.Printf("[AIEngine] ⚠️ Gemini embedding quota/rate limit reached (status %d). Circuit opened for 60s (falling back to tsvector search)", resp.StatusCode)
+		log.Printf("[AIEngine] ⚠️ Gemini embedding unavailable (status %d). Circuit opened for 5m (falling back to tsvector search)", resp.StatusCode)
 		return nil, ErrEmbeddingThrottled
 	}
 
