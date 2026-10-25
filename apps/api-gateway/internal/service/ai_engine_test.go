@@ -189,3 +189,24 @@ func TestParseExtractedKnowledgeJSONHandlesDirectArray(t *testing.T) {
 		t.Fatalf("unexpected parsed items: %+v", items)
 	}
 }
+
+func TestIsPureGreeting(t *testing.T) {
+	for _, text := range []string{"Hi", "Hello!", "hey", "Good morning", "howdy", "Hi there"} {
+		if !isPureGreeting(text) {
+			t.Errorf("expected %q to be recognized as pure greeting", text)
+		}
+	}
+	for _, text := range []string{"Hi, what are your plans?", "Tell me about your product", "How much does it cost?"} {
+		if isPureGreeting(text) {
+			t.Errorf("expected %q to NOT be recognized as pure greeting", text)
+		}
+	}
+}
+
+func TestStripInternalMarkersFormatsBullets(t *testing.T) {
+	input := "Customer satisfaction. • Unified inbox across channels\n• Automated AI replies"
+	got := stripInternalMarkers(input)
+	if !strings.Contains(got, "satisfaction.\n\n• Unified inbox") {
+		t.Fatalf("expected newline before bullet, got: %q", got)
+	}
+}

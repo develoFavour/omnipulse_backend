@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -424,8 +425,24 @@ func (s *AIEngineService) postProcessReply(rawReply string) (string, bool, *doma
 	return cleaned, needsHuman, lead, nil
 }
 
+var inlineBulletRegex = regexp.MustCompile(`([^\n])\s*(•\s+)`)
+var inlinePunctBulletRegex = regexp.MustCompile(`([.!?])\s*([•\-\*]\s+)`)
+
+func isPureGreeting(text string) bool {
+	cleaned := strings.ToLower(strings.TrimSpace(text))
+	cleaned = strings.Trim(cleaned, "!.,? ")
+	switch cleaned {
+	case "hi", "hello", "hey", "hiya", "howdy", "good morning", "good afternoon", "good evening", "good day", "greetings", "hi there", "hello there", "hey there", "yo", "sup":
+		return true
+	}
+	return false
+}
+
 func stripInternalMarkers(value string) string {
-	return strings.TrimSpace(strings.ReplaceAll(value, "[HANDOFF_TO_HUMAN]", ""))
+	cleaned := strings.TrimSpace(strings.ReplaceAll(value, "[HANDOFF_TO_HUMAN]", ""))
+	cleaned = inlinePunctBulletRegex.ReplaceAllString(cleaned, "$1\n\n$2")
+	cleaned = inlineBulletRegex.ReplaceAllString(cleaned, "$1\n\n$2")
+	return strings.TrimSpace(cleaned)
 }
 
 func responseMetadata(rawReply string) (confidence float64, handoffReason string, structured bool) {
@@ -789,14 +806,15 @@ func (s *AIEngineService) buildSystemPrompt(cfg *domain.AIAgentConfig, knowledge
 
 	b.WriteString("\n=== STRICT RULES ===\n")
 	b.WriteString("1. ONLY answer questions using the facts and information provided above. DO NOT invent prices, delivery policies, or products.\n")
-	b.WriteString("2. Only hand off when the user explicitly asks for a human/agent/representative, or when the issue truly requires human action. Do not hand off merely because a question is broad or ambiguous.\n")
-	b.WriteString(fmt.Sprintf("3. When asked generally about 'your product', 'your services', 'what do you do', or overview inquiries, introduce %s and summarize its core features, value proposition, and benefits using the Business Overview and Knowledge Base. If there is one primary product or platform described, present it directly. Never ask 'which specific product do you mean?' unless the user specifically asks to choose between multiple distinct product names.\n", businessName))
-	b.WriteString("4. Maintain conversation context across messages. If the customer asks follow-up questions such as 'Is that all?', 'What else?', 'Tell me more', 'How much does it cost?', or 'What plans do you offer?', refer back to the context already discussed and share additional details, features, subscription plans, pricing, or policies from the knowledge base. Never claim you lack context or details about a product or service already introduced in this conversation.\n")
-	b.WriteString("5. If a specific factual detail is missing from the knowledge base and the user did not ask for a human, share what you do know about related offerings, explain what detail is not listed, and offer to check with a team member. Set should_handoff to false.\n")
-	b.WriteString(fmt.Sprintf("6. When a human handoff is genuinely required, respond politely with: %q. Do not include internal markers in the response field; set should_handoff to true instead.\n", handoffMsg))
-	b.WriteString("7. Keep responses concise, warm, and formatted cleanly for WhatsApp/Telegram (under 3-4 sentences when possible). Use bullet points for lists.\n")
-	b.WriteString("8. If the customer introduces themselves or shares an email address, include the extracted details in lead_info.\n")
-	b.WriteString("9. Return ONLY valid JSON with this exact shape: {\"response\":\"...\",\"should_handoff\":false,\"handoff_reason\":\"none\",\"confidence\":0.95,\"lead_info\":null}. Do not include markdown or extra commentary.\n")
+	b.WriteString(fmt.Sprintf("2. GREETINGS & CASUAL OPENERS: If the customer sends a simple greeting or casual opener (such as 'Hi', 'Hello', 'Hey', 'Good morning', 'Good afternoon', 'Good evening', or 'How are you?'), reply warmly, briefly, and politely (e.g., 'Hello! Welcome to %s. How can I assist you today?'). NEVER launch into a full company overview, sales pitch, or feature list in response to a simple greeting.\n", businessName))
+	b.WriteString("3. Only hand off when the user explicitly asks for a human/agent/representative, or when the issue truly requires human action. Do not hand off merely because a question is broad or ambiguous.\n")
+	b.WriteString(fmt.Sprintf("4. When the customer actually ASKS about 'your product', 'your services', 'what do you do', or what the business offers, introduce %s and summarize its core features, value proposition, and benefits using the Business Overview and Knowledge Base. If there is one primary product or platform described, present it directly. Never ask 'which specific product do you mean?' unless the user specifically asks to choose between multiple distinct product names.\n", businessName))
+	b.WriteString("5. Maintain conversation context across messages. If the customer asks follow-up questions such as 'Is that all?', 'What else?', 'Tell me more', 'How much does it cost?', or 'What plans do you offer?', refer back to the context already discussed and share additional details, features, subscription plans, pricing, or policies from the knowledge base. Never claim you lack context or details about a product or service already introduced in this conversation.\n")
+	b.WriteString("6. If a specific factual detail is missing from the knowledge base and the user did not ask for a human, share what you do know about related offerings, explain what detail is not listed, and offer to check with a team member. Set should_handoff to false.\n")
+	b.WriteString(fmt.Sprintf("7. When a human handoff is genuinely required, respond politely with: %q. Do not include internal markers in the response field; set should_handoff to true instead.\n", handoffMsg))
+	b.WriteString("8. Formatting for WhatsApp: Keep responses concise, warm, and formatted cleanly for WhatsApp/Telegram (under 3-4 sentences when possible). If using bullet points, always start each bullet point on its own new line with a line break before the list.\n")
+	b.WriteString("9. If the customer introduces themselves or shares an email address, include the extracted details in lead_info.\n")
+	b.WriteString("10. Return ONLY valid JSON with this exact shape: {\"response\":\"...\",\"should_handoff\":false,\"handoff_reason\":\"none\",\"confidence\":0.95,\"lead_info\":null}. Do not include markdown or extra commentary.\n")
 
 	return b.String()
 }
@@ -812,6 +830,9 @@ func (s *AIEngineService) callGemini(ctx context.Context, systemPrompt, transcri
 	userPrompt := incomingText
 	if transcript != "" {
 		userPrompt = fmt.Sprintf("Recent conversation history:\n%s\nCustomer just sent: %s", transcript, incomingText)
+	}
+	if isPureGreeting(incomingText) {
+		userPrompt += "\n\n[Instruction: The customer sent a simple greeting. Greet them warmly and ask how you can help them today. Do not send a product pitch or feature list yet.]"
 	}
 
 	payload := map[string]interface{}{
@@ -895,6 +916,12 @@ func (s *AIEngineService) callGroq(ctx context.Context, systemPrompt, transcript
 	}
 
 	userContent := incomingText
+	if transcript != "" {
+		userContent = fmt.Sprintf("Recent context:\n%s\n\nCustomer message: %s", transcript, incomingText)
+	}
+	if isPureGreeting(incomingText) {
+		userContent += "\n\n[Instruction: The customer sent a simple greeting. Greet them warmly and ask how you can help them today. Do not send a product pitch or feature list yet.]"
+	}
 	if !strings.Contains(strings.ToLower(userContent), "json") {
 		userContent = fmt.Sprintf("%s\n\n(Respond strictly with a valid JSON object matching the requested schema)", userContent)
 	}
