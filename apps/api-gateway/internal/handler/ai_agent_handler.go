@@ -594,7 +594,7 @@ func (h *AIAgentHandler) TestSimulate(w http.ResponseWriter, r *http.Request) {
 
 	knowledge, _ := h.repo.ListKnowledgeItems(r.Context(), tenantID)
 
-	reply, needsHuman, leadInfo, err := h.aiEngine.GenerateReply(r.Context(), cfg, knowledge, nil, req.Query)
+	res, err := h.aiEngine.GenerateReplyWithMeta(r.Context(), cfg, knowledge, nil, req.Query)
 	if err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("AI simulation failed: %v", err))
 		return
@@ -602,8 +602,114 @@ func (h *AIAgentHandler) TestSimulate(w http.ResponseWriter, r *http.Request) {
 
 	utils.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"query":       req.Query,
-		"reply":       reply,
-		"needs_human": needsHuman,
-		"lead_info":   leadInfo,
+		"reply":       res.Reply,
+		"needs_human": res.NeedsHuman,
+		"lead_info":   res.Lead,
+		"confidence":  res.Confidence,
+		"is_gap":      res.IsGap,
+	})
+}
+
+// ListKnowledgeGaps handles GET /api/v1/ai-agent/gaps
+func (h *AIAgentHandler) ListKnowledgeGaps(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok || tenantID == "" {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	status := r.URL.Query().Get("status")
+	if status == "" {
+		status = "pending"
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+
+	page, err := h.repo.ListKnowledgeGaps(r.Context(), tenantID, status, limit, offset)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, page)
+}
+
+// ResolveKnowledgeGap handles POST /api/v1/ai-agent/gaps/{id}/resolve
+func (h *AIAgentHandler) ResolveKnowledgeGap(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok || tenantID == "" {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	gapID := r.PathValue("id")
+	if gapID == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Missing gap ID")
+		return
+	}
+
+	var req domain.ResolveKnowledgeGapRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "Invalid request payload")
+		return
+	}
+
+	if strings.TrimSpace(req.QuestionOrTopic) == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Question or topic is required")
+		return
+	}
+	if strings.TrimSpace(req.AnswerOrContent) == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Answer or content is required")
+		return
+	}
+
+	category := req.Category
+	if category == "" {
+		category = "faq"
+	}
+
+	item := &domain.AIKnowledgeItem{
+		TenantID:        tenantID,
+		Category:        category,
+		QuestionOrTopic: strings.TrimSpace(req.QuestionOrTopic),
+		AnswerOrContent: strings.TrimSpace(req.AnswerOrContent),
+		SourceDocument:  "Knowledge Gap Resolution",
+		SourceSection:   "Human Trained",
+		IsActive:        true,
+	}
+
+	created, err := h.repo.ResolveKnowledgeGap(r.Context(), tenantID, gapID, item)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"message": "Knowledge gap resolved and published to assistant knowledge base",
+		"item":    created,
+	})
+}
+
+// DismissKnowledgeGap handles POST /api/v1/ai-agent/gaps/{id}/dismiss or DELETE /api/v1/ai-agent/gaps/{id}
+func (h *AIAgentHandler) DismissKnowledgeGap(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok || tenantID == "" {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	gapID := r.PathValue("id")
+	if gapID == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Missing gap ID")
+		return
+	}
+
+	if err := h.repo.DismissKnowledgeGap(r.Context(), tenantID, gapID); err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]string{
+		"message": "Knowledge gap dismissed",
 	})
 }

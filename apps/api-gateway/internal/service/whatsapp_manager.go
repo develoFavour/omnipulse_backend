@@ -1522,10 +1522,28 @@ func (m *WhatsAppManager) handleAIAutoResponse(tenantID string, conv *domain.Con
 	}
 
 	// 6. Generate reply with dual-engine fallback (Gemini -> Groq)
-	replyText, needsHuman, leadInfo, err := m.aiEngine.GenerateReply(ctx, cfg, knowledge, recentMsgs, incomingText)
+	aiResult, err := m.aiEngine.GenerateReplyWithMeta(ctx, cfg, knowledge, recentMsgs, incomingText)
 	if err != nil {
 		log.Printf("[WhatsAppManager/AI] ⚠️ Failed to generate AI reply for tenant %s: %v\n", tenantID, err)
 		return err
+	}
+	replyText := aiResult.Reply
+	needsHuman = aiResult.NeedsHuman
+	leadInfo := aiResult.Lead
+
+	// Auto-record Knowledge Gap if low confidence or unsupported query
+	if aiResult.IsGap && !isPureGreeting(incomingText) && m.aiAgentRepo != nil {
+		go func(q string, conf float64, cID string) {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = m.aiAgentRepo.RecordKnowledgeGap(bgCtx, &domain.AIKnowledgeGap{
+				TenantID:       tenantID,
+				Query:          q,
+				Channel:        "whatsapp",
+				ConversationID: &cID,
+				AIConfidence:   conf,
+			})
+		}(incomingText, aiResult.Confidence, conv.ID)
 	}
 
 	// Auto-enrich audience contact details if lead info detected

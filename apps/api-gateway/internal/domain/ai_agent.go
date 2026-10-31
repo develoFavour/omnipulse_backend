@@ -99,6 +99,34 @@ type ExtractedLeadInfo struct {
 	Email string `json:"email,omitempty"`
 }
 
+type AIKnowledgeGap struct {
+	ID               string    `json:"id"`
+	TenantID         string    `json:"tenant_id"`
+	Query            string    `json:"query"`
+	Channel          string    `json:"channel"` // "whatsapp", "telegram", "simulator"
+	ConversationID   *string   `json:"conversation_id,omitempty"`
+	AIConfidence     float64   `json:"ai_confidence"`
+	Occurrences      int       `json:"occurrences"`
+	Status           string    `json:"status"` // "pending", "resolved", "dismissed"
+	ResolutionItemID *string   `json:"resolution_item_id,omitempty"`
+	LastAskedAt      time.Time `json:"last_asked_at"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+type AIKnowledgeGapsPage struct {
+	Gaps   []AIKnowledgeGap `json:"gaps"`
+	Total  int              `json:"total"`
+	Limit  int              `json:"limit"`
+	Offset int              `json:"offset"`
+}
+
+type ResolveKnowledgeGapRequest struct {
+	Category        string `json:"category"`
+	QuestionOrTopic string `json:"question_or_topic"`
+	AnswerOrContent string `json:"answer_or_content"`
+}
+
 type AIAgentRepository interface {
 	GetConfig(ctx context.Context, tenantID string) (*AIAgentConfig, error)
 	SaveConfig(ctx context.Context, cfg *AIAgentConfig) error
@@ -120,6 +148,13 @@ type AIAgentRepository interface {
 	// Conversation AI state tracking
 	SetConversationAIState(ctx context.Context, tenantID, conversationID string, state string, pausedUntil *time.Time, needsHuman bool) error
 	GetConversationAIState(ctx context.Context, tenantID, conversationID string) (state string, pausedUntil *time.Time, needsHuman bool, err error)
+
+	// Knowledge gaps management
+	RecordKnowledgeGap(ctx context.Context, gap *AIKnowledgeGap) error
+	ListKnowledgeGaps(ctx context.Context, tenantID, status string, limit, offset int) (*AIKnowledgeGapsPage, error)
+	GetKnowledgeGap(ctx context.Context, tenantID, gapID string) (*AIKnowledgeGap, error)
+	ResolveKnowledgeGap(ctx context.Context, tenantID, gapID string, item *AIKnowledgeItem) (*AIKnowledgeItem, error)
+	DismissKnowledgeGap(ctx context.Context, tenantID, gapID string) error
 }
 
 // AIKnowledgeRetriever is an optional optimized retrieval port. Callers can

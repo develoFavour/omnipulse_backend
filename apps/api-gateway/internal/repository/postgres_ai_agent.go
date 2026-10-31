@@ -728,3 +728,182 @@ func (r *PostgresAIAgentRepository) GetConversationAIState(ctx context.Context, 
 	}
 	return state, pausedUntil, needsHuman, nil
 }
+
+func (r *PostgresAIAgentRepository) RecordKnowledgeGap(ctx context.Context, gap *domain.AIKnowledgeGap) error {
+	if gap == nil || strings.TrimSpace(gap.Query) == "" || strings.TrimSpace(gap.TenantID) == "" {
+		return nil
+	}
+	cleanQuery := strings.TrimSpace(gap.Query)
+	channel := gap.Channel
+	if channel == "" {
+		channel = "whatsapp"
+	}
+
+	query := `
+		INSERT INTO ai_knowledge_gaps (tenant_id, query, channel, conversation_id, ai_confidence, occurrences, status, last_asked_at, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, 1, 'pending', NOW(), NOW(), NOW())
+		ON CONFLICT (tenant_id, lower(trim(query))) WHERE status = 'pending'
+		DO UPDATE SET
+			occurrences = ai_knowledge_gaps.occurrences + 1,
+			last_asked_at = NOW(),
+			ai_confidence = EXCLUDED.ai_confidence,
+			updated_at = NOW()
+		RETURNING id, occurrences, created_at, updated_at
+	`
+	return r.db.QueryRowContext(
+		ctx, query,
+		gap.TenantID, cleanQuery, channel, gap.ConversationID, gap.AIConfidence,
+	).Scan(&gap.ID, &gap.Occurrences, &gap.CreatedAt, &gap.UpdatedAt)
+}
+
+func (r *PostgresAIAgentRepository) ListKnowledgeGaps(ctx context.Context, tenantID, status string, limit, offset int) (*domain.AIKnowledgeGapsPage, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	statusFilter := "pending"
+	if status != "" && status != "all" {
+		statusFilter = status
+	}
+
+	var countQuery string
+	var listQuery string
+	var countArgs []interface{}
+	var listArgs []interface{}
+
+	if status == "all" {
+		countQuery = `SELECT COUNT(*) FROM ai_knowledge_gaps WHERE tenant_id = $1`
+		countArgs = []interface{}{tenantID}
+
+		listQuery = `
+			SELECT id, tenant_id, query, channel, conversation_id, ai_confidence, occurrences, status, resolution_item_id, last_asked_at, created_at, updated_at
+			FROM ai_knowledge_gaps
+			WHERE tenant_id = $1
+			ORDER BY occurrences DESC, last_asked_at DESC
+			LIMIT $2 OFFSET $3
+		`
+		listArgs = []interface{}{tenantID, limit, offset}
+	} else {
+		countQuery = `SELECT COUNT(*) FROM ai_knowledge_gaps WHERE tenant_id = $1 AND status = $2`
+		countArgs = []interface{}{tenantID, statusFilter}
+
+		listQuery = `
+			SELECT id, tenant_id, query, channel, conversation_id, ai_confidence, occurrences, status, resolution_item_id, last_asked_at, created_at, updated_at
+			FROM ai_knowledge_gaps
+			WHERE tenant_id = $1 AND status = $2
+			ORDER BY occurrences DESC, last_asked_at DESC
+			LIMIT $3 OFFSET $4
+		`
+		listArgs = []interface{}{tenantID, statusFilter, limit, offset}
+	}
+
+	var total int
+	if err := r.db.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total); err != nil {
+		return nil, fmt.Errorf("failed to count knowledge gaps: %w", err)
+	}
+
+	rows, err := r.db.QueryContext(ctx, listQuery, listArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list knowledge gaps: %w", err)
+	}
+	defer rows.Close()
+
+	gaps := make([]domain.AIKnowledgeGap, 0)
+	for rows.Next() {
+		var g domain.AIKnowledgeGap
+		var convID, resID sql.NullString
+		if err := rows.Scan(
+			&g.ID, &g.TenantID, &g.Query, &g.Channel, &convID, &g.AIConfidence,
+			&g.Occurrences, &g.Status, &resID, &g.LastAskedAt, &g.CreatedAt, &g.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan knowledge gap: %w", err)
+		}
+		if convID.Valid {
+			g.ConversationID = &convID.String
+		}
+		if resID.Valid {
+			g.ResolutionItemID = &resID.String
+		}
+		gaps = append(gaps, g)
+	}
+
+	return &domain.AIKnowledgeGapsPage{
+		Gaps:   gaps,
+		Total:  total,
+		Limit:  limit,
+		Offset: offset,
+	}, nil
+}
+
+func (r *PostgresAIAgentRepository) GetKnowledgeGap(ctx context.Context, tenantID, gapID string) (*domain.AIKnowledgeGap, error) {
+	query := `
+		SELECT id, tenant_id, query, channel, conversation_id, ai_confidence, occurrences, status, resolution_item_id, last_asked_at, created_at, updated_at
+		FROM ai_knowledge_gaps
+		WHERE id = $1 AND tenant_id = $2
+	`
+	var g domain.AIKnowledgeGap
+	var convID, resID sql.NullString
+	err := r.db.QueryRowContext(ctx, query, gapID, tenantID).Scan(
+		&g.ID, &g.TenantID, &g.Query, &g.Channel, &convID, &g.AIConfidence,
+		&g.Occurrences, &g.Status, &resID, &g.LastAskedAt, &g.CreatedAt, &g.UpdatedAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("knowledge gap not found")
+		}
+		return nil, fmt.Errorf("failed to get knowledge gap: %w", err)
+	}
+	if convID.Valid {
+		g.ConversationID = &convID.String
+	}
+	if resID.Valid {
+		g.ResolutionItemID = &resID.String
+	}
+	return &g, nil
+}
+
+func (r *PostgresAIAgentRepository) ResolveKnowledgeGap(ctx context.Context, tenantID, gapID string, item *domain.AIKnowledgeItem) (*domain.AIKnowledgeItem, error) {
+	if item == nil {
+		return nil, fmt.Errorf("knowledge item is required")
+	}
+	item.TenantID = tenantID
+	item.IsActive = true
+
+	// 1. Create the knowledge item
+	if err := r.CreateKnowledgeItem(ctx, item); err != nil {
+		return nil, fmt.Errorf("failed to create knowledge item: %w", err)
+	}
+
+	// 2. Mark the gap as resolved
+	updateQuery := `
+		UPDATE ai_knowledge_gaps
+		SET status = 'resolved', resolution_item_id = $1, updated_at = NOW()
+		WHERE id = $2 AND tenant_id = $3
+	`
+	_, err := r.db.ExecContext(ctx, updateQuery, item.ID, gapID, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to mark gap as resolved: %w", err)
+	}
+
+	return item, nil
+}
+
+func (r *PostgresAIAgentRepository) DismissKnowledgeGap(ctx context.Context, tenantID, gapID string) error {
+	query := `
+		UPDATE ai_knowledge_gaps
+		SET status = 'dismissed', updated_at = NOW()
+		WHERE id = $1 AND tenant_id = $2
+	`
+	res, err := r.db.ExecContext(ctx, query, gapID, tenantID)
+	if err != nil {
+		return fmt.Errorf("failed to dismiss knowledge gap: %w", err)
+	}
+	rowsAff, _ := res.RowsAffected()
+	if rowsAff == 0 {
+		return fmt.Errorf("knowledge gap not found")
+	}
+	return nil
+}
