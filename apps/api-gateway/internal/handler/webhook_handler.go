@@ -534,9 +534,27 @@ func (h *WebhookHandler) handleTelegramAIResponse(tenantID string, conv *domain.
 	}
 
 	// 5. Generate reply with dual fallback
-	replyText, needsHuman, leadInfo, err := h.aiEngine.GenerateReply(ctx, cfg, knowledge, recentMsgs, incomingText)
-	if err != nil || strings.TrimSpace(replyText) == "" {
+	aiResult, err := h.aiEngine.GenerateReplyWithMeta(ctx, cfg, knowledge, recentMsgs, incomingText)
+	if err != nil || strings.TrimSpace(aiResult.Reply) == "" {
 		return
+	}
+	replyText := aiResult.Reply
+	needsHuman = aiResult.NeedsHuman
+	leadInfo := aiResult.Lead
+
+	// Auto-record Knowledge Gap if low confidence or unsupported query
+	if aiResult.IsGap && !service.IsPureGreeting(incomingText) && h.aiAgentRepo != nil {
+		go func(q string, conf float64, cID string) {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = h.aiAgentRepo.RecordKnowledgeGap(bgCtx, &domain.AIKnowledgeGap{
+				TenantID:       tenantID,
+				Query:          q,
+				Channel:        "telegram",
+				ConversationID: &cID,
+				AIConfidence:   conf,
+			})
+		}(incomingText, aiResult.Confidence, conv.ID)
 	}
 
 	// Auto-enrich audience contact details if lead info detected

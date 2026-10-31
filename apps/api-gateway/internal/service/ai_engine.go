@@ -129,6 +129,15 @@ func parseTimeToMinutes(tStr string, fallback int) int {
 	return fallback
 }
 
+type AIReplyResult struct {
+	Reply         string
+	NeedsHuman    bool
+	Lead          *domain.ExtractedLeadInfo
+	IsGap         bool
+	Confidence    float64
+	HandoffReason string
+}
+
 // GenerateReply orchestrates the prompt assembly and provider call with dual-engine fallback
 func (s *AIEngineService) GenerateReply(
 	ctx context.Context,
@@ -137,11 +146,23 @@ func (s *AIEngineService) GenerateReply(
 	recentMessages []domain.Message,
 	incomingText string,
 ) (reply string, needsHuman bool, lead *domain.ExtractedLeadInfo, err error) {
+	res, err := s.GenerateReplyWithMeta(ctx, cfg, knowledge, recentMessages, incomingText)
+	return res.Reply, res.NeedsHuman, res.Lead, err
+}
+
+// GenerateReplyWithMeta generates a reply and returns detailed metadata including gap detection
+func (s *AIEngineService) GenerateReplyWithMeta(
+	ctx context.Context,
+	cfg *domain.AIAgentConfig,
+	knowledge []domain.AIKnowledgeItem,
+	recentMessages []domain.Message,
+	incomingText string,
+) (result AIReplyResult, err error) {
 	if cfg == nil {
-		return "", false, nil, fmt.Errorf("AI assistant configuration is missing")
+		return AIReplyResult{}, fmt.Errorf("AI assistant configuration is missing")
 	}
 	if !s.HasActiveProvider() {
-		return "", false, nil, fmt.Errorf("no AI provider configured (set GEMINI_API_KEY or GROQ_API_KEY)")
+		return AIReplyResult{}, fmt.Errorf("no AI provider configured (set GEMINI_API_KEY or GROQ_API_KEY)")
 	}
 
 	// Contextual ranking: include recent messages so follow-ups ("Is that all?", "How much?") retain conversation context
@@ -176,6 +197,8 @@ func (s *AIEngineService) GenerateReply(
 	}
 	transcript := historyBuilder.String()
 
+	var reply string
+
 	// 1. Try Gemini REST API if configured
 	if s.geminiKey != "" {
 		reply, err = s.callGemini(ctx, systemPrompt, transcript, incomingText)
@@ -184,14 +207,32 @@ func (s *AIEngineService) GenerateReply(
 			if processErr == nil {
 				confidence, handoffReason, structured := responseMetadata(reply)
 				log.Printf("[AIEngine] Gemini response processed: structured=%v confidence=%.2f handoff=%v reason=%q knowledge_selected=%d", structured, confidence, handoff, handoffReason, len(knowledge))
-				if confidence := responseConfidence(reply); cfg.ConfidenceThreshold > 0 && confidence < cfg.ConfidenceThreshold {
+				isGap := (cfg.ConfidenceThreshold > 0 && confidence < cfg.ConfidenceThreshold) ||
+					handoffReason == "missing_knowledge" ||
+					handoffReason == "unsupported_query"
+
+				if cfg.ConfidenceThreshold > 0 && confidence < cfg.ConfidenceThreshold {
 					fallback := cfg.UnsupportedQueryMessage
 					if fallback == "" {
 						fallback = "I do not have that information right now, but a team member will follow up with you."
 					}
-					return fallback, true, extractedLead, nil
+					return AIReplyResult{
+						Reply:         fallback,
+						NeedsHuman:    true,
+						Lead:          extractedLead,
+						IsGap:         true,
+						Confidence:    confidence,
+						HandoffReason: handoffReason,
+					}, nil
 				}
-				return processed, handoff, extractedLead, nil
+				return AIReplyResult{
+					Reply:         processed,
+					NeedsHuman:    handoff,
+					Lead:          extractedLead,
+					IsGap:         isGap,
+					Confidence:    confidence,
+					HandoffReason: handoffReason,
+				}, nil
 			}
 			err = processErr
 		}
@@ -206,14 +247,32 @@ func (s *AIEngineService) GenerateReply(
 			if processErr == nil {
 				confidence, handoffReason, structured := responseMetadata(reply)
 				log.Printf("[AIEngine] Groq response processed: structured=%v confidence=%.2f handoff=%v reason=%q knowledge_selected=%d", structured, confidence, handoff, handoffReason, len(knowledge))
-				if confidence := responseConfidence(reply); cfg.ConfidenceThreshold > 0 && confidence < cfg.ConfidenceThreshold {
+				isGap := (cfg.ConfidenceThreshold > 0 && confidence < cfg.ConfidenceThreshold) ||
+					handoffReason == "missing_knowledge" ||
+					handoffReason == "unsupported_query"
+
+				if cfg.ConfidenceThreshold > 0 && confidence < cfg.ConfidenceThreshold {
 					fallback := cfg.UnsupportedQueryMessage
 					if fallback == "" {
 						fallback = "I do not have that information right now, but a team member will follow up with you."
 					}
-					return fallback, true, extractedLead, nil
+					return AIReplyResult{
+						Reply:         fallback,
+						NeedsHuman:    true,
+						Lead:          extractedLead,
+						IsGap:         true,
+						Confidence:    confidence,
+						HandoffReason: handoffReason,
+					}, nil
 				}
-				return processed, handoff, extractedLead, nil
+				return AIReplyResult{
+					Reply:         processed,
+					NeedsHuman:    handoff,
+					Lead:          extractedLead,
+					IsGap:         isGap,
+					Confidence:    confidence,
+					HandoffReason: handoffReason,
+				}, nil
 			}
 			err = processErr
 		}
@@ -221,10 +280,10 @@ func (s *AIEngineService) GenerateReply(
 	}
 
 	if reply == "" {
-		return "", false, nil, fmt.Errorf("all configured AI providers failed to generate a response")
+		return AIReplyResult{}, fmt.Errorf("all configured AI providers failed to generate a response")
 	}
 
-	return s.postProcessReply(reply)
+	return AIReplyResult{}, err
 }
 
 var commonStopWords = map[string]struct{}{
@@ -428,7 +487,7 @@ func (s *AIEngineService) postProcessReply(rawReply string) (string, bool, *doma
 var inlineBulletRegex = regexp.MustCompile(`([^\n])\s*(•\s+)`)
 var inlinePunctBulletRegex = regexp.MustCompile(`([.!?])\s*([•\-\*]\s+)`)
 
-func isPureGreeting(text string) bool {
+func IsPureGreeting(text string) bool {
 	cleaned := strings.ToLower(strings.TrimSpace(text))
 	cleaned = strings.Trim(cleaned, "!.,? ")
 	switch cleaned {
@@ -436,6 +495,10 @@ func isPureGreeting(text string) bool {
 		return true
 	}
 	return false
+}
+
+func isPureGreeting(text string) bool {
+	return IsPureGreeting(text)
 }
 
 func stripInternalMarkers(value string) string {

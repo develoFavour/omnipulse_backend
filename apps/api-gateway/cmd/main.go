@@ -418,6 +418,28 @@ func main() {
 		CREATE UNIQUE INDEX IF NOT EXISTS uq_messages_tenant_platform_id
 			ON messages (tenant_id, platform_message_id)
 			WHERE platform_message_id IS NOT NULL;
+
+		CREATE TABLE IF NOT EXISTS ai_knowledge_gaps (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+			query TEXT NOT NULL,
+			channel VARCHAR(32) NOT NULL DEFAULT 'whatsapp',
+			conversation_id UUID REFERENCES conversations(id) ON DELETE SET NULL,
+			ai_confidence NUMERIC(4,2) DEFAULT 0.0,
+			occurrences INT NOT NULL DEFAULT 1,
+			status VARCHAR(32) NOT NULL DEFAULT 'pending',
+			resolution_item_id UUID REFERENCES ai_knowledge_items(id) ON DELETE SET NULL,
+			last_asked_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			CONSTRAINT chk_ai_knowledge_gap_status
+				CHECK (status IN ('pending', 'resolved', 'dismissed'))
+		);
+		CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_knowledge_gaps_pending
+			ON ai_knowledge_gaps (tenant_id, lower(trim(query)))
+			WHERE status = 'pending';
+		CREATE INDEX IF NOT EXISTS idx_ai_knowledge_gaps_tenant_status
+			ON ai_knowledge_gaps (tenant_id, status, occurrences DESC, last_asked_at DESC);
 	`); err != nil {
 		logger.Printf("[DB-MIGRATE] AI Business Assistant table migration: %v\n", err)
 	} else {
@@ -839,6 +861,10 @@ func main() {
 	mux.Handle("PUT /api/v1/ai-agent/knowledge/{id}", handler.RequireRole("owner", "admin")(http.HandlerFunc(aiAgentHandler.UpdateKnowledgeItem)))
 	mux.Handle("DELETE /api/v1/ai-agent/knowledge/{id}", handler.RequireRole("owner", "admin")(http.HandlerFunc(aiAgentHandler.DeleteKnowledgeItem)))
 	mux.HandleFunc("POST /api/v1/ai-agent/conversations/{id}/toggle", aiAgentHandler.ToggleConversationAI)
+	mux.HandleFunc("GET /api/v1/ai-agent/gaps", aiAgentHandler.ListKnowledgeGaps)
+	mux.Handle("POST /api/v1/ai-agent/gaps/{id}/resolve", handler.RequireRole("owner", "admin")(http.HandlerFunc(aiAgentHandler.ResolveKnowledgeGap)))
+	mux.Handle("POST /api/v1/ai-agent/gaps/{id}/dismiss", handler.RequireRole("owner", "admin")(http.HandlerFunc(aiAgentHandler.DismissKnowledgeGap)))
+	mux.Handle("DELETE /api/v1/ai-agent/gaps/{id}", handler.RequireRole("owner", "admin")(http.HandlerFunc(aiAgentHandler.DismissKnowledgeGap)))
 
 	// Webhook Subsystem Endpoints (Inbound Event Flywheel)
 	mux.HandleFunc("POST /api/v1/webhooks/telegram/{tenant_id}", webhookHandler.HandleTelegram)
