@@ -14,7 +14,7 @@
 
 ## Executive Summary
 
-**OmniPulse** is a high-throughput, horizontally scalable, event-driven notification engine built in **Go**. Architected for enterprise-scale multi-platform broadcasting (**WhatsApp Cloud API, Telegram Bot API, and X API**), it strictly enforces upstream compliance windows, global token-bucket rate limits, and schema validations.
+**OmniPulse** is a high-throughput, horizontally scalable, event-driven notification engine built in **Go**. Architected for enterprise-scale multi-platform broadcasting (**WhatsApp Cloud API, WhatsApp Multi-Device QR, and Telegram Bot API**), it strictly enforces upstream compliance windows, global token-bucket rate limits, and schema validations.
 
 Unlike naive broadcasting scripts that fire unbounded HTTP requests, OmniPulse decouples web-tier ingestion from distributed external dispatch. It employs **NATS JetStream** as an immutable distributed event backbone, stateful **Redis** session matrixes to guarantee platform compliance, and memory-bounded goroutine pipelines that eliminate heap exhaustion during high-volume media delivery.
 
@@ -26,7 +26,7 @@ Unlike naive broadcasting scripts that fire unbounded HTTP requests, OmniPulse d
 flowchart TB
     subgraph ClientLayer ["Client & Control Plane"]
         UI["Next.js Control Plane<br/>(TailwindCSS + WebSockets)"]
-        WH["Inbound Webhooks<br/>(Meta / Telegram / X)"]
+        WH["Inbound Webhooks<br/>(Meta / Telegram)"]
     end
 
     subgraph GatewayLayer ["Ingestion & Edge Gateway"]
@@ -51,7 +51,7 @@ flowchart TB
     subgraph Downstream ["Third-Party Egress Networks"]
         WABA["WhatsApp Cloud API<br/>(Meta Graph API)"]
         TG["Telegram Bot API"]
-        XAPI["X (Twitter) API v2"]
+        WAQR["WhatsApp Multi-Device<br/>(whatsmeow QR Link)"]
     end
 
     subgraph Telemetry ["Live Real-Time Telemetry"]
@@ -73,7 +73,7 @@ flowchart TB
     
     WORKER -->|"Zero-Copy Stream"| WABA
     WORKER -->|"Dispatched Message"| TG
-    WORKER -->|"Direct Post"| XAPI
+    WORKER -->|"Multi-Device Socket"| WAQR
 
     WORKER -->|"Delivery Audit Events"| DB
     WORKER -.->|"Live Progress Telemetry"| WS
@@ -87,7 +87,7 @@ flowchart TB
     class APIGW,COMP,WORKER primary;
     class DB,RCACHE storage;
     class NATS broker;
-    class WABA,TG,XAPI egress;
+    class WABA,TG,WAQR egress;
 ```
 
 ---
