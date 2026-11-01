@@ -304,6 +304,7 @@ func (u *BillingUseCase) handlePaystackChargeSuccess(ctx context.Context, dataRa
 			TenantID     string `json:"tenant_id"`
 			PlanTier     string `json:"plan_tier"`
 			BillingCycle string `json:"billing_cycle"`
+			Intent       string `json:"intent"`
 		} `json:"metadata"`
 	}
 
@@ -321,11 +322,16 @@ func (u *BillingUseCase) handlePaystackChargeSuccess(ctx context.Context, dataRa
 		return nil
 	}
 
+	if payload.Metadata.Intent != "" && payload.Metadata.Intent != "subscription" {
+		log.Printf("[PAYSTACK-WEBHOOK] Non-subscription charge intent %q ignored in subscription webhook (ref: %s)\n", payload.Metadata.Intent, payload.Reference)
+		return nil
+	}
+
 	tier := domain.PlanTier(payload.Metadata.PlanTier)
 	planConfig, exists := domain.AvailablePlans[tier]
 	if !exists {
-		planConfig = domain.AvailablePlans[domain.PlanGrowth]
-		tier = domain.PlanGrowth
+		log.Printf("[PAYSTACK-WEBHOOK] Rejected charge with missing/unrecognized plan tier %q (ref: %s)\n", payload.Metadata.PlanTier, payload.Reference)
+		return nil
 	}
 
 	cycle := domain.BillingCycle(payload.Metadata.BillingCycle)
