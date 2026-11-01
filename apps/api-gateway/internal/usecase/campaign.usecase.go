@@ -362,14 +362,78 @@ func (u *CampaignUseCase) GetStats(ctx context.Context, tenantID, campaignID str
 	return u.campaignRepo.GetCampaignStats(ctx, tenantID, campaignID)
 }
 
-func (u *CampaignUseCase) ListDeliveries(ctx context.Context, tenantID, campaignID string, page, pageSize int) ([]*domain.CampaignDelivery, error) {
+func (u *CampaignUseCase) ListDeliveries(ctx context.Context, tenantID, campaignID string, status, failureCode string, retryable *bool, page, pageSize int) ([]*domain.CampaignDelivery, error) {
 	if page < 1 {
 		page = 1
 	}
 	if pageSize < 1 || pageSize > 100 {
 		pageSize = 50
 	}
-	return u.campaignRepo.ListDeliveriesByCampaign(ctx, tenantID, campaignID, pageSize, (page-1)*pageSize)
+	return u.campaignRepo.ListDeliveriesByCampaign(ctx, tenantID, campaignID, status, failureCode, retryable, pageSize, (page-1)*pageSize)
+}
+
+func (u *CampaignUseCase) GetHealth(ctx context.Context, tenantID, campaignID string) (*domain.CampaignHealth, error) {
+	return u.campaignRepo.GetCampaignHealth(ctx, tenantID, campaignID)
+}
+
+func (u *CampaignUseCase) RetryDeliveries(ctx context.Context, tenantID, campaignID string, deliveryIDs []string) (*domain.RetryDeliveriesResponse, error) {
+	cmp, err := u.campaignRepo.GetByID(ctx, tenantID, campaignID)
+	if err != nil {
+		return nil, err
+	}
+
+	var targets []*domain.CampaignDelivery
+	if len(deliveryIDs) > 0 {
+		targets, err = u.campaignRepo.GetDeliveriesByIDs(ctx, tenantID, campaignID, deliveryIDs)
+	} else {
+		targets, err = u.campaignRepo.GetRetryableDeliveries(ctx, tenantID, campaignID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch target deliveries for retry: %w", err)
+	}
+
+	var retryableIDs []string
+	retriedCount := 0
+	for _, d := range targets {
+		if !d.Retryable {
+			continue
+		}
+		contactID := ""
+		if d.ContactID != nil {
+			contactID = *d.ContactID
+		}
+		task := &contracts.TargetDispatchTask{
+			CampaignID:     cmp.ID,
+			TenantID:       cmp.TenantID,
+			ContactID:      contactID,
+			TargetType:     d.TargetType,
+			FirstName:      "",
+			TargetPlatform: d.Platform,
+			RoutingValue:   d.RoutingValue,
+			MessageBody:    cmp.MessageBody,
+			MediaURL:       cmp.MediaURL,
+			ExpiresAt:      time.Now().Add(2 * time.Hour).Unix(),
+		}
+		if pubErr := u.publisher.PublishDispatchTask(ctx, task); pubErr != nil {
+			log.Printf("[RETRY-DELIVERY-WARN] Failed to re-dispatch task for delivery %s: %v\n", d.ID, pubErr)
+			continue
+		}
+		retryableIDs = append(retryableIDs, d.ID)
+		retriedCount++
+	}
+
+	if len(retryableIDs) > 0 {
+		_ = u.campaignRepo.MarkDeliveriesQueued(ctx, campaignID, retryableIDs)
+		if cmp.Status == "completed" || cmp.Status == "failed" {
+			_ = u.campaignRepo.UpdateStatus(ctx, tenantID, campaignID, "dispatching")
+		}
+	}
+
+	return &domain.RetryDeliveriesResponse{
+		Message:    fmt.Sprintf("Successfully re-enqueued %d failed messages for delivery", retriedCount),
+		Retried:    retriedCount,
+		TotalTasks: len(targets),
+	}, nil
 }
 
 func (u *CampaignUseCase) SubmitForApproval(ctx context.Context, tenantID, campaignID, submittedBy string) error {
@@ -426,7 +490,7 @@ func (u *CampaignUseCase) GetCampaignReport(ctx context.Context, tenantID, campa
 	if err != nil {
 		return nil, err
 	}
-	deliveries, _ := u.campaignRepo.ListDeliveriesByCampaign(ctx, tenantID, campaignID, 500, 0)
+	deliveries, _ := u.campaignRepo.ListDeliveriesByCampaign(ctx, tenantID, campaignID, "", "", nil, 500, 0)
 
 	deliveryRate := 0.0
 	if stats.TotalTargets > 0 {

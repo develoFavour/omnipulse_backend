@@ -33,15 +33,42 @@ type Campaign struct {
 
 // CampaignStats models real-time execution progress and telemetry for a campaign
 type CampaignStats struct {
-	CampaignID       string  `json:"campaign_id"`
-	TenantID         string  `json:"tenant_id,omitempty"`
-	Status           string  `json:"status"`
-	TotalTargets     int     `json:"total_targets"`
-	ProcessedTargets int     `json:"processed_targets"`
-	Sent             int     `json:"sent"`
-	Delivered        int     `json:"delivered"`
-	Failed           int     `json:"failed"`
-	ProgressPercent  float64 `json:"progress_percent"`
+	CampaignID       string         `json:"campaign_id"`
+	TenantID         string         `json:"tenant_id,omitempty"`
+	Status           string         `json:"status"`
+	TotalTargets     int            `json:"total_targets"`
+	ProcessedTargets int            `json:"processed_targets"`
+	Sent             int            `json:"sent"`
+	Delivered        int            `json:"delivered"`
+	Failed           int            `json:"failed"`
+	ProgressPercent  float64        `json:"progress_percent"`
+	RetryableFailed  int            `json:"retryable_failed"`
+	TerminalFailed   int            `json:"terminal_failed"`
+	FailureBreakdown map[string]int `json:"failure_breakdown,omitempty"`
+}
+
+// CampaignHealth aggregates detailed delivery state counts and categorized failure reasons
+type CampaignHealth struct {
+	CampaignID       string         `json:"campaign_id"`
+	Status           string         `json:"status"`
+	TotalTargets     int            `json:"total_targets"`
+	ProcessedTargets int            `json:"processed_targets"`
+	Delivered        int            `json:"delivered"`
+	Sent             int            `json:"sent"`
+	Failed           int            `json:"failed"`
+	RetryableFailed  int            `json:"retryable_failed"`
+	TerminalFailed   int            `json:"terminal_failed"`
+	FailureBreakdown map[string]int `json:"failure_breakdown"`
+}
+
+type RetryDeliveriesRequest struct {
+	DeliveryIDs []string `json:"delivery_ids,omitempty"`
+}
+
+type RetryDeliveriesResponse struct {
+	Message    string `json:"message"`
+	Retried    int    `json:"retried"`
+	TotalTasks int    `json:"total_tasks"`
 }
 
 // CampaignRepository handles SQL transactions for orchestrating campaign lifecycle boundaries
@@ -58,7 +85,11 @@ type CampaignRepository interface {
 	DeleteDraft(ctx context.Context, tenantID, id string) error
 	RecordDeliveryResult(ctx context.Context, res *contracts.TargetDeliveryResult) error
 	GetCampaignStats(ctx context.Context, tenantID, campaignID string) (*CampaignStats, error)
-	ListDeliveriesByCampaign(ctx context.Context, tenantID, campaignID string, limit, offset int) ([]*CampaignDelivery, error)
+	GetCampaignHealth(ctx context.Context, tenantID, campaignID string) (*CampaignHealth, error)
+	ListDeliveriesByCampaign(ctx context.Context, tenantID, campaignID string, status, failureCode string, retryable *bool, limit, offset int) ([]*CampaignDelivery, error)
+	GetDeliveriesByIDs(ctx context.Context, tenantID, campaignID string, ids []string) ([]*CampaignDelivery, error)
+	GetRetryableDeliveries(ctx context.Context, tenantID, campaignID string) ([]*CampaignDelivery, error)
+	MarkDeliveriesQueued(ctx context.Context, campaignID string, ids []string) error
 	FindDueScheduledCampaigns(ctx context.Context) ([]*Campaign, error)
 	CancelScheduledCampaign(ctx context.Context, tenantID, id string) error
 	CountDeliveriesSince(ctx context.Context, tenantID string, since time.Time) (int, error)
@@ -84,13 +115,18 @@ type EventPublisher interface {
 
 // CampaignDelivery represents an individual target execution audit line item
 type CampaignDelivery struct {
-	ID           string    `json:"id"`
-	CampaignID   string    `json:"campaign_id"`
-	ContactID    *string   `json:"contact_id,omitempty"`
-	TargetType   string    `json:"target_type"`
-	Platform     string    `json:"platform"`
-	RoutingValue string    `json:"routing_value"`
-	Status       string    `json:"status"` // sent, delivered, failed
-	ErrorMessage *string   `json:"error_message,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID                string     `json:"id"`
+	CampaignID        string     `json:"campaign_id"`
+	ContactID         *string    `json:"contact_id,omitempty"`
+	TargetType        string     `json:"target_type"`
+	Platform          string     `json:"platform"`
+	RoutingValue      string     `json:"routing_value"`
+	Status            string     `json:"status"` // sent, delivered, failed, queued
+	ErrorMessage      *string    `json:"error_message,omitempty"`
+	FailureCode       *string    `json:"failure_code,omitempty"`
+	Retryable         bool       `json:"retryable"`
+	AttemptCount      int        `json:"attempt_count"`
+	LastAttemptAt     *time.Time `json:"last_attempt_at,omitempty"`
+	ProviderMessageID *string    `json:"provider_message_id,omitempty"`
+	CreatedAt         time.Time  `json:"created_at"`
 }

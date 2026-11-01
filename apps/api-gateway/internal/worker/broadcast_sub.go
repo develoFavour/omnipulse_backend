@@ -110,6 +110,8 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 		// The current production delivery_status_enum does not include a
 		// "suppressed" value. Keep the compliance outcome auditable as a
 		// failed delivery until the enum can be migrated safely.
+		fcBlocked := "blocked"
+		retryableNo := false
 		suppressedResult := contracts.TargetDeliveryResult{
 			CampaignID:   task.CampaignID,
 			ContactID:    task.ContactID,
@@ -118,6 +120,8 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 			RoutingValue: task.RoutingValue,
 			Status:       "failed",
 			ErrorMessage: &reason,
+			FailureCode:  &fcBlocked,
+			Retryable:    retryableNo,
 		}
 		if resultBytes, mErr := json.Marshal(suppressedResult); mErr == nil {
 			if _, publishErr := c.js.Publish("dispatch.result", resultBytes); publishErr != nil {
@@ -143,6 +147,8 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 		log.Printf("[COMPLIANCE-GUARD] Blocked delivery for %s (%s): consent lookup failed: %v\n",
 			task.FirstName, task.RoutingValue, err)
 
+		fcBlockedC := "blocked"
+		retryableNoC := false
 		blockedResult := contracts.TargetDeliveryResult{
 			CampaignID:   task.CampaignID,
 			ContactID:    task.ContactID,
@@ -151,6 +157,8 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 			RoutingValue: task.RoutingValue,
 			Status:       "failed",
 			ErrorMessage: &reason,
+			FailureCode:  &fcBlockedC,
+			Retryable:    retryableNoC,
 		}
 		if resultBytes, mErr := json.Marshal(blockedResult); mErr == nil {
 			if _, publishErr := c.js.Publish("dispatch.result", resultBytes); publishErr != nil {
@@ -237,6 +245,8 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 		log.Printf("[BROADCAST-WORKER] ⏰ EXPIRED task for %s (%s): %s — skipping delivery\n",
 			task.FirstName, task.RoutingValue, expiredReason)
 
+		fcExpired := "window_expired"
+		retryableExp := false
 		expiredResult := contracts.TargetDeliveryResult{
 			CampaignID:   task.CampaignID,
 			ContactID:    task.ContactID,
@@ -245,6 +255,8 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 			RoutingValue: task.RoutingValue,
 			Status:       "failed",
 			ErrorMessage: &expiredReason,
+			FailureCode:  &fcExpired,
+			Retryable:    retryableExp,
 		}
 		if resultBytes, err := json.Marshal(expiredResult); err == nil {
 			_, _ = c.js.Publish("dispatch.result", resultBytes)
@@ -484,6 +496,13 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 		}
 	}
 
+	var finalFailureCode *string
+	finalRetryable := false
+	if status == "failed" && errMsg != nil {
+		fc, ret := classifyDeliveryError(*errMsg, 0)
+		finalFailureCode = &fc
+		finalRetryable = ret
+	}
 	result := contracts.TargetDeliveryResult{
 		CampaignID:   task.CampaignID,
 		ContactID:    task.ContactID,
@@ -492,6 +511,8 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 		RoutingValue: task.RoutingValue,
 		Status:       status,
 		ErrorMessage: errMsg,
+		FailureCode:  finalFailureCode,
+		Retryable:    finalRetryable,
 	}
 	log.Printf("[DELIVERY-AUDIT] stage=broadcast event=provider_result campaign=%s contact=%s platform=%s status=%s\n",
 		task.CampaignID, task.ContactID, task.TargetPlatform, status)
@@ -506,6 +527,28 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 
 	log.Printf("[BROADCAST-WORKER] ✅ Finished task %s for contact %s, status=%s\n", task.CampaignID, task.ContactID, status)
 	_ = msg.Ack()
+}
+
+// classifyDeliveryError maps raw provider errors to the F4 failure taxonomy.
+// Returns (failureCode, retryable).
+func classifyDeliveryError(errMsg string, httpStatus int) (string, bool) {
+	lower := strings.ToLower(errMsg)
+	switch {
+	case strings.Contains(lower, "opted out") || strings.Contains(lower, "suppressed") || strings.Contains(lower, "compliance"):
+		return "blocked", false
+	case strings.Contains(lower, "expired") || strings.Contains(lower, "window closed") || strings.Contains(lower, "legacy task expired"):
+		return "window_expired", false
+	case httpStatus == 429 || strings.Contains(lower, "rate") || strings.Contains(lower, "too many"):
+		return "rate_limited", true
+	case strings.Contains(lower, "unsupported platform") || strings.Contains(lower, "no delivery adapter"):
+		return "unsupported", false
+	case strings.Contains(lower, "invalid") && (strings.Contains(lower, "number") || strings.Contains(lower, "phone") || strings.Contains(lower, "recipient")):
+		return "invalid_number", false
+	case httpStatus >= 500 || strings.Contains(lower, "network error") || strings.Contains(lower, "network"):
+		return "provider_error", true
+	default:
+		return "provider_error", httpStatus == 0 || httpStatus >= 500
+	}
 }
 
 func deliveryNormalizedTargetType(targetType string) string {

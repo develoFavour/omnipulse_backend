@@ -491,6 +491,13 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 	}
 
 	// Pack the return receipt
+	var finalFailureCode *string
+	finalRetryable := false
+	if status == "failed" && errMsg != nil {
+		fc, ret := classifyDeliveryError(*errMsg, 0)
+		finalFailureCode = &fc
+		finalRetryable = ret
+	}
 	result := contracts.TargetDeliveryResult{
 		CampaignID:   task.CampaignID,
 		ContactID:    task.ContactID,
@@ -499,6 +506,8 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 		RoutingValue: task.RoutingValue,
 		Status:       status,
 		ErrorMessage: errMsg,
+		FailureCode:  finalFailureCode,
+		Retryable:    finalRetryable,
 	}
 
 	resultBytes, _ := json.Marshal(result)
@@ -572,4 +581,26 @@ func (c *BroadcastConsumer) getOrCreateWhatsAppClient(ctx context.Context, jid t
 
 	c.waClients.Store(jidKey, client)
 	return client, nil
+}
+
+// classifyDeliveryError maps raw provider errors to the F4 failure taxonomy.
+// Returns (failureCode, retryable).
+func classifyDeliveryError(errMsg string, httpStatus int) (string, bool) {
+	lower := strings.ToLower(errMsg)
+	switch {
+	case strings.Contains(lower, "opted out") || strings.Contains(lower, "suppressed") || strings.Contains(lower, "compliance"):
+		return "blocked", false
+	case strings.Contains(lower, "expired") || strings.Contains(lower, "window closed") || strings.Contains(lower, "legacy task expired"):
+		return "window_expired", false
+	case httpStatus == 429 || strings.Contains(lower, "rate") || strings.Contains(lower, "too many"):
+		return "rate_limited", true
+	case strings.Contains(lower, "unsupported platform") || strings.Contains(lower, "no delivery adapter"):
+		return "unsupported", false
+	case strings.Contains(lower, "invalid") && (strings.Contains(lower, "number") || strings.Contains(lower, "phone") || strings.Contains(lower, "recipient")):
+		return "invalid_number", false
+	case httpStatus >= 500 || strings.Contains(lower, "network error") || strings.Contains(lower, "network"):
+		return "provider_error", true
+	default:
+		return "provider_error", httpStatus == 0 || httpStatus >= 500
+	}
 }

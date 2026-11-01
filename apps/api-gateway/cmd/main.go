@@ -277,6 +277,20 @@ func main() {
 	// Idempotent index for fast aggregate time-series queries
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_campaign_deliveries_created ON campaign_deliveries(created_at DESC);`)
 
+	// Truthful delivery ledger & recovery columns
+	for _, col := range []string{
+		`ALTER TABLE campaign_deliveries ADD COLUMN IF NOT EXISTS failure_code TEXT`,
+		`ALTER TABLE campaign_deliveries ADD COLUMN IF NOT EXISTS retryable BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE campaign_deliveries ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 1`,
+		`ALTER TABLE campaign_deliveries ADD COLUMN IF NOT EXISTS last_attempt_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP`,
+		`ALTER TABLE campaign_deliveries ADD COLUMN IF NOT EXISTS provider_message_id TEXT`,
+	} {
+		if _, err := db.Exec(col); err != nil {
+			logger.Printf("[DB-MIGRATE] campaign_deliveries column migration: %v\n", err)
+		}
+	}
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_deliveries_failures ON campaign_deliveries(campaign_id, failure_code) WHERE status = 'failed';`)
+
 	// Idempotent schema migrations: team management & invitations
 	if _, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS tenant_members (
@@ -816,6 +830,8 @@ func main() {
 	mux.HandleFunc("GET /api/v1/campaigns/{id}/report", campaignHandler.GetCampaignReport)
 	mux.Handle("GET /api/v1/campaigns/{id}/export", handler.RequireRole("owner", "admin")(http.HandlerFunc(campaignHandler.ExportCampaignReport)))
 	mux.HandleFunc("GET /api/v1/campaigns/{id}/deliveries", campaignHandler.GetCampaignDeliveries)
+	mux.HandleFunc("GET /api/v1/campaigns/{id}/health", campaignHandler.GetCampaignHealth)
+	mux.Handle("POST /api/v1/campaigns/{id}/deliveries/retry", handler.RequireRole("owner", "admin")(http.HandlerFunc(campaignHandler.RetryDeliveries)))
 	mux.HandleFunc("GET /api/v1/ws/campaigns/{id}", campaignHub.HandleWebSocket)
 
 	// Media Asset Subsystem Endpoints (Cloudinary CDN)

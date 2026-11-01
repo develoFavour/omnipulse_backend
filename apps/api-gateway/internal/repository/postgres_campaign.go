@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
+	"github.com/lib/pq"
 	"omnipulse/apps/api-gateway/internal/domain"
 	"omnipulse/shared/contracts"
 )
@@ -250,10 +252,25 @@ func (r *PostgresCampaignRepository) RecordDeliveryResult(ctx context.Context, r
 	defer tx.Rollback()
 
 	auditQuery := `
-		INSERT INTO campaign_deliveries (campaign_id, contact_id, target_type, platform, routing_value, status, error_message)
-		VALUES ($1, $2, $3, $4, $5, $6, $7);
+		INSERT INTO campaign_deliveries (
+			campaign_id, contact_id, target_type, platform, routing_value,
+			status, error_message, failure_code, retryable, attempt_count,
+			last_attempt_at, provider_message_id
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1, CURRENT_TIMESTAMP, $10);
 	`
-	_, err = tx.ExecContext(ctx, auditQuery, res.CampaignID, nullableContactID(res), normalizedTargetType(res.TargetType), res.Platform, res.RoutingValue, res.Status, res.ErrorMessage)
+	_, err = tx.ExecContext(ctx, auditQuery,
+		res.CampaignID,
+		nullableContactID(res),
+		normalizedTargetType(res.TargetType),
+		res.Platform,
+		res.RoutingValue,
+		res.Status,
+		res.ErrorMessage,
+		res.FailureCode,
+		res.Retryable,
+		res.ProviderMessageID,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to insert audit line record: %w", err)
 	}
@@ -326,6 +343,34 @@ func (r *PostgresCampaignRepository) GetCampaignStats(ctx context.Context, tenan
 		progress = 100.0
 	}
 
+	// Aggregate failure breakdown and retryability
+	breakdownQuery := `
+		SELECT COALESCE(failure_code, 'unknown'), retryable, COUNT(*) 
+		FROM campaign_deliveries 
+		WHERE campaign_id = $1 AND status = 'failed'
+		GROUP BY failure_code, retryable;
+	`
+	bRows, err := r.db.QueryContext(ctx, breakdownQuery, campaignID)
+	retryableFailed := 0
+	terminalFailed := 0
+	failureBreakdown := make(map[string]int)
+	if err == nil {
+		defer bRows.Close()
+		for bRows.Next() {
+			var code string
+			var retryable bool
+			var cnt int
+			if err := bRows.Scan(&code, &retryable, &cnt); err == nil {
+				failureBreakdown[code] = cnt
+				if retryable {
+					retryableFailed += cnt
+				} else {
+					terminalFailed += cnt
+				}
+			}
+		}
+	}
+
 	return &domain.CampaignStats{
 		CampaignID:       campaignID,
 		TenantID:         tID,
@@ -336,10 +381,125 @@ func (r *PostgresCampaignRepository) GetCampaignStats(ctx context.Context, tenan
 		Delivered:        counts["delivered"],
 		Failed:           counts["failed"],
 		ProgressPercent:  math.Round(progress*10) / 10,
+		RetryableFailed:  retryableFailed,
+		TerminalFailed:   terminalFailed,
+		FailureBreakdown: failureBreakdown,
 	}, nil
 }
 
-func (r *PostgresCampaignRepository) ListDeliveriesByCampaign(ctx context.Context, tenantID, campaignID string, limit, offset int) ([]*domain.CampaignDelivery, error) {
+func (r *PostgresCampaignRepository) GetCampaignHealth(ctx context.Context, tenantID, campaignID string) (*domain.CampaignHealth, error) {
+	stats, err := r.GetCampaignStats(ctx, tenantID, campaignID)
+	if err != nil {
+		return nil, err
+	}
+	breakdown := stats.FailureBreakdown
+	if breakdown == nil {
+		breakdown = make(map[string]int)
+	}
+	return &domain.CampaignHealth{
+		CampaignID:       stats.CampaignID,
+		Status:           stats.Status,
+		TotalTargets:     stats.TotalTargets,
+		ProcessedTargets: stats.ProcessedTargets,
+		Delivered:        stats.Delivered,
+		Sent:             stats.Sent,
+		Failed:           stats.Failed,
+		RetryableFailed:  stats.RetryableFailed,
+		TerminalFailed:   stats.TerminalFailed,
+		FailureBreakdown: breakdown,
+	}, nil
+}
+
+func (r *PostgresCampaignRepository) ListDeliveriesByCampaign(
+	ctx context.Context,
+	tenantID, campaignID string,
+	status, failureCode string,
+	retryable *bool,
+	limit, offset int,
+) ([]*domain.CampaignDelivery, error) {
+	if tenantID != "" {
+		var exists bool
+		err := r.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM campaigns WHERE id = $1 AND tenant_id = $2)", campaignID, tenantID).Scan(&exists)
+		if err != nil || !exists {
+			return nil, ErrCampaignNotFound
+		}
+	}
+
+	queryBuilder := strings.Builder{}
+	queryBuilder.WriteString(`
+		SELECT d.id, d.campaign_id, d.contact_id, d.target_type, d.platform, d.routing_value,
+		       d.status, d.error_message, d.failure_code, d.retryable, d.attempt_count,
+		       d.last_attempt_at, d.provider_message_id, d.created_at
+		FROM campaign_deliveries d
+		WHERE d.campaign_id = $1
+	`)
+	args := []interface{}{campaignID}
+	argIdx := 2
+
+	if status != "" {
+		queryBuilder.WriteString(fmt.Sprintf(" AND d.status = $%d", argIdx))
+		args = append(args, status)
+		argIdx++
+	}
+	if failureCode != "" {
+		queryBuilder.WriteString(fmt.Sprintf(" AND d.failure_code = $%d", argIdx))
+		args = append(args, failureCode)
+		argIdx++
+	}
+	if retryable != nil {
+		queryBuilder.WriteString(fmt.Sprintf(" AND d.retryable = $%d", argIdx))
+		args = append(args, *retryable)
+		argIdx++
+	}
+
+	queryBuilder.WriteString(fmt.Sprintf(" ORDER BY d.created_at DESC LIMIT $%d OFFSET $%d;", argIdx, argIdx+1))
+	args = append(args, limit, offset)
+
+	rows, err := r.db.QueryContext(ctx, queryBuilder.String(), args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query campaign deliveries: %w", err)
+	}
+	defer rows.Close()
+
+	deliveries := make([]*domain.CampaignDelivery, 0, limit)
+	for rows.Next() {
+		var d domain.CampaignDelivery
+		var contactID, errMsg, failCode, provMsgID sql.NullString
+		var lastAttempt sql.NullTime
+		if err := rows.Scan(
+			&d.ID, &d.CampaignID, &contactID, &d.TargetType, &d.Platform, &d.RoutingValue,
+			&d.Status, &errMsg, &failCode, &d.Retryable, &d.AttemptCount,
+			&lastAttempt, &provMsgID, &d.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan campaign delivery: %w", err)
+		}
+		if contactID.Valid {
+			d.ContactID = &contactID.String
+		}
+		if errMsg.Valid {
+			d.ErrorMessage = &errMsg.String
+		}
+		if failCode.Valid {
+			d.FailureCode = &failCode.String
+		}
+		if lastAttempt.Valid {
+			d.LastAttemptAt = &lastAttempt.Time
+		}
+		if provMsgID.Valid {
+			d.ProviderMessageID = &provMsgID.String
+		}
+		deliveries = append(deliveries, &d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return deliveries, nil
+}
+
+func (r *PostgresCampaignRepository) GetDeliveriesByIDs(ctx context.Context, tenantID, campaignID string, ids []string) ([]*domain.CampaignDelivery, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
 	if tenantID != "" {
 		var exists bool
 		err := r.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM campaigns WHERE id = $1 AND tenant_id = $2)", campaignID, tenantID).Scan(&exists)
@@ -349,25 +509,29 @@ func (r *PostgresCampaignRepository) ListDeliveriesByCampaign(ctx context.Contex
 	}
 
 	query := `
-		SELECT d.id, d.campaign_id, d.contact_id, d.target_type, d.platform, d.routing_value, d.status, d.error_message, d.created_at
+		SELECT d.id, d.campaign_id, d.contact_id, d.target_type, d.platform, d.routing_value,
+		       d.status, d.error_message, d.failure_code, d.retryable, d.attempt_count,
+		       d.last_attempt_at, d.provider_message_id, d.created_at
 		FROM campaign_deliveries d
-		WHERE d.campaign_id = $1
-		ORDER BY d.created_at DESC
-		LIMIT $2 OFFSET $3;
+		WHERE d.campaign_id = $1 AND d.id = ANY($2::uuid[])
 	`
-	rows, err := r.db.QueryContext(ctx, query, campaignID, limit, offset)
+	rows, err := r.db.QueryContext(ctx, query, campaignID, pq.Array(ids))
 	if err != nil {
-		return nil, fmt.Errorf("failed to query campaign deliveries: %w", err)
+		return nil, fmt.Errorf("failed to query deliveries by ids: %w", err)
 	}
 	defer rows.Close()
 
-	deliveries := make([]*domain.CampaignDelivery, 0, limit)
+	var deliveries []*domain.CampaignDelivery
 	for rows.Next() {
 		var d domain.CampaignDelivery
-		var contactID sql.NullString
-		var errMsg sql.NullString
-		if err := rows.Scan(&d.ID, &d.CampaignID, &contactID, &d.TargetType, &d.Platform, &d.RoutingValue, &d.Status, &errMsg, &d.CreatedAt); err != nil {
-			return nil, fmt.Errorf("failed to scan campaign delivery: %w", err)
+		var contactID, errMsg, failCode, provMsgID sql.NullString
+		var lastAttempt sql.NullTime
+		if err := rows.Scan(
+			&d.ID, &d.CampaignID, &contactID, &d.TargetType, &d.Platform, &d.RoutingValue,
+			&d.Status, &errMsg, &failCode, &d.Retryable, &d.AttemptCount,
+			&lastAttempt, &provMsgID, &d.CreatedAt,
+		); err != nil {
+			return nil, err
 		}
 		if contactID.Valid {
 			d.ContactID = &contactID.String
@@ -375,12 +539,87 @@ func (r *PostgresCampaignRepository) ListDeliveriesByCampaign(ctx context.Contex
 		if errMsg.Valid {
 			d.ErrorMessage = &errMsg.String
 		}
+		if failCode.Valid {
+			d.FailureCode = &failCode.String
+		}
+		if lastAttempt.Valid {
+			d.LastAttemptAt = &lastAttempt.Time
+		}
+		if provMsgID.Valid {
+			d.ProviderMessageID = &provMsgID.String
+		}
 		deliveries = append(deliveries, &d)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("failed during delivery rows iteration: %w", err)
+	return deliveries, nil
+}
+
+func (r *PostgresCampaignRepository) GetRetryableDeliveries(ctx context.Context, tenantID, campaignID string) ([]*domain.CampaignDelivery, error) {
+	if tenantID != "" {
+		var exists bool
+		err := r.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM campaigns WHERE id = $1 AND tenant_id = $2)", campaignID, tenantID).Scan(&exists)
+		if err != nil || !exists {
+			return nil, ErrCampaignNotFound
+		}
+	}
+
+	query := `
+		SELECT d.id, d.campaign_id, d.contact_id, d.target_type, d.platform, d.routing_value,
+		       d.status, d.error_message, d.failure_code, d.retryable, d.attempt_count,
+		       d.last_attempt_at, d.provider_message_id, d.created_at
+		FROM campaign_deliveries d
+		WHERE d.campaign_id = $1 AND d.status = 'failed' AND d.retryable = TRUE
+	`
+	rows, err := r.db.QueryContext(ctx, query, campaignID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query retryable deliveries: %w", err)
+	}
+	defer rows.Close()
+
+	var deliveries []*domain.CampaignDelivery
+	for rows.Next() {
+		var d domain.CampaignDelivery
+		var contactID, errMsg, failCode, provMsgID sql.NullString
+		var lastAttempt sql.NullTime
+		if err := rows.Scan(
+			&d.ID, &d.CampaignID, &contactID, &d.TargetType, &d.Platform, &d.RoutingValue,
+			&d.Status, &errMsg, &failCode, &d.Retryable, &d.AttemptCount,
+			&lastAttempt, &provMsgID, &d.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		if contactID.Valid {
+			d.ContactID = &contactID.String
+		}
+		if errMsg.Valid {
+			d.ErrorMessage = &errMsg.String
+		}
+		if failCode.Valid {
+			d.FailureCode = &failCode.String
+		}
+		if lastAttempt.Valid {
+			d.LastAttemptAt = &lastAttempt.Time
+		}
+		if provMsgID.Valid {
+			d.ProviderMessageID = &provMsgID.String
+		}
+		deliveries = append(deliveries, &d)
 	}
 	return deliveries, nil
+}
+
+func (r *PostgresCampaignRepository) MarkDeliveriesQueued(ctx context.Context, campaignID string, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	query := `
+		UPDATE campaign_deliveries
+		SET status = 'queued',
+		    attempt_count = attempt_count + 1,
+		    last_attempt_at = CURRENT_TIMESTAMP
+		WHERE campaign_id = $1 AND id = ANY($2::uuid[])
+	`
+	_, err := r.db.ExecContext(ctx, query, campaignID, pq.Array(ids))
+	return err
 }
 func (r *PostgresCampaignRepository) SetScheduled(ctx context.Context, tenantID, id string, scheduledAt time.Time) error {
 	result, err := r.db.ExecContext(ctx,

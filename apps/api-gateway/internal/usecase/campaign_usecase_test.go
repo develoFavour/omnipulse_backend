@@ -106,7 +106,7 @@ func (m *mockCampaignRepo) GetCampaignStats(ctx context.Context, tenantID, campa
 	}
 	return &domain.CampaignStats{}, nil
 }
-func (m *mockCampaignRepo) ListDeliveriesByCampaign(ctx context.Context, tenantID, campaignID string, limit, offset int) ([]*domain.CampaignDelivery, error) {
+func (m *mockCampaignRepo) ListDeliveriesByCampaign(ctx context.Context, tenantID, campaignID, status, failureCode string, retryable *bool, limit, offset int) ([]*domain.CampaignDelivery, error) {
 	if m.listDeliveriesByCampaignFunc != nil {
 		return m.listDeliveriesByCampaignFunc(ctx, tenantID, campaignID, limit, offset)
 	}
@@ -146,6 +146,22 @@ func (m *mockCampaignRepo) RejectCampaign(ctx context.Context, tenantID, id, rea
 	if m.rejectCampaignFunc != nil {
 		return m.rejectCampaignFunc(ctx, tenantID, id, reason)
 	}
+	return nil
+}
+
+func (m *mockCampaignRepo) GetCampaignHealth(ctx context.Context, tenantID, campaignID string) (*domain.CampaignHealth, error) {
+	return nil, nil
+}
+
+func (m *mockCampaignRepo) GetDeliveriesByIDs(ctx context.Context, tenantID, campaignID string, ids []string) ([]*domain.CampaignDelivery, error) {
+	return nil, nil
+}
+
+func (m *mockCampaignRepo) GetRetryableDeliveries(ctx context.Context, tenantID, campaignID string) ([]*domain.CampaignDelivery, error) {
+	return nil, nil
+}
+
+func (m *mockCampaignRepo) MarkDeliveriesQueued(ctx context.Context, campaignID string, ids []string) error {
 	return nil
 }
 func (m *mockCampaignRepo) GetApprovalSetting(ctx context.Context, tenantID string) (bool, error) {
