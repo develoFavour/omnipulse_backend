@@ -175,14 +175,17 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 		log.Printf("[WORKER] ⏰ EXPIRED task for %s (%s): %s — skipping delivery\n",
 			task.FirstName, task.RoutingValue, expiredReason)
 
+		expiredCode := "window_expired"
 		expiredResult := contracts.TargetDeliveryResult{
 			CampaignID:   task.CampaignID,
 			ContactID:    task.ContactID,
 			TargetType:   normalizedTargetType(task.TargetType),
 			Platform:     task.TargetPlatform,
 			RoutingValue: task.RoutingValue,
+			FirstName:    task.FirstName,
 			Status:       "failed",
 			ErrorMessage: &expiredReason,
+			FailureCode:  &expiredCode,
 		}
 		if resultBytes, err := json.Marshal(expiredResult); err == nil {
 			_, _ = c.js.Publish("dispatch.result", resultBytes)
@@ -194,6 +197,9 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 	status := "delivered"
 	var errMsg *string
 	isTransient := false
+	// Populated only when an HTTP adapter rejected the message, so the failure
+	// classifier can distinguish a permanent 4xx from a retryable 5xx/429.
+	httpStatus := 0
 
 	log.Printf("[WORKER] Processing delivery to %s (%s) on channel %s\n", task.FirstName, task.RoutingValue, task.TargetPlatform)
 	log.Printf("[WORKER] Full task details: %+v", task)
@@ -265,6 +271,7 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 						defer resp.Body.Close()
 						if resp.StatusCode != http.StatusOK {
 							status = "failed"
+							httpStatus = resp.StatusCode
 							if resp.StatusCode == 429 || resp.StatusCode >= 500 {
 								isTransient = true
 							}
@@ -431,6 +438,7 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 						defer resp.Body.Close()
 						if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 							status = "failed"
+							httpStatus = resp.StatusCode
 							if resp.StatusCode == 429 || resp.StatusCode >= 500 {
 								isTransient = true
 							}
@@ -491,14 +499,24 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 	}
 
 	// Pack the return receipt
+	var finalFailureCode *string
+	finalRetryable := false
+	if status == "failed" && errMsg != nil {
+		fc, ret := classifyDeliveryError(*errMsg, httpStatus, isTransient)
+		finalFailureCode = &fc
+		finalRetryable = ret
+	}
 	result := contracts.TargetDeliveryResult{
 		CampaignID:   task.CampaignID,
 		ContactID:    task.ContactID,
 		TargetType:   normalizedTargetType(task.TargetType),
 		Platform:     task.TargetPlatform,
 		RoutingValue: task.RoutingValue,
+		FirstName:    task.FirstName,
 		Status:       status,
 		ErrorMessage: errMsg,
+		FailureCode:  finalFailureCode,
+		Retryable:    finalRetryable,
 	}
 
 	resultBytes, _ := json.Marshal(result)
@@ -572,4 +590,32 @@ func (c *BroadcastConsumer) getOrCreateWhatsAppClient(ctx context.Context, jid t
 
 	c.waClients.Store(jidKey, client)
 	return client, nil
+}
+
+// classifyDeliveryError maps raw provider errors to the F4 failure taxonomy.
+// httpStatus is the provider's HTTP response (0 when no HTTP call was made) and
+// transient is the worker's own retry signal. Returns (failureCode, retryable).
+func classifyDeliveryError(errMsg string, httpStatus int, transient bool) (string, bool) {
+	lower := strings.ToLower(errMsg)
+	invalidNumber := (strings.Contains(lower, "invalid") &&
+		(strings.Contains(lower, "number") || strings.Contains(lower, "phone") || strings.Contains(lower, "recipient"))) ||
+		strings.Contains(lower, "not a valid whatsapp")
+
+	switch {
+	case strings.Contains(lower, "opted out") || strings.Contains(lower, "suppressed") || strings.Contains(lower, "compliance"):
+		return "blocked", false
+	case strings.Contains(lower, "unsupported platform") || strings.Contains(lower, "no delivery adapter"):
+		return "unsupported", false
+	case strings.Contains(lower, "expired") || strings.Contains(lower, "window closed"):
+		return "window_expired", false
+	case invalidNumber:
+		return "invalid_number", false
+	case httpStatus == http.StatusTooManyRequests || strings.Contains(lower, "rate limit") || strings.Contains(lower, "too many"):
+		return "rate_limited", true
+	case httpStatus >= 500 || transient || strings.Contains(lower, "network error"):
+		return "provider_error", true
+	default:
+		// Unknown 4xx and local failures are permanent until the provider says otherwise.
+		return "provider_error", false
+	}
 }

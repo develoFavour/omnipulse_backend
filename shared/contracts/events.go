@@ -16,11 +16,15 @@ type TargetDispatchTask struct {
 
 // TargetDeliveryResult represents the event payload streaming back from workers
 type TargetDeliveryResult struct {
-	CampaignID   string  `json:"campaign_id"`
-	ContactID    string  `json:"contact_id"`
-	TargetType   string  `json:"target_type"`
-	Platform     string  `json:"platform"`
-	RoutingValue string  `json:"routing_value"`
-	Status       string  `json:"status"`
-	ErrorMessage *string `json:"error_message,omitempty"`
+	CampaignID        string  `json:"campaign_id"`
+	ContactID         string  `json:"contact_id"`
+	TargetType        string  `json:"target_type"`
+	Platform          string  `json:"platform"`
+	RoutingValue      string  `json:"routing_value"`
+	FirstName         string  `json:"first_name,omitempty"`
+	Status            string  `json:"status"`
+	ErrorMessage      *string `json:"error_message,omitempty"`
+	FailureCode       *string `json:"failure_code,omitempty"`
+	Retryable         bool    `json:"retryable"`
+	ProviderMessageID *string `json:"provider_message_id,omitempty"`
 }

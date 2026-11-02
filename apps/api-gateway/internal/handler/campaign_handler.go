@@ -263,7 +263,18 @@ func (h *CampaignHandler) GetCampaignDeliveries(w http.ResponseWriter, r *http.R
 	page, _ := strconv.Atoi(queryParams.Get("page"))
 	pageSize, _ := strconv.Atoi(queryParams.Get("pageSize"))
 
-	deliveries, err := h.useCase.ListDeliveries(r.Context(), tenantID, campaignID, page, pageSize)
+	status := queryParams.Get("status")
+	failureCode := queryParams.Get("failure_code")
+	var retryable *bool
+	if rv := queryParams.Get("retryable"); rv == "true" {
+		v := true
+		retryable = &v
+	} else if rv == "false" {
+		v := false
+		retryable = &v
+	}
+
+	deliveries, err := h.useCase.ListDeliveries(r.Context(), tenantID, campaignID, status, failureCode, retryable, page, pageSize)
 	if err != nil {
 		if errors.Is(err, repository.ErrCampaignNotFound) {
 			utils.WriteError(w, http.StatusNotFound, "Campaign not found")
@@ -274,6 +285,66 @@ func (h *CampaignHandler) GetCampaignDeliveries(w http.ResponseWriter, r *http.R
 	}
 
 	utils.WriteJSON(w, http.StatusOK, deliveries)
+}
+
+// GetCampaignHealth handles: GET /api/v1/campaigns/{id}/health
+func (h *CampaignHandler) GetCampaignHealth(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	campaignID := r.PathValue("id")
+	if campaignID == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Missing campaign ID")
+		return
+	}
+
+	health, err := h.useCase.GetHealth(r.Context(), tenantID, campaignID)
+	if err != nil {
+		if errors.Is(err, repository.ErrCampaignNotFound) {
+			utils.WriteError(w, http.StatusNotFound, "Campaign not found")
+			return
+		}
+		utils.WriteError(w, http.StatusInternalServerError, "Failed to fetch campaign health")
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, health)
+}
+
+// RetryDeliveries handles: POST /api/v1/campaigns/{id}/deliveries/retry
+func (h *CampaignHandler) RetryDeliveries(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	campaignID := r.PathValue("id")
+	if campaignID == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Missing campaign ID")
+		return
+	}
+
+	var req domain.RetryDeliveriesRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err.Error() != "EOF" {
+		utils.WriteError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	resp, err := h.useCase.RetryDeliveries(r.Context(), tenantID, campaignID, req.DeliveryIDs)
+	if err != nil {
+		if errors.Is(err, repository.ErrCampaignNotFound) {
+			utils.WriteError(w, http.StatusNotFound, "Campaign not found")
+			return
+		}
+		utils.WriteError(w, http.StatusInternalServerError, "Failed to queue retries")
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, resp)
 }
 
 // ScheduleCampaign handles: POST /api/v1/campaigns/{id}/schedule

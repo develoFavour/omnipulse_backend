@@ -362,14 +362,89 @@ func (u *CampaignUseCase) GetStats(ctx context.Context, tenantID, campaignID str
 	return u.campaignRepo.GetCampaignStats(ctx, tenantID, campaignID)
 }
 
-func (u *CampaignUseCase) ListDeliveries(ctx context.Context, tenantID, campaignID string, page, pageSize int) ([]*domain.CampaignDelivery, error) {
+func (u *CampaignUseCase) ListDeliveries(ctx context.Context, tenantID, campaignID string, status, failureCode string, retryable *bool, page, pageSize int) ([]*domain.CampaignDelivery, error) {
 	if page < 1 {
 		page = 1
 	}
 	if pageSize < 1 || pageSize > 100 {
 		pageSize = 50
 	}
-	return u.campaignRepo.ListDeliveriesByCampaign(ctx, tenantID, campaignID, pageSize, (page-1)*pageSize)
+	return u.campaignRepo.ListDeliveriesByCampaign(ctx, tenantID, campaignID, status, failureCode, retryable, pageSize, (page-1)*pageSize)
+}
+
+func (u *CampaignUseCase) GetHealth(ctx context.Context, tenantID, campaignID string) (*domain.CampaignHealth, error) {
+	return u.campaignRepo.GetCampaignHealth(ctx, tenantID, campaignID)
+}
+
+func (u *CampaignUseCase) RetryDeliveries(ctx context.Context, tenantID, campaignID string, deliveryIDs []string) (*domain.RetryDeliveriesResponse, error) {
+	cmp, err := u.campaignRepo.GetByID(ctx, tenantID, campaignID)
+	if err != nil {
+		return nil, err
+	}
+	if cmp.Status != "processing" && cmp.Status != "completed" {
+		return nil, fmt.Errorf("deliveries can only be retried for processing or completed campaigns (current status: %s)", cmp.Status)
+	}
+
+	claimed, err := u.campaignRepo.ClaimDeliveriesForRetry(ctx, tenantID, campaignID, deliveryIDs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to claim deliveries for retry: %w", err)
+	}
+
+	// Reopen the campaign before publishing: the worker drops tasks for campaigns
+	// that are still marked completed.
+	reopened := false
+	if len(claimed) > 0 && cmp.Status == "completed" {
+		if err := u.campaignRepo.UpdateStatus(ctx, tenantID, campaignID, "processing"); err != nil {
+			log.Printf("[RETRY-DELIVERY-WARN] Failed to reopen campaign %s: %v\n", campaignID, err)
+		} else {
+			reopened = true
+		}
+	}
+
+	published := 0
+	var failedClaims []string
+	for _, d := range claimed {
+		contactID := ""
+		if d.ContactID != nil {
+			contactID = *d.ContactID
+		}
+		task := &contracts.TargetDispatchTask{
+			CampaignID:     cmp.ID,
+			TenantID:       cmp.TenantID,
+			ContactID:      contactID,
+			TargetType:     d.TargetType,
+			FirstName:      d.FirstName,
+			TargetPlatform: d.Platform,
+			RoutingValue:   d.RoutingValue,
+			MessageBody:    cmp.MessageBody,
+			MediaURL:       cmp.MediaURL,
+			ExpiresAt:      time.Now().Add(2 * time.Hour).Unix(),
+		}
+		if pubErr := u.publisher.PublishDispatchTask(ctx, task); pubErr != nil {
+			log.Printf("[RETRY-DELIVERY-WARN] Failed to re-dispatch task for delivery %s: %v\n", d.ID, pubErr)
+			failedClaims = append(failedClaims, d.ID)
+			continue
+		}
+		published++
+	}
+
+	if len(failedClaims) > 0 {
+		if relErr := u.campaignRepo.ReleaseDeliveryClaims(ctx, campaignID, failedClaims); relErr != nil {
+			log.Printf("[RETRY-DELIVERY-ERROR] Failed to release %d un-published claims: %v\n", len(failedClaims), relErr)
+		}
+	}
+
+	if published == 0 && reopened {
+		if err := u.campaignRepo.UpdateStatus(ctx, tenantID, campaignID, "completed"); err != nil {
+			log.Printf("[RETRY-DELIVERY-WARN] Nothing published; failed to restore campaign %s to completed: %v\n", campaignID, err)
+		}
+	}
+
+	return &domain.RetryDeliveriesResponse{
+		Message:    fmt.Sprintf("Successfully re-enqueued %d failed messages for delivery", published),
+		Retried:    published,
+		TotalTasks: len(claimed),
+	}, nil
 }
 
 func (u *CampaignUseCase) SubmitForApproval(ctx context.Context, tenantID, campaignID, submittedBy string) error {
@@ -426,7 +501,7 @@ func (u *CampaignUseCase) GetCampaignReport(ctx context.Context, tenantID, campa
 	if err != nil {
 		return nil, err
 	}
-	deliveries, _ := u.campaignRepo.ListDeliveriesByCampaign(ctx, tenantID, campaignID, 500, 0)
+	deliveries, _ := u.campaignRepo.ListDeliveriesByCampaign(ctx, tenantID, campaignID, "", "", nil, 500, 0)
 
 	deliveryRate := 0.0
 	if stats.TotalTargets > 0 {

@@ -277,6 +277,49 @@ func main() {
 	// Idempotent index for fast aggregate time-series queries
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_campaign_deliveries_created ON campaign_deliveries(created_at DESC);`)
 
+	// Truthful delivery ledger & recovery columns
+	for _, col := range []string{
+		`ALTER TABLE campaign_deliveries ADD COLUMN IF NOT EXISTS failure_code TEXT`,
+		`ALTER TABLE campaign_deliveries ADD COLUMN IF NOT EXISTS retryable BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE campaign_deliveries ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 1`,
+		`ALTER TABLE campaign_deliveries ADD COLUMN IF NOT EXISTS last_attempt_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP`,
+		`ALTER TABLE campaign_deliveries ADD COLUMN IF NOT EXISTS provider_message_id TEXT`,
+		`ALTER TABLE campaign_deliveries ADD COLUMN IF NOT EXISTS first_name TEXT`,
+	} {
+		if _, err := db.Exec(col); err != nil {
+			logger.Printf("[DB-MIGRATE] campaign_deliveries column migration: %v\n", err)
+		}
+	}
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_deliveries_failures ON campaign_deliveries(campaign_id, failure_code) WHERE status = 'failed';`)
+
+	// 'queued' is the claim state a delivery enters between a retry being requested
+	// and the worker reporting back.
+	if _, err := db.Exec(`ALTER TYPE delivery_status_enum ADD VALUE IF NOT EXISTS 'queued'`); err != nil {
+		logger.Printf("[DB-MIGRATE] delivery_status_enum migration: %v\n", err)
+	}
+
+	// A delivery row is keyed by its target, so a retry updates the original row
+	// instead of inserting a duplicate and inflating campaign counters.
+	var targetIndexExists bool
+	if err := db.QueryRow(`SELECT EXISTS (
+		SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'idx_campaign_deliveries_target'
+	)`).Scan(&targetIndexExists); err == nil && !targetIndexExists {
+		if _, err := db.Exec(`
+			DELETE FROM campaign_deliveries a
+			USING campaign_deliveries b
+			WHERE a.campaign_id = b.campaign_id
+			  AND a.target_type = b.target_type
+			  AND a.routing_value = b.routing_value
+			  AND (a.created_at, a.id) < (b.created_at, b.id)
+		`); err != nil {
+			logger.Printf("[DB-MIGRATE] duplicate delivery cleanup: %v\n", err)
+		}
+		if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_campaign_deliveries_target
+			ON campaign_deliveries(campaign_id, target_type, routing_value)`); err != nil {
+			logger.Printf("[DB-MIGRATE] delivery target index migration: %v\n", err)
+		}
+	}
+
 	// Idempotent schema migrations: team management & invitations
 	if _, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS tenant_members (
@@ -816,6 +859,8 @@ func main() {
 	mux.HandleFunc("GET /api/v1/campaigns/{id}/report", campaignHandler.GetCampaignReport)
 	mux.Handle("GET /api/v1/campaigns/{id}/export", handler.RequireRole("owner", "admin")(http.HandlerFunc(campaignHandler.ExportCampaignReport)))
 	mux.HandleFunc("GET /api/v1/campaigns/{id}/deliveries", campaignHandler.GetCampaignDeliveries)
+	mux.HandleFunc("GET /api/v1/campaigns/{id}/health", campaignHandler.GetCampaignHealth)
+	mux.Handle("POST /api/v1/campaigns/{id}/deliveries/retry", handler.RequireRole("owner", "admin")(http.HandlerFunc(campaignHandler.RetryDeliveries)))
 	mux.HandleFunc("GET /api/v1/ws/campaigns/{id}", campaignHub.HandleWebSocket)
 
 	// Media Asset Subsystem Endpoints (Cloudinary CDN)
