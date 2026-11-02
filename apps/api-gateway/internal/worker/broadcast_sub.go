@@ -118,6 +118,7 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 			TargetType:   deliveryNormalizedTargetType(task.TargetType),
 			Platform:     task.TargetPlatform,
 			RoutingValue: task.RoutingValue,
+			FirstName:    task.FirstName,
 			Status:       "failed",
 			ErrorMessage: &reason,
 			FailureCode:  &fcBlocked,
@@ -155,6 +156,7 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 			TargetType:   deliveryNormalizedTargetType(task.TargetType),
 			Platform:     task.TargetPlatform,
 			RoutingValue: task.RoutingValue,
+			FirstName:    task.FirstName,
 			Status:       "failed",
 			ErrorMessage: &reason,
 			FailureCode:  &fcBlockedC,
@@ -253,6 +255,7 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 			TargetType:   deliveryNormalizedTargetType(task.TargetType),
 			Platform:     task.TargetPlatform,
 			RoutingValue: task.RoutingValue,
+			FirstName:    task.FirstName,
 			Status:       "failed",
 			ErrorMessage: &expiredReason,
 			FailureCode:  &fcExpired,
@@ -268,6 +271,9 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 	status := "delivered"
 	var errMsg *string
 	isTransient := false
+	// Populated only when an HTTP adapter rejected the message, so the failure
+	// classifier can distinguish a permanent 4xx from a retryable 5xx/429.
+	httpStatus := 0
 
 	name := strings.TrimSpace(task.FirstName)
 	if name == "" {
@@ -340,6 +346,7 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 						defer resp.Body.Close()
 						if resp.StatusCode != http.StatusOK {
 							status = "failed"
+							httpStatus = resp.StatusCode
 							if resp.StatusCode == 429 || resp.StatusCode >= 500 {
 								isTransient = true
 							}
@@ -435,6 +442,7 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 						defer resp.Body.Close()
 						if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 							status = "failed"
+							httpStatus = resp.StatusCode
 							if resp.StatusCode == 429 || resp.StatusCode >= 500 {
 								isTransient = true
 							}
@@ -499,7 +507,7 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 	var finalFailureCode *string
 	finalRetryable := false
 	if status == "failed" && errMsg != nil {
-		fc, ret := classifyDeliveryError(*errMsg, 0)
+		fc, ret := classifyDeliveryError(*errMsg, httpStatus, isTransient)
 		finalFailureCode = &fc
 		finalRetryable = ret
 	}
@@ -509,6 +517,7 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 		TargetType:   deliveryNormalizedTargetType(task.TargetType),
 		Platform:     task.TargetPlatform,
 		RoutingValue: task.RoutingValue,
+		FirstName:    task.FirstName,
 		Status:       status,
 		ErrorMessage: errMsg,
 		FailureCode:  finalFailureCode,
@@ -530,24 +539,30 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 }
 
 // classifyDeliveryError maps raw provider errors to the F4 failure taxonomy.
-// Returns (failureCode, retryable).
-func classifyDeliveryError(errMsg string, httpStatus int) (string, bool) {
+// httpStatus is the provider's HTTP response (0 when no HTTP call was made) and
+// transient is the worker's own retry signal. Returns (failureCode, retryable).
+func classifyDeliveryError(errMsg string, httpStatus int, transient bool) (string, bool) {
 	lower := strings.ToLower(errMsg)
+	invalidNumber := (strings.Contains(lower, "invalid") &&
+		(strings.Contains(lower, "number") || strings.Contains(lower, "phone") || strings.Contains(lower, "recipient"))) ||
+		strings.Contains(lower, "not a valid whatsapp")
+
 	switch {
 	case strings.Contains(lower, "opted out") || strings.Contains(lower, "suppressed") || strings.Contains(lower, "compliance"):
 		return "blocked", false
-	case strings.Contains(lower, "expired") || strings.Contains(lower, "window closed") || strings.Contains(lower, "legacy task expired"):
-		return "window_expired", false
-	case httpStatus == 429 || strings.Contains(lower, "rate") || strings.Contains(lower, "too many"):
-		return "rate_limited", true
 	case strings.Contains(lower, "unsupported platform") || strings.Contains(lower, "no delivery adapter"):
 		return "unsupported", false
-	case strings.Contains(lower, "invalid") && (strings.Contains(lower, "number") || strings.Contains(lower, "phone") || strings.Contains(lower, "recipient")):
+	case strings.Contains(lower, "expired") || strings.Contains(lower, "window closed"):
+		return "window_expired", false
+	case invalidNumber:
 		return "invalid_number", false
-	case httpStatus >= 500 || strings.Contains(lower, "network error") || strings.Contains(lower, "network"):
+	case httpStatus == http.StatusTooManyRequests || strings.Contains(lower, "rate limit") || strings.Contains(lower, "too many"):
+		return "rate_limited", true
+	case httpStatus >= 500 || transient || strings.Contains(lower, "network error"):
 		return "provider_error", true
 	default:
-		return "provider_error", httpStatus == 0 || httpStatus >= 500
+		// Unknown 4xx and local failures are permanent until the provider says otherwise.
+		return "provider_error", false
 	}
 }
 

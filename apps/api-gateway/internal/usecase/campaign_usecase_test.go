@@ -32,6 +32,8 @@ type mockCampaignRepo struct {
 	approveCampaignFunc           func(ctx context.Context, tenantID, id, approvedBy string) error
 	rejectCampaignFunc            func(ctx context.Context, tenantID, id, reason string) error
 	getApprovalSettingFunc        func(ctx context.Context, tenantID string) (bool, error)
+	claimDeliveriesForRetryFunc   func(ctx context.Context, tenantID, campaignID string, ids []string) ([]*domain.CampaignDelivery, error)
+	releaseDeliveryClaimsFunc     func(ctx context.Context, campaignID string, ids []string) error
 }
 
 func (m *mockCampaignRepo) Create(ctx context.Context, c *domain.Campaign) error {
@@ -153,17 +155,20 @@ func (m *mockCampaignRepo) GetCampaignHealth(ctx context.Context, tenantID, camp
 	return nil, nil
 }
 
-func (m *mockCampaignRepo) GetDeliveriesByIDs(ctx context.Context, tenantID, campaignID string, ids []string) ([]*domain.CampaignDelivery, error) {
+func (m *mockCampaignRepo) ClaimDeliveriesForRetry(ctx context.Context, tenantID, campaignID string, ids []string) ([]*domain.CampaignDelivery, error) {
+	if m.claimDeliveriesForRetryFunc != nil {
+		return m.claimDeliveriesForRetryFunc(ctx, tenantID, campaignID, ids)
+	}
 	return nil, nil
 }
 
-func (m *mockCampaignRepo) GetRetryableDeliveries(ctx context.Context, tenantID, campaignID string) ([]*domain.CampaignDelivery, error) {
-	return nil, nil
-}
-
-func (m *mockCampaignRepo) MarkDeliveriesQueued(ctx context.Context, campaignID string, ids []string) error {
+func (m *mockCampaignRepo) ReleaseDeliveryClaims(ctx context.Context, campaignID string, ids []string) error {
+	if m.releaseDeliveryClaimsFunc != nil {
+		return m.releaseDeliveryClaimsFunc(ctx, campaignID, ids)
+	}
 	return nil
 }
+
 func (m *mockCampaignRepo) GetApprovalSetting(ctx context.Context, tenantID string) (bool, error) {
 	if m.getApprovalSettingFunc != nil {
 		return m.getApprovalSettingFunc(ctx, tenantID)
@@ -180,6 +185,137 @@ func (p *mockPublisher) PublishDispatchTask(ctx context.Context, task *contracts
 		return p.publishFunc(ctx, task)
 	}
 	return nil
+}
+
+func TestRetryDeliveries(t *testing.T) {
+	const tenantID = "tenant-123"
+	const campaignID = "camp-456"
+
+	completedCampaign := &domain.Campaign{
+		ID: campaignID, TenantID: tenantID, Status: "completed", MessageBody: "Hi {first_name}",
+	}
+
+	t.Run("publishes claimed rows with the original first name", func(t *testing.T) {
+		var published []*contracts.TargetDispatchTask
+		var reopenedTo string
+
+		repo := &mockCampaignRepo{
+			getByIDFunc: func(ctx context.Context, tID, id string) (*domain.Campaign, error) {
+				return completedCampaign, nil
+			},
+			claimDeliveriesForRetryFunc: func(ctx context.Context, tID, cID string, ids []string) ([]*domain.CampaignDelivery, error) {
+				return []*domain.CampaignDelivery{{
+					ID: "d1", TargetType: "contact", Platform: "whatsapp",
+					RoutingValue: "+2348000000000", FirstName: "Ada",
+				}}, nil
+			},
+			updateStatusFunc: func(ctx context.Context, tID, id, status string) error {
+				reopenedTo = status
+				return nil
+			},
+		}
+		pub := &mockPublisher{publishFunc: func(ctx context.Context, task *contracts.TargetDispatchTask) error {
+			published = append(published, task)
+			return nil
+		}}
+		uc := NewCampaignUseCase(repo, nil, nil, pub, nil)
+
+		resp, err := uc.RetryDeliveries(context.Background(), tenantID, campaignID, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if resp.Retried != 1 || resp.TotalTasks != 1 {
+			t.Fatalf("expected 1/1 retried, got %d/%d", resp.Retried, resp.TotalTasks)
+		}
+		if len(published) != 1 {
+			t.Fatalf("expected 1 published task, got %d", len(published))
+		}
+		if published[0].FirstName != "Ada" {
+			t.Errorf("expected first name to survive retry, got %q", published[0].FirstName)
+		}
+		if reopenedTo != "processing" {
+			t.Errorf("expected completed campaign to reopen as processing, got %q", reopenedTo)
+		}
+	})
+
+	t.Run("publishes nothing when no row can be claimed", func(t *testing.T) {
+		published := 0
+		repo := &mockCampaignRepo{
+			getByIDFunc: func(ctx context.Context, tID, id string) (*domain.Campaign, error) {
+				return completedCampaign, nil
+			},
+			claimDeliveriesForRetryFunc: func(ctx context.Context, tID, cID string, ids []string) ([]*domain.CampaignDelivery, error) {
+				return nil, nil
+			},
+		}
+		pub := &mockPublisher{publishFunc: func(ctx context.Context, task *contracts.TargetDispatchTask) error {
+			published++
+			return nil
+		}}
+		uc := NewCampaignUseCase(repo, nil, nil, pub, nil)
+
+		resp, err := uc.RetryDeliveries(context.Background(), tenantID, campaignID, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if resp.Retried != 0 || published != 0 {
+			t.Fatalf("expected no re-publish, got %d retried and %d published", resp.Retried, published)
+		}
+	})
+
+	t.Run("releases the claim when publishing fails", func(t *testing.T) {
+		var released []string
+		var statusCalls []string
+
+		repo := &mockCampaignRepo{
+			getByIDFunc: func(ctx context.Context, tID, id string) (*domain.Campaign, error) {
+				return completedCampaign, nil
+			},
+			claimDeliveriesForRetryFunc: func(ctx context.Context, tID, cID string, ids []string) ([]*domain.CampaignDelivery, error) {
+				return []*domain.CampaignDelivery{{ID: "d1", TargetType: "contact", Platform: "whatsapp", RoutingValue: "+234"}}, nil
+			},
+			releaseDeliveryClaimsFunc: func(ctx context.Context, cID string, ids []string) error {
+				released = append(released, ids...)
+				return nil
+			},
+			updateStatusFunc: func(ctx context.Context, tID, id, status string) error {
+				statusCalls = append(statusCalls, status)
+				return nil
+			},
+		}
+		pub := &mockPublisher{publishFunc: func(ctx context.Context, task *contracts.TargetDispatchTask) error {
+			return context.DeadlineExceeded
+		}}
+		uc := NewCampaignUseCase(repo, nil, nil, pub, nil)
+
+		resp, err := uc.RetryDeliveries(context.Background(), tenantID, campaignID, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if resp.Retried != 0 {
+			t.Errorf("expected 0 retried, got %d", resp.Retried)
+		}
+		if len(released) != 1 || released[0] != "d1" {
+			t.Errorf("expected claim d1 to be released, got %v", released)
+		}
+		if len(statusCalls) != 2 || statusCalls[0] != "processing" || statusCalls[1] != "completed" {
+			t.Errorf("expected campaign to reopen then restore to completed, got %v", statusCalls)
+		}
+	})
+
+	t.Run("refuses paused campaigns", func(t *testing.T) {
+		repo := &mockCampaignRepo{
+			getByIDFunc: func(ctx context.Context, tID, id string) (*domain.Campaign, error) {
+				return &domain.Campaign{ID: campaignID, TenantID: tenantID, Status: "paused"}, nil
+			},
+		}
+		uc := NewCampaignUseCase(repo, nil, nil, &mockPublisher{}, nil)
+
+		_, err := uc.RetryDeliveries(context.Background(), tenantID, campaignID, nil)
+		if err == nil || !strings.Contains(err.Error(), "processing or completed") {
+			t.Fatalf("expected paused campaigns to be rejected, got %v", err)
+		}
+	})
 }
 
 func TestCampaignApprovalWorkflow(t *testing.T) {

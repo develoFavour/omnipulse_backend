@@ -87,9 +87,8 @@ type CampaignRepository interface {
 	GetCampaignStats(ctx context.Context, tenantID, campaignID string) (*CampaignStats, error)
 	GetCampaignHealth(ctx context.Context, tenantID, campaignID string) (*CampaignHealth, error)
 	ListDeliveriesByCampaign(ctx context.Context, tenantID, campaignID string, status, failureCode string, retryable *bool, limit, offset int) ([]*CampaignDelivery, error)
-	GetDeliveriesByIDs(ctx context.Context, tenantID, campaignID string, ids []string) ([]*CampaignDelivery, error)
-	GetRetryableDeliveries(ctx context.Context, tenantID, campaignID string) ([]*CampaignDelivery, error)
-	MarkDeliveriesQueued(ctx context.Context, campaignID string, ids []string) error
+	ClaimDeliveriesForRetry(ctx context.Context, tenantID, campaignID string, deliveryIDs []string) ([]*CampaignDelivery, error)
+	ReleaseDeliveryClaims(ctx context.Context, campaignID string, ids []string) error
 	FindDueScheduledCampaigns(ctx context.Context) ([]*Campaign, error)
 	CancelScheduledCampaign(ctx context.Context, tenantID, id string) error
 	CountDeliveriesSince(ctx context.Context, tenantID string, since time.Time) (int, error)
@@ -121,6 +120,7 @@ type CampaignDelivery struct {
 	TargetType        string     `json:"target_type"`
 	Platform          string     `json:"platform"`
 	RoutingValue      string     `json:"routing_value"`
+	FirstName         string     `json:"first_name,omitempty"`
 	Status            string     `json:"status"` // sent, delivered, failed, queued
 	ErrorMessage      *string    `json:"error_message,omitempty"`
 	FailureCode       *string    `json:"failure_code,omitempty"`

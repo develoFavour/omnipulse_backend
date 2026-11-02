@@ -381,23 +381,29 @@ func (u *CampaignUseCase) RetryDeliveries(ctx context.Context, tenantID, campaig
 	if err != nil {
 		return nil, err
 	}
-
-	var targets []*domain.CampaignDelivery
-	if len(deliveryIDs) > 0 {
-		targets, err = u.campaignRepo.GetDeliveriesByIDs(ctx, tenantID, campaignID, deliveryIDs)
-	} else {
-		targets, err = u.campaignRepo.GetRetryableDeliveries(ctx, tenantID, campaignID)
+	if cmp.Status != "processing" && cmp.Status != "completed" {
+		return nil, fmt.Errorf("deliveries can only be retried for processing or completed campaigns (current status: %s)", cmp.Status)
 	}
+
+	claimed, err := u.campaignRepo.ClaimDeliveriesForRetry(ctx, tenantID, campaignID, deliveryIDs)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch target deliveries for retry: %w", err)
+		return nil, fmt.Errorf("failed to claim deliveries for retry: %w", err)
 	}
 
-	var retryableIDs []string
-	retriedCount := 0
-	for _, d := range targets {
-		if !d.Retryable {
-			continue
+	// Reopen the campaign before publishing: the worker drops tasks for campaigns
+	// that are still marked completed.
+	reopened := false
+	if len(claimed) > 0 && cmp.Status == "completed" {
+		if err := u.campaignRepo.UpdateStatus(ctx, tenantID, campaignID, "processing"); err != nil {
+			log.Printf("[RETRY-DELIVERY-WARN] Failed to reopen campaign %s: %v\n", campaignID, err)
+		} else {
+			reopened = true
 		}
+	}
+
+	published := 0
+	var failedClaims []string
+	for _, d := range claimed {
 		contactID := ""
 		if d.ContactID != nil {
 			contactID = *d.ContactID
@@ -407,7 +413,7 @@ func (u *CampaignUseCase) RetryDeliveries(ctx context.Context, tenantID, campaig
 			TenantID:       cmp.TenantID,
 			ContactID:      contactID,
 			TargetType:     d.TargetType,
-			FirstName:      "",
+			FirstName:      d.FirstName,
 			TargetPlatform: d.Platform,
 			RoutingValue:   d.RoutingValue,
 			MessageBody:    cmp.MessageBody,
@@ -416,23 +422,28 @@ func (u *CampaignUseCase) RetryDeliveries(ctx context.Context, tenantID, campaig
 		}
 		if pubErr := u.publisher.PublishDispatchTask(ctx, task); pubErr != nil {
 			log.Printf("[RETRY-DELIVERY-WARN] Failed to re-dispatch task for delivery %s: %v\n", d.ID, pubErr)
+			failedClaims = append(failedClaims, d.ID)
 			continue
 		}
-		retryableIDs = append(retryableIDs, d.ID)
-		retriedCount++
+		published++
 	}
 
-	if len(retryableIDs) > 0 {
-		_ = u.campaignRepo.MarkDeliveriesQueued(ctx, campaignID, retryableIDs)
-		if cmp.Status == "completed" || cmp.Status == "failed" {
-			_ = u.campaignRepo.UpdateStatus(ctx, tenantID, campaignID, "dispatching")
+	if len(failedClaims) > 0 {
+		if relErr := u.campaignRepo.ReleaseDeliveryClaims(ctx, campaignID, failedClaims); relErr != nil {
+			log.Printf("[RETRY-DELIVERY-ERROR] Failed to release %d un-published claims: %v\n", len(failedClaims), relErr)
+		}
+	}
+
+	if published == 0 && reopened {
+		if err := u.campaignRepo.UpdateStatus(ctx, tenantID, campaignID, "completed"); err != nil {
+			log.Printf("[RETRY-DELIVERY-WARN] Nothing published; failed to restore campaign %s to completed: %v\n", campaignID, err)
 		}
 	}
 
 	return &domain.RetryDeliveriesResponse{
-		Message:    fmt.Sprintf("Successfully re-enqueued %d failed messages for delivery", retriedCount),
-		Retried:    retriedCount,
-		TotalTasks: len(targets),
+		Message:    fmt.Sprintf("Successfully re-enqueued %d failed messages for delivery", published),
+		Retried:    published,
+		TotalTasks: len(claimed),
 	}, nil
 }
 

@@ -21,6 +21,7 @@ type TargetDeliveryResult struct {
 	TargetType        string  `json:"target_type"`
 	Platform          string  `json:"platform"`
 	RoutingValue      string  `json:"routing_value"`
+	FirstName         string  `json:"first_name,omitempty"`
 	Status            string  `json:"status"`
 	ErrorMessage      *string `json:"error_message,omitempty"`
 	FailureCode       *string `json:"failure_code,omitempty"`
