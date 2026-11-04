@@ -279,3 +279,49 @@ func (m *Mailer) SendConversationAssignments(toEmail, recipientName, workspaceNa
 
 	m.SendEmail(toEmail, subject, htmlBody)
 }
+
+// SendCampaignAwaitingApproval notifies an Owner or Admin that a teammate
+// submitted a broadcast for approval.
+func (m *Mailer) SendCampaignAwaitingApproval(toEmail, workspaceName, campaignTitle, submitterEmail, queueURL string) {
+	if strings.TrimSpace(toEmail) == "" {
+		return
+	}
+
+	escapedWorkspace := html.EscapeString(workspaceName)
+	escapedTitle := html.EscapeString(campaignTitle)
+	escapedSubmitter := html.EscapeString(submitterEmail)
+	escapedURL := html.EscapeString(queueURL)
+
+	subject := fmt.Sprintf("Action needed: \"%s\" is awaiting your approval", campaignTitle)
+
+	cta := ""
+	if queueURL != "" {
+		cta = fmt.Sprintf(`<p style="margin:26px 0 0;text-align:center;"><a href="%s" target="_blank" style="display:inline-block;background:#163300;color:#9fe870;text-decoration:none;font-weight:700;font-size:14px;padding:12px 24px;border-radius:8px;">Review in Scheduled Queue &rarr;</a></p>`, escapedURL)
+	}
+
+	htmlBody := fmt.Sprintf(`<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Broadcast awaiting approval</title></head>
+<body style="margin:0;padding:32px 16px;background:#f9fafb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:#111827;">
+  <table role="presentation" width="100%%" cellspacing="0" cellpadding="0"><tr><td align="center">
+    <table role="presentation" width="100%%" cellspacing="0" cellpadding="0" style="max-width:560px;background:#fff;border:1px solid #e5e7eb;border-radius:12px;">
+      <tr><td style="padding:24px 32px 18px;border-bottom:1px solid #f3f4f6;">
+        <table role="presentation" width="100%%"><tr>
+          <td align="left"><strong style="font-size:16px;color:#14532d;">MessageRail</strong></td>
+          <td align="right"><span style="display:inline-block;background:#fef3c7;color:#92400e;border:1px solid #fde68a;font-size:11px;font-weight:700;padding:4px 10px;border-radius:9999px;text-transform:uppercase;letter-spacing:0.04em;">Approval needed</span></td>
+        </tr></table>
+      </td></tr>
+      <tr><td style="padding:28px 32px 32px;">
+        <h1 style="margin:0 0 12px;font-size:21px;line-height:1.3;">A broadcast is waiting for your approval</h1>
+        <p style="margin:0 0 18px;font-size:15px;line-height:24px;color:#4b5563;"><strong>%s</strong> submitted <strong>"%s"</strong> in <strong>%s</strong>. Nothing is scheduled or sent until an Owner or Admin approves it.</p>
+        <table role="presentation" width="100%%" cellspacing="0" cellpadding="0" style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;">
+          <tr><td style="padding:14px 18px;font-size:13px;color:#6b7280;">Broadcast</td><td align="right" style="padding:14px 18px;font-size:13px;font-weight:600;color:#111827;">%s</td></tr>
+        </table>
+        %s
+      </td></tr>
+    </table>
+    <p style="margin:18px 0 0;font-size:12px;color:#9ca3af;">MessageRail &bull; Approval notifications are sent to workspace Owners and Admins.</p>
+  </td></tr></table>
+</body></html>`, escapedSubmitter, escapedTitle, escapedWorkspace, escapedTitle, cta)
+
+	m.SendEmail(toEmail, subject, htmlBody)
+}
