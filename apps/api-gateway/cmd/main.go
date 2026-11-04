@@ -320,6 +320,95 @@ func main() {
 		}
 	}
 
+	// Consent ledger: append-only record of every grant/revoke decision. contacts.status
+	// is a projection of the latest event, never the source of truth.
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS consent_events (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+			contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+			event_type VARCHAR(20) NOT NULL CHECK (event_type IN ('granted', 'revoked')),
+			source VARCHAR(30) NOT NULL CHECK (source IN ('inbound_keyword', 'web_form', 'csv_import', 'operator', 'api')),
+			channel VARCHAR(50) NOT NULL DEFAULT '',
+			evidence JSONB NOT NULL DEFAULT '{}'::jsonb,
+			occurred_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			recorded_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			idempotency_key TEXT
+		);
+		CREATE UNIQUE INDEX IF NOT EXISTS uq_consent_events_idempotency
+			ON consent_events(tenant_id, idempotency_key);
+		CREATE INDEX IF NOT EXISTS idx_consent_events_contact
+			ON consent_events(tenant_id, contact_id, occurred_at DESC);
+	`); err != nil {
+		logger.Printf("[DB-MIGRATE] consent_events migration: %v\n", err)
+	}
+
+	// Existing opt-outs predate the ledger. Record them with an explicit legacy
+	// marker rather than backdating a real opt-in we never captured.
+	if _, err := db.Exec(`
+		INSERT INTO consent_events (tenant_id, contact_id, event_type, source, channel, evidence, occurred_at)
+		SELECT c.tenant_id, c.id, 'revoked', 'operator', c.channel,
+		       '{"legacy": true, "basis": "status_was_opted_out_before_ledger"}'::jsonb,
+		       COALESCE(c.updated_at, c.created_at)
+		FROM contacts c
+		WHERE c.status = 'opted_out'
+		  AND NOT EXISTS (SELECT 1 FROM consent_events e WHERE e.contact_id = c.id);
+	`); err != nil {
+		logger.Printf("[DB-MIGRATE] consent_events backfill: %v\n", err)
+	}
+
+	// Active contacts imported before the ledger have no captured opt-in. Record
+	// an implied grant so preflight can distinguish "not yet captured" from
+	// "captured and granted"; the evidence says which it is.
+	if _, err := db.Exec(`
+		INSERT INTO consent_events (tenant_id, contact_id, event_type, source, channel, evidence, occurred_at)
+		SELECT c.tenant_id, c.id, 'granted', 'csv_import', c.channel,
+		       '{"legacy": true, "basis": "implied_consent_pre_ledger"}'::jsonb,
+		       COALESCE(c.created_at, CURRENT_TIMESTAMP)
+		FROM contacts c
+		WHERE c.status = 'active'
+		  AND NOT EXISTS (SELECT 1 FROM consent_events e WHERE e.contact_id = c.id);
+	`); err != nil {
+		logger.Printf("[DB-MIGRATE] consent_events active backfill: %v\n", err)
+	}
+
+	// Client review links: only the SHA-256 hash of the bearer token is stored,
+	// so a database leak cannot be replayed against the public review endpoint.
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS campaign_review_tokens (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+			campaign_id UUID NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+			token_hash VARCHAR(64) NOT NULL,
+			label VARCHAR(120) NOT NULL DEFAULT '',
+			created_by VARCHAR(255) NOT NULL DEFAULT '',
+			expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+			revoked_at TIMESTAMP WITH TIME ZONE,
+			last_viewed_at TIMESTAMP WITH TIME ZONE,
+			created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE UNIQUE INDEX IF NOT EXISTS uq_campaign_review_tokens_hash
+			ON campaign_review_tokens(token_hash);
+		CREATE INDEX IF NOT EXISTS idx_campaign_review_tokens_campaign
+			ON campaign_review_tokens(tenant_id, campaign_id);
+
+		CREATE TABLE IF NOT EXISTS campaign_review_events (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+			campaign_id UUID NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+			token_id UUID NOT NULL REFERENCES campaign_review_tokens(id) ON DELETE CASCADE,
+			decision VARCHAR(32) NOT NULL CHECK (decision IN ('approved', 'changes_requested')),
+			note TEXT NOT NULL DEFAULT '',
+			reviewer_ip TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			CONSTRAINT uq_campaign_review_events_token UNIQUE (token_id)
+		);
+		CREATE INDEX IF NOT EXISTS idx_campaign_review_events_campaign
+			ON campaign_review_events(tenant_id, campaign_id, created_at DESC);
+	`); err != nil {
+		logger.Printf("[DB-MIGRATE] campaign review tables migration: %v\n", err)
+	}
+
 	// Idempotent schema migrations: team management & invitations
 	if _, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS tenant_members (
@@ -536,7 +625,11 @@ func main() {
 	tagUseCase := usecase.NewTagUseCase(tagRepo)
 	templateUseCase := usecase.NewTemplateUseCase(templateRepo)
 	contactUseCase := usecase.NewContactUseCase(contactRepo, tagRepo, subRepo)
+	consentRepo := repository.NewPostgresConsentRepository(db)
+	consentUseCase := usecase.NewConsentUseCase(consentRepo, contactRepo)
 	campaignUseCase := usecase.NewCampaignUseCase(campaignRepo, contactRepo, destinationRepo, natsPublisher, subRepo)
+	reviewRepo := repository.NewPostgresReviewRepository(db)
+	reviewUseCase := usecase.NewReviewUseCase(reviewRepo, campaignRepo, campaignUseCase)
 	identityUseCase := usecase.NewIdentityUseCase(identityRepo, channelRepo, subRepo)
 	dashboardUseCase := usecase.NewDashboardUseCase(dashboardRepo)
 	notificationUseCase := usecase.NewNotificationUseCase(notificationRepo)
@@ -546,6 +639,7 @@ func main() {
 	templateHandler := handler.NewTemplateHandler(templateUseCase)
 	contactHandler := handler.NewContactHandler(contactUseCase, subRepo)
 	campaignHandler := handler.NewCampaignHandler(campaignUseCase, subRepo)
+	reviewHandler := handler.NewReviewHandler(reviewUseCase)
 	identityHandler := handler.NewIdentityHandler(identityUseCase)
 	settingsHandler := handler.NewSettingsHandler(db, subRepo)
 	notificationHandler := handler.NewNotificationHandler(notificationUseCase)
@@ -600,6 +694,7 @@ func main() {
 		PhoneNumberID: cfg.MetaPhoneNumberID,
 	}, waManager)
 	webhookHandler := handler.NewWebhookHandler(contactUseCase, channelRepo, destinationRepo, inboxRepo, cfg.MetaAppSecret, cfg.TelegramWebhookSecret)
+	webhookHandler.SetConsentUseCase(consentUseCase)
 	webhookHandler.SetAIEngine(aiEngine)
 	webhookHandler.SetAIAgentRepo(aiAgentRepo)
 	webhookHandler.SetAIReplyDispatcher(aiDispatcher)
@@ -860,7 +955,20 @@ func main() {
 	mux.Handle("GET /api/v1/campaigns/{id}/export", handler.RequireRole("owner", "admin")(http.HandlerFunc(campaignHandler.ExportCampaignReport)))
 	mux.HandleFunc("GET /api/v1/campaigns/{id}/deliveries", campaignHandler.GetCampaignDeliveries)
 	mux.HandleFunc("GET /api/v1/campaigns/{id}/health", campaignHandler.GetCampaignHealth)
+	mux.HandleFunc("POST /api/v1/campaigns/{id}/preflight", campaignHandler.Preflight)
+	mux.Handle("GET /api/v1/campaigns/{id}/consent-export", handler.RequireRole("owner", "admin")(http.HandlerFunc(campaignHandler.ConsentExport)))
 	mux.Handle("POST /api/v1/campaigns/{id}/deliveries/retry", handler.RequireRole("owner", "admin")(http.HandlerFunc(campaignHandler.RetryDeliveries)))
+
+	// Client Review Portal (agency side)
+	mux.Handle("POST /api/v1/campaigns/{id}/review-link", handler.RequireRole("owner", "admin")(http.HandlerFunc(reviewHandler.CreateReviewLink)))
+	mux.Handle("GET /api/v1/campaigns/{id}/review-links", handler.RequireRole("owner", "admin")(http.HandlerFunc(reviewHandler.ListReviewLinks)))
+	mux.Handle("DELETE /api/v1/campaigns/{id}/review-links/{linkID}", handler.RequireRole("owner", "admin")(http.HandlerFunc(reviewHandler.RevokeReviewLink)))
+
+	// Client Review Portal (public: the bearer token is the credential)
+	mux.HandleFunc("GET /api/v1/public/reviews/{token}", reviewHandler.GetPublicReview)
+	mux.HandleFunc("POST /api/v1/public/reviews/{token}/decision", reviewHandler.PostReviewDecision)
+	mux.HandleFunc("GET /api/v1/public/reviews/{token}/outcome.csv", reviewHandler.GetReviewOutcomeCSV)
+
 	mux.HandleFunc("GET /api/v1/ws/campaigns/{id}", campaignHub.HandleWebSocket)
 
 	// Media Asset Subsystem Endpoints (Cloudinary CDN)

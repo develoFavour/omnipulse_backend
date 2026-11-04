@@ -126,6 +126,47 @@ func (c *BroadcastConsumer) executeDelivery(ctx context.Context, msg *nats.Msg) 
 		return
 	}
 
+	// Guard 0: Compliance Opt-Out Guard.
+	// Dispatch already filters inactive contacts, but a revocation can land
+	// between task publication and delivery, and retries re-enter this path.
+	var isOptedOut bool
+	optOutErr := c.db.QueryRowContext(msgCtx, `
+		SELECT EXISTS(
+			SELECT 1 FROM contacts
+			WHERE tenant_id = $1 AND (id::text = $2 OR routing_value = $3) AND status = 'opted_out'
+		)`, task.TenantID, task.ContactID, task.RoutingValue).Scan(&isOptedOut)
+	if optOutErr == nil && isOptedOut {
+		log.Printf("[DELIVERY-AUDIT] stage=broadcast decision=suppressed campaign=%s contact=%s platform=%s reason=opt_out_guard\n",
+			task.CampaignID, task.ContactID, task.TargetPlatform)
+		reason := "Recipient has explicitly opted out — message suppressed by MessageRail compliance engine"
+		blockedCode := "blocked"
+		suppressedResult := contracts.TargetDeliveryResult{
+			CampaignID:   task.CampaignID,
+			ContactID:    task.ContactID,
+			TargetType:   normalizedTargetType(task.TargetType),
+			Platform:     task.TargetPlatform,
+			RoutingValue: task.RoutingValue,
+			FirstName:    task.FirstName,
+			Status:       "failed",
+			ErrorMessage: &reason,
+			FailureCode:  &blockedCode,
+			Retryable:    false,
+		}
+		if resultBytes, mErr := json.Marshal(suppressedResult); mErr == nil {
+			if _, publishErr := c.js.Publish("dispatch.result", resultBytes); publishErr != nil {
+				log.Printf("[WORKER-ERROR] Failed to publish compliance-suppressed result: %v\n", publishErr)
+				_ = msg.Nak()
+				return
+			}
+		} else {
+			log.Printf("[WORKER-ERROR] Failed to encode compliance-suppressed result: %v\n", mErr)
+			_ = msg.Nak()
+			return
+		}
+		_ = msg.Ack()
+		return
+	}
+
 	// Guard 1: Check Database Campaign State.
 	// If the campaign is already marked 'completed' or 'failed', NEVER dispatch again.
 	var campaignStatus string

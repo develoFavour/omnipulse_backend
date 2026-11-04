@@ -22,6 +22,7 @@ import (
 
 type WebhookHandler struct {
 	contactUC             domain.ContactUseCase
+	consentUC             domain.ConsentUseCase
 	channelRepo           domain.ChannelRepository
 	destinationRepo       domain.TelegramDestinationRepository
 	inboxRepo             domain.InboxRepository
@@ -35,6 +36,30 @@ type WebhookHandler struct {
 
 func (h *WebhookHandler) SetBroadcaster(b domain.InboxBroadcaster) {
 	h.broadcaster = b
+}
+
+func (h *WebhookHandler) SetConsentUseCase(u domain.ConsentUseCase) {
+	h.consentUC = u
+}
+
+// applyConsentKeyword records an opt-out/opt-in expressed by an inbound message.
+// Returns true when the message was a consent command, in which case the caller
+// must not treat it as a normal conversation turn.
+func (h *WebhookHandler) applyConsentKeyword(ctx context.Context, tenantID, channel, routingValue, messageID, text string) bool {
+	if h.consentUC == nil || text == "" {
+		return false
+	}
+	eventType, handled, err := h.consentUC.RecordKeyword(ctx, tenantID, channel, routingValue, messageID, text)
+	if err != nil {
+		// Not a keyword returns (", false, nil) — only real failures reach here.
+		log.Printf("[COMPLIANCE] Failed to record consent keyword for %s %s (tenant %s): %v\n", channel, routingValue, tenantID, err)
+		return false
+	}
+	if !handled {
+		return false
+	}
+	log.Printf("[COMPLIANCE] Recorded %s consent for %s %s (tenant %s) via inbound keyword\n", eventType, channel, routingValue, tenantID)
+	return true
 }
 
 func (h *WebhookHandler) SetAIEngine(aiEngine *service.AIEngineService) {
@@ -226,6 +251,11 @@ func (h *WebhookHandler) HandleTelegram(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// Consent commands (STOP / START) must be applied before anything else so the
+	// next broadcast excludes this recipient.
+	isConsentMessage := h.applyConsentKeyword(r.Context(), tenantID, "telegram", chatIDStr,
+		strconv.Itoa(payload.Message.MessageID), payload.Message.Text)
+
 	// Record in Unified Team Inbox
 	if h.inboxRepo != nil && payload.Message.Text != "" && contact.ID != "" {
 		conv, cErr := h.inboxRepo.GetOrCreateConversation(r.Context(), tenantID, contact.ID, "telegram")
@@ -249,8 +279,9 @@ func (h *WebhookHandler) HandleTelegram(w http.ResponseWriter, r *http.Request) 
 			if h.broadcaster != nil {
 				h.broadcaster.BroadcastMessage(tenantID, conv, newMsg)
 			}
-			// Autonomous AI Business Assistant: enqueue inbound customer inquiries
-			if h.aiEngine != nil && h.aiAgentRepo != nil {
+			// Autonomous AI Business Assistant: enqueue inbound customer inquiries.
+			// Consent commands are compliance events, never conversation turns.
+			if !isConsentMessage && h.aiEngine != nil && h.aiAgentRepo != nil {
 				job := service.AIReplyJob{
 					TenantID: tenantID, ConversationID: conv.ID, Channel: "telegram",
 					Recipient: chatIDStr, IncomingText: payload.Message.Text,
@@ -377,6 +408,10 @@ func (h *WebhookHandler) HandleWhatsApp(w http.ResponseWriter, r *http.Request) 
 						contact.ID = existing.ID
 					}
 				}
+
+				// Consent commands (STOP / START) must be applied before anything
+				// else so the next broadcast excludes this recipient.
+				h.applyConsentKeyword(r.Context(), tenantID, "whatsapp", waID, msg.ID, msg.Text.Body)
 
 				// Record in Unified Team Inbox
 				if h.inboxRepo != nil && contact.ID != "" {

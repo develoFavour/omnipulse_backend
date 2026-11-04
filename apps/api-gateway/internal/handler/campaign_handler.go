@@ -623,3 +623,86 @@ func (h *CampaignHandler) ExportCampaignReport(w http.ResponseWriter, r *http.Re
 
 	writer.Flush()
 }
+
+// Preflight answers "what happens if I send this?" without sending anything.
+func (h *CampaignHandler) Preflight(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	campaignID := r.PathValue("id")
+	if campaignID == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Missing campaign ID")
+		return
+	}
+
+	preflight, err := h.useCase.Preflight(r.Context(), tenantID, campaignID)
+	if err != nil {
+		if errors.Is(err, repository.ErrCampaignNotFound) {
+			utils.WriteError(w, http.StatusNotFound, "Campaign not found")
+			return
+		}
+		log.Printf("[PREFLIGHT] Failed for campaign %s: %v\n", campaignID, err)
+		utils.WriteError(w, http.StatusInternalServerError, "Failed to compute campaign preflight")
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, preflight)
+}
+
+// ConsentExport streams the audience's consent evidence as a CSV audit bundle.
+func (h *CampaignHandler) ConsentExport(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	campaignID := r.PathValue("id")
+	if campaignID == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Missing campaign ID")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="campaign-%s-consent.csv"`, campaignID))
+
+	cw := csv.NewWriter(w)
+	defer cw.Flush()
+
+	header := []string{
+		"contact_id", "first_name", "channel", "routing_value", "status",
+		"consent_events", "last_event", "last_source", "last_occurred_at", "evidence",
+	}
+	if err := cw.Write(header); err != nil {
+		log.Printf("[CONSENT-EXPORT] Failed to write header for campaign %s: %v\n", campaignID, err)
+		return
+	}
+
+	err := h.useCase.StreamConsentExport(r.Context(), tenantID, campaignID, func(row *domain.AudienceConsentRow) error {
+		occurredAt := ""
+		if row.LastOccurredAt != nil {
+			occurredAt = row.LastOccurredAt.UTC().Format(time.RFC3339)
+		}
+		return cw.Write([]string{
+			row.ContactID,
+			row.FirstName,
+			row.Channel,
+			row.RoutingValue,
+			row.Status,
+			strconv.Itoa(row.EventCount),
+			row.LastEventType,
+			row.LastSource,
+			occurredAt,
+			row.LastEvidence,
+		})
+	})
+	if err != nil {
+		// Headers are already sent; abort the stream rather than emit a partial
+		// file that looks complete.
+		log.Printf("[CONSENT-EXPORT] Stream aborted for campaign %s: %v\n", campaignID, err)
+		panic(http.ErrAbortHandler)
+	}
+}
