@@ -343,7 +343,7 @@ func (u *TeamUseCase) GetInvitationPreview(ctx context.Context, token string) (*
 }
 
 // AcceptInvitation processes token acceptance and joins the user to the workspace
-func (u *TeamUseCase) AcceptInvitation(ctx context.Context, token, userID string) (*domain.Tenant, error) {
+func (u *TeamUseCase) AcceptInvitation(ctx context.Context, token, userID, firstName, lastName string) (*domain.Tenant, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {
 		return nil, errors.New("invitation token is required")
@@ -355,6 +355,15 @@ func (u *TeamUseCase) AcceptInvitation(ctx context.Context, token, userID string
 	tenant, err := u.repo.AcceptInvitation(ctx, token, userID)
 	if err != nil {
 		return nil, err
+	}
+
+	// The invite screen asks for the teammate's name so campaign review trails
+	// show a person instead of "An operator". Joining already succeeded, so a
+	// name write failure must not invalidate the membership.
+	if firstName = truncateUserName(firstName); firstName != "" {
+		if nameErr := u.repo.UpdateUserName(ctx, userID, firstName, truncateUserName(lastName)); nameErr != nil {
+			u.logger.Printf("[TeamUseCase] Failed to persist name for user %s after joining workspace %s: %v", userID, tenant.ID, nameErr)
+		}
 	}
 
 	u.logger.Printf("[TeamUseCase] User %s successfully accepted invitation and joined workspace %s (%s)", userID, tenant.CompanyName, tenant.ID)

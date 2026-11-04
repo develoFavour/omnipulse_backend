@@ -209,7 +209,9 @@ func (h *TeamHandler) GetInvitationPreview(w http.ResponseWriter, r *http.Reques
 }
 
 type acceptInviteReq struct {
-	Token string `json:"token"`
+	Token     string `json:"token"`
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
 }
 
 // AcceptInvitation handles: POST /api/v1/invitations/accept (Authenticated)
@@ -229,7 +231,7 @@ func (h *TeamHandler) AcceptInvitation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("[TeamHandler] AcceptInvitation requested by user_id=%s\n", userID)
-	tenant, err := h.useCase.AcceptInvitation(r.Context(), req.Token, userID)
+	tenant, err := h.useCase.AcceptInvitation(r.Context(), req.Token, userID, req.FirstName, req.LastName)
 	if err != nil {
 		log.Printf("[TeamHandler] AcceptInvitation FAILED for user_id=%s: %v\n", userID, err)
 		utils.WriteError(w, http.StatusBadRequest, err.Error())

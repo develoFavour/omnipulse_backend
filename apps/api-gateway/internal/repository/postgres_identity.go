@@ -21,13 +21,13 @@ func NewPostgresIdentityRepository(db *sql.DB) domain.IdentityRepository {
 
 func (r *PostgresIdentityRepository) FindUserByClerkID(ctx context.Context, clerkID string) (*domain.User, error) {
 	query := `
-		SELECT id::text, tenant_id, email, role, created_at, updated_at
+		SELECT id::text, tenant_id, email, COALESCE(first_name, ''), COALESCE(last_name, ''), role, created_at, updated_at
 		FROM users
 		WHERE id::text = $1::text;
 	`
 	var u domain.User
 	err := r.db.QueryRowContext(ctx, query, clerkID).Scan(
-		&u.ID, &u.TenantID, &u.Email, &u.Role, &u.CreatedAt, &u.UpdatedAt,
+		&u.ID, &u.TenantID, &u.Email, &u.FirstName, &u.LastName, &u.Role, &u.CreatedAt, &u.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -67,6 +67,18 @@ func (r *PostgresIdentityRepository) UpdateUserEmail(ctx context.Context, userID
 	return err
 }
 
+func (r *PostgresIdentityRepository) UpdateUserName(ctx context.Context, userID, firstName, lastName string) error {
+	query := `
+		UPDATE users
+		SET first_name = $1, last_name = $2, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $3;
+	`
+	if _, err := r.db.ExecContext(ctx, query, firstName, lastName, userID); err != nil {
+		return fmt.Errorf("failed to update user name: %w", err)
+	}
+	return nil
+}
+
 func (r *PostgresIdentityRepository) CreateTenantWithUser(ctx context.Context, tenant *domain.Tenant, user *domain.User) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -87,11 +99,11 @@ func (r *PostgresIdentityRepository) CreateTenantWithUser(ctx context.Context, t
 
 	user.TenantID = tenant.ID
 	userQuery := `
-		INSERT INTO users (id, tenant_id, email, role)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO users (id, tenant_id, email, first_name, last_name, role)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING created_at, updated_at;
 	`
-	err = tx.QueryRowContext(ctx, userQuery, user.ID, user.TenantID, user.Email, user.Role).
+	err = tx.QueryRowContext(ctx, userQuery, user.ID, user.TenantID, user.Email, user.FirstName, user.LastName, user.Role).
 		Scan(&user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("failed to insert user: %w", err)

@@ -41,6 +41,8 @@ type User struct {
 	ID        string    `json:"id"` // Maps directly to Clerk External ID
 	TenantID  string    `json:"tenant_id"`
 	Email     string    `json:"email"`
+	FirstName string    `json:"first_name"`
+	LastName  string    `json:"last_name"`
 	Role      string    `json:"role"` // "admin" or "member"
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -107,6 +109,7 @@ type IdentityRepository interface {
 	CreateTenantWithUser(ctx context.Context, tenant *Tenant, user *User) error
 	UpdateTenantName(ctx context.Context, tenantID string, name string) error
 	UpdateUserEmail(ctx context.Context, userID string, email string) error
+	UpdateUserName(ctx context.Context, userID, firstName, lastName string) error
 	SetOnboardingCompleted(ctx context.Context, tenantID string) error
 
 	// Multi-workspace & Team Memberships

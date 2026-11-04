@@ -41,14 +41,15 @@ func (h *IdentityHandler) SyncUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Extract real user email from the X-User-Email header (injected by ClerkAuthProvider on the frontend)
-	// Fall back to empty string so SyncUser usecase will resolve it via Clerk API if needed
+	// 3. Extract real user email and display name from headers (injected by ClerkAuthProvider on the frontend)
+	// Fall back to empty string so SyncUser usecase will resolve them via Clerk API if needed
 	userEmail := r.Header.Get("X-User-Email")
+	userName := r.Header.Get("X-User-Name")
 	clerkUserID := claims.Subject
-	log.Printf("[IdentityHandler] SyncUser: resolving identity for clerk_user_id=%s email=%q", clerkUserID, userEmail)
+	log.Printf("[IdentityHandler] SyncUser: resolving identity for clerk_user_id=%s email=%q name=%q", clerkUserID, userEmail, userName)
 
-	// 4. JIT Sync — resolves tenant, user record, and workspace role
-	syncRes, err := h.useCase.SyncUser(r.Context(), clerkUserID, userEmail)
+	// 4. JIT Sync — resolves tenant, user record, workspace role, and display name
+	syncRes, err := h.useCase.SyncUser(r.Context(), clerkUserID, userEmail, userName)
 	if err != nil {
 		log.Printf("[IdentityHandler] SyncUser FAILED for clerk_user_id=%s: %v", clerkUserID, err)
 		utils.WriteError(w, http.StatusInternalServerError, "Failed to sync user")
@@ -62,6 +63,8 @@ func (h *IdentityHandler) SyncUser(w http.ResponseWriter, r *http.Request) {
 
 type updateBrandReq struct {
 	CompanyName string `json:"company_name"`
+	FirstName   string `json:"first_name"`
+	LastName    string `json:"last_name"`
 }
 
 // UpdateBrand handles: PATCH /api/v1/onboarding/brand
@@ -71,6 +74,7 @@ func (h *IdentityHandler) UpdateBrand(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
 		return
 	}
+	userID, _ := r.Context().Value(UserIDKey).(string)
 
 	callerRole, _ := r.Context().Value(UserRoleKey).(string)
 	if callerRole != "owner" {
@@ -82,6 +86,15 @@ func (h *IdentityHandler) UpdateBrand(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		utils.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
+	}
+
+	// The onboarding step captures the owner's name alongside the workspace name.
+	// Older callers (e.g. renaming from settings) omit both fields.
+	if req.FirstName != "" || req.LastName != "" {
+		if err := h.useCase.UpdateUserName(r.Context(), userID, req.FirstName, req.LastName); err != nil {
+			utils.WriteError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 
 	if err := h.useCase.UpdateBrandName(r.Context(), tenantID, req.CompanyName); err != nil {
