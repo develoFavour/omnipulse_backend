@@ -329,6 +329,23 @@ func TestStaffLabelHidesEmailDomain(t *testing.T) {
 	}
 }
 
+func TestStaffLabelHidesAccountIdentifiers(t *testing.T) {
+	cases := map[string]string{
+		"Opiafavour10":           "An operator",
+		"D8338118":               "An operator",
+		"user_2abc":              "An operator",
+		"d8338118@clerk.example": "An operator",
+		"Ada Lovelace":           "Ada Lovelace",
+		"Favour":                 "Favour",
+		"O'Brien":                "O'Brien",
+	}
+	for raw, want := range cases {
+		if got := staffLabel(map[string]string{"u": raw}, "u"); got != want {
+			t.Fatalf("staffLabel(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
 func TestEmailBrandLinkAllowedBeforeAndAfterDispatch(t *testing.T) {
 	for _, status := range []string{"draft", "pending_approval", "approved", "scheduled", "processing", "completed", "paused", "cancelled"} {
 		uc, reviewRepo, _ := newReviewFixture(status)

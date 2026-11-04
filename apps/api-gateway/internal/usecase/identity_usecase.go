@@ -27,7 +27,7 @@ type SyncResult struct {
 	OnboardingCompleted bool           `json:"onboarding_completed"`
 }
 
-func (u *IdentityUseCase) SyncUser(ctx context.Context, clerkUserID, email string) (*SyncResult, error) {
+func (u *IdentityUseCase) SyncUser(ctx context.Context, clerkUserID, email, name string) (*SyncResult, error) {
 	// Several page requests can arrive simultaneously on a fresh session.
 	// Serialize JIT provisioning so only one request creates the tenant/user;
 	// following requests then find the user normally.
@@ -36,8 +36,12 @@ func (u *IdentityUseCase) SyncUser(ctx context.Context, clerkUserID, email strin
 
 	// If email is missing or placeholder, resolve verified email directly from Clerk API
 	if email == "" || strings.Contains(email, "@placeholder.com") {
-		if clerkEmail, _ := utils.ResolveClerkUserEmailAndName(ctx, clerkUserID); clerkEmail != "" {
+		clerkEmail, clerkName := utils.ResolveClerkUserEmailAndName(ctx, clerkUserID)
+		if clerkEmail != "" {
 			email = clerkEmail
+		}
+		if name == "" {
+			name = clerkName
 		}
 	}
 
@@ -51,6 +55,17 @@ func (u *IdentityUseCase) SyncUser(ctx context.Context, clerkUserID, email strin
 		if email != "" && !strings.Contains(email, "@placeholder.com") && user.Email != email {
 			if updateErr := u.repo.UpdateUserEmail(ctx, user.ID, email); updateErr == nil {
 				user.Email = email
+			}
+		}
+
+		// Backfill the display name once from Clerk. Never overwrite a name the
+		// user set explicitly during onboarding or invite acceptance.
+		if user.FirstName == "" {
+			if firstName, lastName := splitFullName(name); firstName != "" {
+				if updateErr := u.repo.UpdateUserName(ctx, user.ID, firstName, lastName); updateErr == nil {
+					user.FirstName = firstName
+					user.LastName = lastName
+				}
 			}
 		}
 
@@ -93,14 +108,17 @@ func (u *IdentityUseCase) SyncUser(ctx context.Context, clerkUserID, email strin
 		email = clerkUserID + "@placeholder.com"
 	}
 
+	firstName, lastName := splitFullName(name)
 	newTenant := &domain.Tenant{
 		CompanyName:         "My Workspace",
 		OnboardingCompleted: false,
 	}
 	newUser := &domain.User{
-		ID:    clerkUserID,
-		Email: email,
-		Role:  "owner",
+		ID:        clerkUserID,
+		Email:     email,
+		FirstName: firstName,
+		LastName:  lastName,
+		Role:      "owner",
 	}
 
 	if err := u.repo.CreateTenantWithUser(ctx, newTenant, newUser); err != nil {
@@ -112,6 +130,43 @@ func (u *IdentityUseCase) SyncUser(ctx context.Context, clerkUserID, email strin
 		User:                newUser,
 		OnboardingCompleted: false,
 	}, nil
+}
+
+const maxUserNameLength = 100
+
+// splitFullName turns a single display-name string (typically Clerk's fullName)
+// into the first/last pair the users table stores.
+func splitFullName(raw string) (string, string) {
+	fields := strings.Fields(strings.TrimSpace(raw))
+	if len(fields) == 0 {
+		return "", ""
+	}
+	first := truncateUserName(fields[0])
+	if len(fields) == 1 {
+		return first, ""
+	}
+	return first, truncateUserName(strings.Join(fields[1:], " "))
+}
+
+func truncateUserName(name string) string {
+	name = strings.TrimSpace(name)
+	runes := []rune(name)
+	if len(runes) > maxUserNameLength {
+		return string(runes[:maxUserNameLength])
+	}
+	return name
+}
+
+func (u *IdentityUseCase) UpdateUserName(ctx context.Context, userID, firstName, lastName string) error {
+	if userID == "" {
+		return fmt.Errorf("user ID cannot be empty")
+	}
+	firstName = truncateUserName(firstName)
+	lastName = truncateUserName(lastName)
+	if firstName == "" {
+		return fmt.Errorf("first name cannot be empty")
+	}
+	return u.repo.UpdateUserName(ctx, userID, firstName, lastName)
 }
 
 func (u *IdentityUseCase) UpdateBrandName(ctx context.Context, tenantID string, name string) error {

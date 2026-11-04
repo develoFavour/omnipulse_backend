@@ -457,18 +457,43 @@ func (u *ReviewUseCase) resolveStaffNames(ctx context.Context, tenantID string, 
 	return names
 }
 
-// staffLabel never leaks a full email address: the domain part is dropped so a
-// shared report cannot expose an agency's internal mail domain.
+// staffLabel never leaks an internal identifier to a brand. Email domains are
+// dropped, and anything that still looks like a handle or user ID falls back to
+// a neutral role instead of being shown as if it were a person's name.
 func staffLabel(names map[string]string, userID string) string {
 	raw := strings.TrimSpace(names[userID])
-	switch {
-	case raw == "":
-		return "An operator"
-	case strings.Contains(raw, "@"):
-		return nameFromEmail(raw)
-	default:
-		return raw
+	if raw == "" {
+		return operatorFallback
 	}
+	if strings.Contains(raw, "@") {
+		raw = nameFromEmail(raw)
+	}
+	if !plausiblePersonName(raw) {
+		return operatorFallback
+	}
+	return raw
+}
+
+const operatorFallback = "An operator"
+
+// plausiblePersonName accepts letters, spaces and the punctuation real names
+// use. Digits, underscores and other separators mark an account identifier.
+func plausiblePersonName(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	hasLetter := false
+	for _, r := range name {
+		switch {
+		case unicode.IsLetter(r):
+			hasLetter = true
+		case r == ' ' || r == '\'' || r == '-' || r == '.':
+		default:
+			return false
+		}
+	}
+	return hasLetter
 }
 
 func nameFromEmail(email string) string {
