@@ -668,7 +668,7 @@ func main() {
 	approvalNotifier := usecase.NewApprovalNotifier(identityRepo, notificationRepo, mailer, cfg.PublicAppBaseURL)
 	campaignUseCase := usecase.NewCampaignUseCase(campaignRepo, contactRepo, destinationRepo, natsPublisher, subRepo, approvalNotifier)
 	reviewRepo := repository.NewPostgresReviewRepository(db)
-	reviewUseCase := usecase.NewReviewUseCase(reviewRepo, campaignRepo, campaignUseCase, mailer, cfg.PublicAppBaseURL)
+	reviewUseCase := usecase.NewReviewUseCase(reviewRepo, campaignRepo, campaignUseCase, mailer, cfg.PublicAppBaseURL, approvalNotifier)
 	identityUseCase := usecase.NewIdentityUseCase(identityRepo, channelRepo, subRepo)
 	dashboardUseCase := usecase.NewDashboardUseCase(dashboardRepo)
 	notificationUseCase := usecase.NewNotificationUseCase(notificationRepo)

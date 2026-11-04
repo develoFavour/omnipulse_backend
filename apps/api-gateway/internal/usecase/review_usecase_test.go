@@ -107,7 +107,34 @@ func (s stubPreflighter) Preflight(ctx context.Context, tenantID, campaignID str
 	return s.result, nil
 }
 
+type recordingBrandNotifier struct {
+	calls         int
+	tenantID      string
+	campaignID    string
+	campaignTitle string
+	decision      string
+	note          string
+	reviewerLabel string
+	submittedBy   string
+}
+
+func (r *recordingBrandNotifier) NotifyBrandDecision(ctx context.Context, tenantID, campaignID, campaignTitle, decision, note, reviewerLabel, submittedBy string) {
+	r.calls++
+	r.tenantID = tenantID
+	r.campaignID = campaignID
+	r.campaignTitle = campaignTitle
+	r.decision = decision
+	r.note = note
+	r.reviewerLabel = reviewerLabel
+	r.submittedBy = submittedBy
+}
+
 func newReviewFixture(status string) (*ReviewUseCase, *mockReviewRepo, *mockReviewCampaigns) {
+	uc, reviewRepo, campaignRepo, _ := newReviewFixtureWithNotifier(status)
+	return uc, reviewRepo, campaignRepo
+}
+
+func newReviewFixtureWithNotifier(status string) (*ReviewUseCase, *mockReviewRepo, *mockReviewCampaigns, *recordingBrandNotifier) {
 	reviewRepo := &mockReviewRepo{brand: &domain.ReviewBrand{Name: "Acme Agency"}}
 	campaignRepo := &mockReviewCampaigns{
 		campaign: &domain.Campaign{
@@ -119,10 +146,11 @@ func newReviewFixture(status string) (*ReviewUseCase, *mockReviewRepo, *mockRevi
 			SelectedChannels: `["whatsapp"]`,
 		},
 	}
+	notifier := &recordingBrandNotifier{}
 	uc := NewReviewUseCase(reviewRepo, campaignRepo, stubPreflighter{
 		result: &domain.CampaignPreflight{TotalTargets: 10, Sendable: 8, OptedOut: 2},
-	}, nil, "")
-	return uc, reviewRepo, campaignRepo
+	}, nil, "", notifier)
+	return uc, reviewRepo, campaignRepo, notifier
 }
 
 func TestCreateReviewLinkStoresOnlyHash(t *testing.T) {
@@ -174,6 +202,57 @@ func TestDecideApproveAdvancesPendingCampaign(t *testing.T) {
 	}
 	if view.Audience.Sendable != 8 || view.Audience.OptedOut != 2 {
 		t.Fatalf("unexpected audience projection %+v", view.Audience)
+	}
+}
+
+func TestDecideNotifiesAgencyOfBrandDecision(t *testing.T) {
+	uc, _, campaignRepo, notifier := newReviewFixtureWithNotifier("pending_approval")
+	submittedBy := "user-7"
+	campaignRepo.campaign.SubmittedBy = &submittedBy
+	link, err := uc.CreateLink(context.Background(), "tenant-1", "campaign-1", "Acme marketing lead", "user-7", 7)
+	if err != nil {
+		t.Fatalf("CreateLink returned error: %v", err)
+	}
+
+	if _, err := uc.Decide(context.Background(), link.Token, "approve", "Looks great", "203.0.113.9"); err != nil {
+		t.Fatalf("Decide returned error: %v", err)
+	}
+	if notifier.calls != 1 {
+		t.Fatalf("expected one brand decision notification, got %d", notifier.calls)
+	}
+	if notifier.tenantID != "tenant-1" || notifier.campaignID != "campaign-1" {
+		t.Fatalf("unexpected notification target %+v", notifier)
+	}
+	if notifier.campaignTitle != "November launch" {
+		t.Fatalf("unexpected campaign title %q", notifier.campaignTitle)
+	}
+	if notifier.decision != domain.ReviewDecisionApproved {
+		t.Fatalf("unexpected decision %q", notifier.decision)
+	}
+	if notifier.note != "Looks great" {
+		t.Fatalf("unexpected note %q", notifier.note)
+	}
+	if notifier.reviewerLabel != "Acme marketing lead" {
+		t.Fatalf("unexpected reviewer label %q", notifier.reviewerLabel)
+	}
+	if notifier.submittedBy != "user-7" {
+		t.Fatalf("unexpected submitter %q", notifier.submittedBy)
+	}
+}
+
+func TestDecideDoesNotNotifyWhenDecisionIsRejected(t *testing.T) {
+	uc, reviewRepo, _, notifier := newReviewFixtureWithNotifier("pending_approval")
+	link, err := uc.CreateLink(context.Background(), "tenant-1", "campaign-1", "Acme", "user-1", 7)
+	if err != nil {
+		t.Fatalf("CreateLink returned error: %v", err)
+	}
+
+	reviewRepo.recordErr = domain.ErrReviewAlreadyDecided
+	if _, err := uc.Decide(context.Background(), link.Token, "approve", "", ""); !errors.Is(err, domain.ErrReviewAlreadyDecided) {
+		t.Fatalf("expected ErrReviewAlreadyDecided, got %v", err)
+	}
+	if notifier.calls != 0 {
+		t.Fatalf("a rejected decision must not notify the agency, got %d calls", notifier.calls)
 	}
 }
 

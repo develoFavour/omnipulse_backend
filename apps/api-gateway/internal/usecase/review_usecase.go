@@ -30,21 +30,29 @@ type campaignPreflighter interface {
 	Preflight(ctx context.Context, tenantID, campaignID string) (*domain.CampaignPreflight, error)
 }
 
-type ReviewUseCase struct {
-	repo       domain.ReviewRepository
-	campaigns  domain.CampaignRepository
-	preflight  campaignPreflighter
-	mailer     *utils.Mailer
-	appBaseURL string
+// brandDecisionNotifier alerts the agency that the brand has decided. It is an
+// interface so the review flow does not depend on the notifier implementation.
+type brandDecisionNotifier interface {
+	NotifyBrandDecision(ctx context.Context, tenantID, campaignID, campaignTitle, decision, note, reviewerLabel, submittedBy string)
 }
 
-func NewReviewUseCase(repo domain.ReviewRepository, campaigns domain.CampaignRepository, preflight campaignPreflighter, mailer *utils.Mailer, appBaseURL string) *ReviewUseCase {
+type ReviewUseCase struct {
+	repo          domain.ReviewRepository
+	campaigns     domain.CampaignRepository
+	preflight     campaignPreflighter
+	mailer        *utils.Mailer
+	appBaseURL    string
+	brandNotifier brandDecisionNotifier
+}
+
+func NewReviewUseCase(repo domain.ReviewRepository, campaigns domain.CampaignRepository, preflight campaignPreflighter, mailer *utils.Mailer, appBaseURL string, brandNotifier brandDecisionNotifier) *ReviewUseCase {
 	return &ReviewUseCase{
-		repo:       repo,
-		campaigns:  campaigns,
-		preflight:  preflight,
-		mailer:     mailer,
-		appBaseURL: cleanAppBaseURL(appBaseURL),
+		repo:          repo,
+		campaigns:     campaigns,
+		preflight:     preflight,
+		mailer:        mailer,
+		appBaseURL:    cleanAppBaseURL(appBaseURL),
+		brandNotifier: brandNotifier,
 	}
 }
 
@@ -240,6 +248,14 @@ func (u *ReviewUseCase) Decide(ctx context.Context, rawToken, decision, note, re
 				return nil, err
 			}
 		}
+	}
+
+	if u.brandNotifier != nil {
+		submittedBy := ""
+		if campaign.SubmittedBy != nil {
+			submittedBy = *campaign.SubmittedBy
+		}
+		u.brandNotifier.NotifyBrandDecision(ctx, token.TenantID, token.CampaignID, campaign.Title, normalized, note, token.Label, submittedBy)
 	}
 
 	return u.buildPublicReview(ctx, token)
