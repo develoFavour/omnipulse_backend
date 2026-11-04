@@ -97,14 +97,46 @@ func main() {
 		logger.Println("[DB-MIGRATE] Successfully ensured campaigns.selected_contact_ids column exists.")
 	}
 
-	// Idempotent schema migrations: campaign approval workflow & agency settings
+	// Idempotent schema migrations: campaign approval workflow & agency settings.
+	// Each column is issued on its own: inside a single multi-statement Exec all
+	// statements share one implicit transaction, so one failure rolls back the
+	// rest and leaves the schema half-applied while startup reports success.
+	approvalColumns := []struct {
+		name string
+		ddl  string
+	}{
+		{"tenant_settings.require_campaign_approval", `ALTER TABLE tenant_settings ADD COLUMN IF NOT EXISTS require_campaign_approval BOOLEAN NOT NULL DEFAULT false`},
+		{"campaigns.submitted_by", `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS submitted_by VARCHAR(255)`},
+		{"campaigns.submitted_at", `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMP WITH TIME ZONE`},
+		{"campaigns.approved_by", `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS approved_by VARCHAR(255)`},
+		{"campaigns.approved_at", `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP WITH TIME ZONE`},
+		{"campaigns.rejection_reason", `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS rejection_reason TEXT`},
+	}
+	for _, column := range approvalColumns {
+		if _, err := db.Exec(column.ddl); err != nil {
+			logger.Printf("[DB-MIGRATE] Could not ensure %s: %v\n", column.name, err)
+		}
+	}
+
+	// The approval columns are load-bearing: every campaign read selects them, so
+	// running without one means every campaign request fails. Refuse to start
+	// instead of serving a deploy that cannot work.
+	var presentColumns int
+	if err := db.QueryRow(`
+		SELECT count(*)
+		FROM information_schema.columns
+		WHERE table_schema = 'public'
+		  AND ((table_name = 'campaigns' AND column_name IN ('submitted_by', 'submitted_at', 'approved_by', 'approved_at', 'rejection_reason'))
+		    OR (table_name = 'tenant_settings' AND column_name = 'require_campaign_approval'))
+	`).Scan(&presentColumns); err == nil && presentColumns < 6 {
+		logger.Fatalf("[DB-MIGRATE] Campaign approval schema is incomplete (%d/6 columns present). Check database permissions and the migration errors above.", presentColumns)
+	} else if err != nil {
+		logger.Printf("[DB-MIGRATE] Could not verify campaign approval columns: %v\n", err)
+	} else {
+		logger.Println("[DB-MIGRATE] Campaign approval schema columns are in place.")
+	}
+
 	if _, err := db.Exec(`
-		ALTER TABLE tenant_settings ADD COLUMN IF NOT EXISTS require_campaign_approval BOOLEAN NOT NULL DEFAULT false;
-		ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS submitted_by VARCHAR(255);
-		ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMP WITH TIME ZONE;
-		ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS approved_by VARCHAR(255);
-		ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP WITH TIME ZONE;
-		ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
 		DO $$ BEGIN
 			ALTER TYPE campaign_status ADD VALUE IF NOT EXISTS 'paused';
 			ALTER TYPE campaign_status ADD VALUE IF NOT EXISTS 'cancelled';
@@ -116,11 +148,11 @@ func main() {
 			WHEN undefined_object THEN null;
 			WHEN others THEN null;
 		END $$;
-		ALTER TABLE campaigns ALTER COLUMN status TYPE VARCHAR(50) USING status::varchar(50);
 	`); err != nil {
-		logger.Printf("[DB-MIGRATE] Campaign approval columns migration: %v\n", err)
-	} else {
-		logger.Println("[DB-MIGRATE] Successfully ensured campaign approval schema columns exist.")
+		logger.Printf("[DB-MIGRATE] Campaign status enum migration: %v\n", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE campaigns ALTER COLUMN status TYPE VARCHAR(50) USING status::varchar(50);`); err != nil {
+		logger.Printf("[DB-MIGRATE] Campaign status column cast: %v\n", err)
 	}
 
 	// Whatsmeow requires these keys for its ON CONFLICT upserts. Keep this
