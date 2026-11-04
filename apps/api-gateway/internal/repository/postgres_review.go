@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/lib/pq"
+
 	"omnipulse/apps/api-gateway/internal/domain"
 )
 
@@ -172,4 +174,36 @@ func (r *PostgresReviewRepository) GetBranding(ctx context.Context, tenantID str
 		return nil, fmt.Errorf("failed to fetch tenant branding: %w", err)
 	}
 	return brand, nil
+}
+
+// ResolveStaffNames scopes the lookup to one workspace so a campaign can never
+// expose a name from a workspace the reviewer does not belong to.
+func (r *PostgresReviewRepository) ResolveStaffNames(ctx context.Context, tenantID string, userIDs []string) (map[string]string, error) {
+	names := make(map[string]string, len(userIDs))
+	if len(userIDs) == 0 {
+		return names, nil
+	}
+
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT u.id, TRIM(CONCAT_WS(' ', NULLIF(u.first_name, ''), NULLIF(u.last_name, ''))), COALESCE(u.email, '')
+		FROM users u
+		JOIN tenant_members tm ON tm.user_id = u.id
+		WHERE tm.tenant_id = $1::uuid AND u.id = ANY($2)
+	`, tenantID, pq.Array(userIDs))
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve staff names: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id, name, email string
+		if err := rows.Scan(&id, &name, &email); err != nil {
+			return nil, fmt.Errorf("failed to scan staff name: %w", err)
+		}
+		if name == "" {
+			name = email
+		}
+		names[id] = name
+	}
+	return names, rows.Err()
 }

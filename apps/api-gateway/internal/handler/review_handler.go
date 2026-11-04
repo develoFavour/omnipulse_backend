@@ -165,7 +165,7 @@ func (h *ReviewHandler) GetReviewOutcomeCSV(w http.ResponseWriter, r *http.Reque
 		clientName = brand.Name
 	}
 	rows := [][]string{
-		{"client", clientName},
+		{"brand", clientName},
 		{"campaign", report.Title},
 		{"status", report.Status},
 		{"total_targets", strconv.Itoa(report.TotalTargets)},
@@ -195,6 +195,8 @@ func writeReviewError(w http.ResponseWriter, err error) {
 		utils.WriteError(w, http.StatusConflict, "This campaign has moved past client review")
 	case errors.Is(err, domain.ErrReviewOutcomeUnavailable):
 		utils.WriteError(w, http.StatusConflict, "Outcome report is not available until the campaign starts sending")
+	case errors.Is(err, domain.ErrReviewNotShareable):
+		utils.WriteError(w, http.StatusConflict, "A rejected campaign cannot be shared with a brand")
 	case errors.Is(err, domain.ErrReviewInvalidDecision):
 		utils.WriteError(w, http.StatusBadRequest, "Decision must be 'approve' or 'request_changes'")
 	case errors.Is(err, domain.ErrReviewNoteRequired):

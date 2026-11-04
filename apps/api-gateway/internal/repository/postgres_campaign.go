@@ -127,18 +127,17 @@ func (r *PostgresCampaignRepository) ListByTenant(ctx context.Context, tenantID,
 func (r *PostgresCampaignRepository) GetByID(ctx context.Context, tenantID, id string) (*domain.Campaign, error) {
 	query := `
 		SELECT id, tenant_id, title, message_body, external_template_code, media_url, delivery_type, selected_channels, selected_telegram_destination_ids, selected_contact_ids, status, scheduled_at, total_targets, processed_targets, created_at, updated_at,
-		       submitted_by, approved_by, approved_at, rejection_reason,
+		       submitted_by, submitted_at, approved_by, approved_at, rejection_reason,
 			       COALESCE((SELECT r.decision FROM campaign_review_events r WHERE r.tenant_id = campaigns.tenant_id AND r.campaign_id = campaigns.id ORDER BY r.created_at DESC LIMIT 1), '') AS latest_review_decision
 		FROM campaigns
 		WHERE tenant_id = $1 AND id = $2;
 	`
 	var c domain.Campaign
-	var sched sql.NullTime
+	var sched, subAt, appAt sql.NullTime
 	var subBy, appBy, rejReason sql.NullString
-	var appAt sql.NullTime
 	err := r.db.QueryRowContext(ctx, query, tenantID, id).Scan(
 		&c.ID, &c.TenantID, &c.Title, &c.MessageBody, &c.ExternalTemplateCode, &c.MediaURL, &c.DeliveryType, &c.SelectedChannels, &c.SelectedTelegramDestinationIDs, &c.SelectedContactIDs, &c.Status, &sched, &c.TotalTargets, &c.ProcessedTargets, &c.CreatedAt, &c.UpdatedAt,
-		&subBy, &appBy, &appAt, &rejReason, &c.LatestReviewDecision,
+		&subBy, &subAt, &appBy, &appAt, &rejReason, &c.LatestReviewDecision,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -151,6 +150,9 @@ func (r *PostgresCampaignRepository) GetByID(ctx context.Context, tenantID, id s
 	}
 	if subBy.Valid {
 		c.SubmittedBy = &subBy.String
+	}
+	if subAt.Valid {
+		c.SubmittedAt = &subAt.Time
 	}
 	if appBy.Valid {
 		c.ApprovedBy = &appBy.String
@@ -697,7 +699,7 @@ func (r *PostgresCampaignRepository) CountDeliveriesSince(ctx context.Context, t
 func (r *PostgresCampaignRepository) SubmitForApproval(ctx context.Context, tenantID, id, submittedBy string) error {
 	result, err := r.db.ExecContext(ctx,
 		`UPDATE campaigns 
-		 SET status = 'pending_approval', submitted_by = $1, rejection_reason = NULL, updated_at = NOW() 
+		 SET status = 'pending_approval', submitted_by = $1, submitted_at = NOW(), rejection_reason = NULL, updated_at = NOW() 
 		 WHERE id = $2 AND tenant_id = $3 AND status IN ('draft', 'rejected')`,
 		submittedBy, id, tenantID,
 	)

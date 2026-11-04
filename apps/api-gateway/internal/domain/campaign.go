@@ -22,6 +22,7 @@ type Campaign struct {
 	Status                         string     `json:"status"`
 	ScheduledAt                    *time.Time `json:"scheduled_at,omitempty"`
 	SubmittedBy                    *string    `json:"submitted_by,omitempty"`
+	SubmittedAt                    *time.Time `json:"submitted_at,omitempty"`
 	ApprovedBy                     *string    `json:"approved_by,omitempty"`
 	ApprovedAt                     *time.Time `json:"approved_at,omitempty"`
 	RejectionReason                *string    `json:"rejection_reason,omitempty"`

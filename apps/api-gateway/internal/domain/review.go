@@ -14,6 +14,7 @@ var (
 	ErrReviewInvalidDecision    = errors.New("invalid review decision")
 	ErrReviewNoteRequired       = errors.New("a note is required when requesting changes")
 	ErrReviewOutcomeUnavailable = errors.New("outcome report is not available yet")
+	ErrReviewNotShareable       = errors.New("this campaign cannot be shared with a brand")
 )
 
 // Stored decision values. Request payloads use "approve" / "request_changes".
@@ -56,19 +57,31 @@ type ReviewBrand struct {
 // PublicReview is the PII-free projection shown to an unauthenticated client.
 // It deliberately exposes audience counts, never contact rows.
 type PublicReview struct {
-	CampaignID   string                `json:"campaign_id"`
-	Title        string                `json:"title"`
-	MessageBody  string                `json:"message_body"`
-	MediaURL     *string               `json:"media_url,omitempty"`
-	DeliveryType string                `json:"delivery_type"`
-	Channels     []string              `json:"channels"`
-	Status       string                `json:"status"`
-	ScheduledAt  *time.Time            `json:"scheduled_at,omitempty"`
-	Audience     PublicReviewAudience  `json:"audience"`
-	Brand        ReviewBrand           `json:"brand"`
-	ExpiresAt    time.Time             `json:"expires_at"`
-	Decision     *PublicReviewDecision `json:"decision,omitempty"`
-	Report       *PublicOutcomeReport  `json:"report,omitempty"`
+	CampaignID    string                   `json:"campaign_id"`
+	Title         string                   `json:"title"`
+	MessageBody   string                   `json:"message_body"`
+	MediaURL      *string                  `json:"media_url,omitempty"`
+	DeliveryType  string                   `json:"delivery_type"`
+	Channels      []string                 `json:"channels"`
+	Status        string                   `json:"status"`
+	ScheduledAt   *time.Time               `json:"scheduled_at,omitempty"`
+	Audience      PublicReviewAudience     `json:"audience"`
+	Brand         ReviewBrand              `json:"brand"`
+	ExpiresAt     time.Time                `json:"expires_at"`
+	Decision      *PublicReviewDecision    `json:"decision,omitempty"`
+	ApprovalTrail []PublicReviewTrailEntry `json:"approval_trail"`
+	Report        *PublicOutcomeReport     `json:"report,omitempty"`
+}
+
+// PublicReviewTrailEntry is one step in the accountability chain a brand sees:
+// who sent the campaign for approval, who cleared it internally, and what the
+// brand itself decided.
+type PublicReviewTrailEntry struct {
+	Stage     string     `json:"stage"`      // submitted, approved, rejected, brand_approved, brand_changes_requested
+	ActorRole string     `json:"actor_role"` // operator | brand
+	Actor     string     `json:"actor"`
+	Note      string     `json:"note,omitempty"`
+	At        *time.Time `json:"at,omitempty"`
 }
 
 type PublicReviewAudience struct {
@@ -105,4 +118,7 @@ type ReviewRepository interface {
 	LatestDecision(ctx context.Context, tenantID, campaignID string) (*ReviewEvent, error)
 	RecordDecision(ctx context.Context, event *ReviewEvent) error
 	GetBranding(ctx context.Context, tenantID string) (*ReviewBrand, error)
+	// ResolveStaffNames maps workspace user IDs to a display name, falling back
+	// to email when the user has not set a name.
+	ResolveStaffNames(ctx context.Context, tenantID string, userIDs []string) (map[string]string, error)
 }

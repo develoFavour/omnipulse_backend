@@ -11,6 +11,7 @@ import (
 	"math"
 	"strings"
 	"time"
+	"unicode"
 
 	"omnipulse/apps/api-gateway/internal/domain"
 )
@@ -50,10 +51,8 @@ func (u *ReviewUseCase) CreateLink(ctx context.Context, tenantID, campaignID, la
 	if err != nil {
 		return nil, err
 	}
-	switch campaign.Status {
-	case "draft", "pending_approval", "approved":
-	default:
-		return nil, fmt.Errorf("a review link cannot be created while the campaign is %s", campaign.Status)
+	if campaign.Status == "rejected" {
+		return nil, domain.ErrReviewNotShareable
 	}
 
 	label = strings.TrimSpace(label)
@@ -259,7 +258,9 @@ func (u *ReviewUseCase) buildPublicReview(ctx context.Context, token *domain.Rev
 		log.Printf("[REVIEW] preflight failed for campaign %s: %v\n", campaign.ID, err)
 	}
 
+	var latest *domain.ReviewEvent
 	if event, err := u.repo.LatestDecision(ctx, token.TenantID, token.CampaignID); err == nil && event != nil {
+		latest = event
 		view.Decision = &domain.PublicReviewDecision{
 			Decision:  event.Decision,
 			Note:      event.Note,
@@ -268,6 +269,7 @@ func (u *ReviewUseCase) buildPublicReview(ctx context.Context, token *domain.Rev
 	} else if err != nil {
 		log.Printf("[REVIEW] decision lookup failed for campaign %s: %v\n", campaign.ID, err)
 	}
+	view.ApprovalTrail = u.buildApprovalTrail(ctx, token, campaign, latest, view.Brand.Name)
 
 	if hasOutcome(campaign.Status) {
 		if report, err := u.buildOutcomeReport(ctx, campaign); err == nil {
@@ -302,6 +304,113 @@ func (u *ReviewUseCase) buildOutcomeReport(ctx context.Context, campaign *domain
 		DeliveryRate: deliveryRate,
 		GeneratedAt:  time.Now().UTC(),
 	}, nil
+}
+
+// buildApprovalTrail assembles the chain of accountability a brand cares
+// about. Names, never raw user IDs, reach the public payload.
+func (u *ReviewUseCase) buildApprovalTrail(ctx context.Context, token *domain.ReviewToken, campaign *domain.Campaign, event *domain.ReviewEvent, brandName string) []domain.PublicReviewTrailEntry {
+	trail := make([]domain.PublicReviewTrailEntry, 0, 3)
+	names := u.resolveStaffNames(ctx, campaign.TenantID, campaign.SubmittedBy, campaign.ApprovedBy)
+
+	if campaign.SubmittedBy != nil {
+		trail = append(trail, domain.PublicReviewTrailEntry{
+			Stage:     "submitted",
+			ActorRole: "operator",
+			Actor:     staffLabel(names, *campaign.SubmittedBy),
+			At:        campaign.SubmittedAt,
+		})
+	}
+
+	switch {
+	case campaign.ApprovedBy != nil && !strings.HasPrefix(*campaign.ApprovedBy, "client"):
+		trail = append(trail, domain.PublicReviewTrailEntry{
+			Stage:     "approved",
+			ActorRole: "operator",
+			Actor:     staffLabel(names, *campaign.ApprovedBy),
+			At:        campaign.ApprovedAt,
+		})
+	case campaign.Status == "rejected":
+		entry := domain.PublicReviewTrailEntry{Stage: "rejected", ActorRole: "operator", Actor: "Internal review"}
+		if campaign.RejectionReason != nil {
+			entry.Note = *campaign.RejectionReason
+		}
+		trail = append(trail, entry)
+	}
+
+	if event != nil {
+		stage := "brand_approved"
+		if event.Decision == domain.ReviewDecisionChangesRequested {
+			stage = "brand_changes_requested"
+		}
+		actor := strings.TrimSpace(token.Label)
+		if actor == "" {
+			actor = strings.TrimSpace(brandName)
+		}
+		if actor == "" {
+			actor = "Brand reviewer"
+		}
+		trail = append(trail, domain.PublicReviewTrailEntry{
+			Stage:     stage,
+			ActorRole: "brand",
+			Actor:     actor,
+			Note:      event.Note,
+			At:        &event.CreatedAt,
+		})
+	}
+
+	return trail
+}
+
+func (u *ReviewUseCase) resolveStaffNames(ctx context.Context, tenantID string, ids ...*string) map[string]string {
+	wanted := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id != nil && strings.TrimSpace(*id) != "" {
+			wanted = append(wanted, *id)
+		}
+	}
+	if len(wanted) == 0 {
+		return nil
+	}
+
+	names, err := u.repo.ResolveStaffNames(ctx, tenantID, wanted)
+	if err != nil {
+		log.Printf("[REVIEW] staff lookup failed for tenant %s: %v\n", tenantID, err)
+		return nil
+	}
+	return names
+}
+
+// staffLabel never leaks a full email address: the domain part is dropped so a
+// shared report cannot expose an agency's internal mail domain.
+func staffLabel(names map[string]string, userID string) string {
+	raw := strings.TrimSpace(names[userID])
+	switch {
+	case raw == "":
+		return "An operator"
+	case strings.Contains(raw, "@"):
+		return nameFromEmail(raw)
+	default:
+		return raw
+	}
+}
+
+func nameFromEmail(email string) string {
+	local := email
+	if at := strings.Index(local, "@"); at >= 0 {
+		local = local[:at]
+	}
+	parts := strings.FieldsFunc(local, func(r rune) bool { return r == '.' || r == '_' || r == '-' })
+	for i, part := range parts {
+		runes := []rune(strings.ToLower(part))
+		if len(runes) > 0 {
+			runes[0] = unicode.ToUpper(runes[0])
+		}
+		parts[i] = string(runes)
+	}
+	if len(parts) == 0 {
+		return "An operator"
+	}
+	return strings.Join(parts, " ")
 }
 
 func hasOutcome(status string) bool {
