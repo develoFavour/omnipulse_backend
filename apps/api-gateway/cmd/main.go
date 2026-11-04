@@ -101,6 +101,7 @@ func main() {
 	if _, err := db.Exec(`
 		ALTER TABLE tenant_settings ADD COLUMN IF NOT EXISTS require_campaign_approval BOOLEAN NOT NULL DEFAULT false;
 		ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS submitted_by VARCHAR(255);
+		ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMP WITH TIME ZONE;
 		ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS approved_by VARCHAR(255);
 		ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP WITH TIME ZONE;
 		ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
