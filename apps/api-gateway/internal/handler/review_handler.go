@@ -113,8 +113,9 @@ func (h *ReviewHandler) RevokeReviewLink(w http.ResponseWriter, r *http.Request)
 }
 
 // SendReportEmail handles POST /api/v1/campaigns/{id}/report-email (owner/admin).
-// It mints a fresh link and emails it to the brand; the link is also returned so
-// the sender can share it directly.
+// It mints a fresh link and emails it to the brand — a review request before the
+// campaign is sent, the report afterwards. The link is also returned so the
+// sender can share it directly.
 func (h *ReviewHandler) SendReportEmail(w http.ResponseWriter, r *http.Request) {
 	tenantID, ok := r.Context().Value(TenantIDKey).(string)
 	if !ok || tenantID == "" {
@@ -135,7 +136,7 @@ func (h *ReviewHandler) SendReportEmail(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	link, err := h.useCase.SendReportEmail(r.Context(), tenantID, campaignID, payload.Email, payload.Name, userID)
+	link, err := h.useCase.EmailBrandLink(r.Context(), tenantID, campaignID, payload.Email, payload.Name, userID)
 	if err != nil {
 		writeReviewError(w, err)
 		return
