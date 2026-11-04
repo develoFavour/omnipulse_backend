@@ -36,6 +36,11 @@ type reviewDecisionRequest struct {
 	Note     string `json:"note"`
 }
 
+type sendReportEmailRequest struct {
+	Email string `json:"email"`
+	Name  string `json:"name"`
+}
+
 // CreateReviewLink handles POST /api/v1/campaigns/{id}/review-link (owner/admin).
 func (h *ReviewHandler) CreateReviewLink(w http.ResponseWriter, r *http.Request) {
 	tenantID, ok := r.Context().Value(TenantIDKey).(string)
@@ -105,6 +110,42 @@ func (h *ReviewHandler) RevokeReviewLink(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	utils.WriteNoContent(w)
+}
+
+// SendReportEmail handles POST /api/v1/campaigns/{id}/report-email (owner/admin).
+// It mints a fresh link and emails it to the brand; the link is also returned so
+// the sender can share it directly.
+func (h *ReviewHandler) SendReportEmail(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok || tenantID == "" {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+	campaignID := r.PathValue("id")
+	if campaignID == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Missing campaign ID")
+		return
+	}
+	userID, _ := r.Context().Value(UserIDKey).(string)
+
+	var payload sendReportEmailRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 65536)
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	link, err := h.useCase.SendReportEmail(r.Context(), tenantID, campaignID, payload.Email, payload.Name, userID)
+	if err != nil {
+		writeReviewError(w, err)
+		return
+	}
+	utils.WriteJSON(w, http.StatusOK, map[string]any{
+		"sent_to":    strings.TrimSpace(payload.Email),
+		"token":      link.Token,
+		"label":      link.Label,
+		"expires_at": link.ExpiresAt,
+	})
 }
 
 // GetPublicReview handles GET /api/v1/public/reviews/{token} (public).
@@ -197,6 +238,8 @@ func writeReviewError(w http.ResponseWriter, err error) {
 		utils.WriteError(w, http.StatusConflict, "Outcome report is not available until the campaign starts sending")
 	case errors.Is(err, domain.ErrReviewNotShareable):
 		utils.WriteError(w, http.StatusConflict, "A rejected campaign cannot be shared with a brand")
+	case errors.Is(err, domain.ErrReviewInvalidRecipient):
+		utils.WriteError(w, http.StatusBadRequest, "Enter a valid email address")
 	case errors.Is(err, domain.ErrReviewInvalidDecision):
 		utils.WriteError(w, http.StatusBadRequest, "Decision must be 'approve' or 'request_changes'")
 	case errors.Is(err, domain.ErrReviewNoteRequired):
