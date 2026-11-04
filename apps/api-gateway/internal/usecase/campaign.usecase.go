@@ -74,10 +74,16 @@ func (u *CampaignUseCase) ScheduleCampaign(ctx context.Context, tenantID, campai
 		return fmt.Errorf("scheduled time must be at least 1 minute in the future")
 	}
 
-	role, _ := ctx.Value(ctxkeys.UserRoleKey).(string)
+	if campaign.LatestReviewDecision == domain.ReviewDecisionChangesRequested {
+		return fmt.Errorf("the brand requested changes on this campaign. Address them and get a new approval before scheduling")
+	}
+
 	reqApproval, _ := u.campaignRepo.GetApprovalSetting(ctx, tenantID)
 
-	if reqApproval && strings.EqualFold(role, "member") && campaign.Status != "approved" {
+	if reqApproval && campaign.Status != "approved" {
+		if campaign.Status == "pending_approval" {
+			return fmt.Errorf("campaign is pending approval from an Owner or Admin before it can be scheduled")
+		}
 		return fmt.Errorf("campaign approval is required before scheduling. Please submit this campaign for approval")
 	}
 
@@ -172,23 +178,24 @@ func (u *CampaignUseCase) TriggerDispatch(ctx context.Context, tenantID, campaig
 		return fmt.Errorf("campaign execution rejected: status is already %s", campaign.Status)
 	}
 
-	role, _ := ctx.Value(ctxkeys.UserRoleKey).(string)
-	reqApproval, _ := u.campaignRepo.GetApprovalSetting(ctx, tenantID)
+	if campaign.Status == "rejected" {
+		reason := "campaign was rejected"
+		if campaign.RejectionReason != nil && *campaign.RejectionReason != "" {
+			reason = fmt.Sprintf("campaign was rejected: %s", *campaign.RejectionReason)
+		}
+		return errors.New(reason)
+	}
 
-	if reqApproval {
-		if campaign.Status == "pending_approval" && strings.EqualFold(role, "member") {
+	if campaign.LatestReviewDecision == domain.ReviewDecisionChangesRequested {
+		return errors.New("the brand requested changes on this campaign. Address them and get a new approval before dispatching")
+	}
+
+	reqApproval, _ := u.campaignRepo.GetApprovalSetting(ctx, tenantID)
+	if reqApproval && campaign.Status != "approved" && campaign.Status != "scheduled" {
+		if campaign.Status == "pending_approval" {
 			return fmt.Errorf("campaign is pending approval from an Owner or Admin before dispatching")
 		}
-		if campaign.Status == "rejected" {
-			reason := "campaign was rejected"
-			if campaign.RejectionReason != nil && *campaign.RejectionReason != "" {
-				reason = fmt.Sprintf("campaign was rejected: %s", *campaign.RejectionReason)
-			}
-			return errors.New(reason)
-		}
-		if campaign.Status == "draft" && strings.EqualFold(role, "member") {
-			return fmt.Errorf("campaign approval is required in this workspace. Please submit this campaign for approval before dispatching")
-		}
+		return fmt.Errorf("campaign approval is required in this workspace. Please submit this campaign for approval before dispatching")
 	}
 
 	// Enforce Plan Monthly Message Quota
@@ -376,6 +383,91 @@ func (u *CampaignUseCase) GetHealth(ctx context.Context, tenantID, campaignID st
 	return u.campaignRepo.GetCampaignHealth(ctx, tenantID, campaignID)
 }
 
+// Preflight reports what a dispatch would actually do without publishing
+// anything. Its audience filtering mirrors TriggerDispatch so the numbers a
+// client approves are the numbers that get sent.
+func (u *CampaignUseCase) Preflight(ctx context.Context, tenantID, campaignID string) (*domain.CampaignPreflight, error) {
+	cmp, err := u.campaignRepo.GetByID(ctx, tenantID, campaignID)
+	if err != nil {
+		return nil, err
+	}
+
+	selectedChannels := parseStringList(cmp.SelectedChannels)
+	selectedContacts := parseStringList(cmp.SelectedContactIDs)
+	selectedDestinations := parseStringList(cmp.SelectedTelegramDestinationIDs)
+
+	preflight := &domain.CampaignPreflight{
+		CampaignID: cmp.ID,
+		Status:     cmp.Status,
+		Reasons:    []domain.PreflightReason{},
+	}
+
+	if len(selectedContacts) > 0 || len(selectedChannels) > 0 {
+		counts, err := u.campaignRepo.CountAudienceConsent(ctx, tenantID, selectedContacts, selectedChannels)
+		if err != nil {
+			return nil, err
+		}
+		preflight.TotalTargets += counts.Total
+		preflight.Sendable += counts.Active
+		preflight.OptedOut += counts.OptedOut
+		preflight.NoConsent += counts.NoConsent
+
+		if counts.OptedOut > 0 {
+			preflight.Reasons = append(preflight.Reasons, domain.PreflightReason{
+				Code:    "opted_out",
+				Count:   counts.OptedOut,
+				Message: fmt.Sprintf("%d contact(s) opted out and will be skipped", counts.OptedOut),
+			})
+		}
+		if counts.NoConsent > 0 {
+			preflight.Reasons = append(preflight.Reasons, domain.PreflightReason{
+				Code:    "no_consent",
+				Count:   counts.NoConsent,
+				Message: fmt.Sprintf("%d contact(s) have no recorded consent evidence; they will still be messaged", counts.NoConsent),
+			})
+		}
+	}
+
+	if len(selectedDestinations) > 0 {
+		destinations, err := u.destinationRepo.ListByIDs(ctx, tenantID, selectedDestinations)
+		if err != nil {
+			return nil, fmt.Errorf("telegram destination lookup failed: %w", err)
+		}
+		preflight.TotalTargets += len(destinations)
+		preflight.Sendable += len(destinations)
+	}
+
+	// Quiet hours and non-consent suppression are not modelled yet, so these
+	// stay at zero rather than inventing blocked targets.
+	preflight.QuietHours = 0
+	preflight.Blocked = 0
+
+	if preflight.Sendable == 0 {
+		preflight.Reasons = append(preflight.Reasons, domain.PreflightReason{
+			Code:    "no_sendable_targets",
+			Count:   0,
+			Message: "No sendable targets match this campaign; dispatch would be rejected",
+		})
+	}
+
+	return preflight, nil
+}
+
+// StreamConsentExport writes an audit row per audience contact to the caller's
+// writer so large audiences are never buffered in memory.
+func (u *CampaignUseCase) StreamConsentExport(ctx context.Context, tenantID, campaignID string, yield func(*domain.AudienceConsentRow) error) error {
+	cmp, err := u.campaignRepo.GetByID(ctx, tenantID, campaignID)
+	if err != nil {
+		return err
+	}
+	selectedChannels := parseStringList(cmp.SelectedChannels)
+	selectedContacts := parseStringList(cmp.SelectedContactIDs)
+	if len(selectedContacts) == 0 && len(selectedChannels) == 0 {
+		return nil
+	}
+	return u.campaignRepo.StreamAudienceConsent(ctx, tenantID, selectedContacts, selectedChannels, yield)
+}
+
 func (u *CampaignUseCase) RetryDeliveries(ctx context.Context, tenantID, campaignID string, deliveryIDs []string) (*domain.RetryDeliveriesResponse, error) {
 	cmp, err := u.campaignRepo.GetByID(ctx, tenantID, campaignID)
 	if err != nil {
@@ -469,6 +561,9 @@ func (u *CampaignUseCase) ApproveCampaign(ctx context.Context, tenantID, campaig
 	}
 	if c.Status != "pending_approval" {
 		return fmt.Errorf("only campaigns pending approval can be approved (current status: %s)", c.Status)
+	}
+	if c.LatestReviewDecision == domain.ReviewDecisionChangesRequested {
+		return fmt.Errorf("the brand requested changes on this campaign. Address them before approving")
 	}
 	return u.campaignRepo.ApproveCampaign(ctx, tenantID, campaignID, approvedBy)
 }

@@ -49,7 +49,8 @@ func (r *PostgresCampaignRepository) ListByTenant(ctx context.Context, tenantID,
 		if status == "scheduled" {
 			query = `
 				SELECT id, tenant_id, title, message_body, external_template_code, media_url, delivery_type, selected_channels, selected_telegram_destination_ids, selected_contact_ids, status, scheduled_at, total_targets, processed_targets, created_at, updated_at,
-				       submitted_by, approved_by, approved_at, rejection_reason
+				       submitted_by, approved_by, approved_at, rejection_reason,
+			       COALESCE((SELECT r.decision FROM campaign_review_events r WHERE r.tenant_id = campaigns.tenant_id AND r.campaign_id = campaigns.id ORDER BY r.created_at DESC LIMIT 1), '') AS latest_review_decision
 				FROM campaigns
 				WHERE tenant_id = $1 AND status = $2
 				ORDER BY scheduled_at ASC NULLS LAST, created_at DESC
@@ -58,7 +59,8 @@ func (r *PostgresCampaignRepository) ListByTenant(ctx context.Context, tenantID,
 		} else {
 			query = `
 				SELECT id, tenant_id, title, message_body, external_template_code, media_url, delivery_type, selected_channels, selected_telegram_destination_ids, selected_contact_ids, status, scheduled_at, total_targets, processed_targets, created_at, updated_at,
-				       submitted_by, approved_by, approved_at, rejection_reason
+				       submitted_by, approved_by, approved_at, rejection_reason,
+			       COALESCE((SELECT r.decision FROM campaign_review_events r WHERE r.tenant_id = campaigns.tenant_id AND r.campaign_id = campaigns.id ORDER BY r.created_at DESC LIMIT 1), '') AS latest_review_decision
 				FROM campaigns
 				WHERE tenant_id = $1 AND status = $2
 				ORDER BY created_at DESC
@@ -69,7 +71,8 @@ func (r *PostgresCampaignRepository) ListByTenant(ctx context.Context, tenantID,
 	} else {
 		query = `
 			SELECT id, tenant_id, title, message_body, external_template_code, media_url, delivery_type, selected_channels, selected_telegram_destination_ids, selected_contact_ids, status, scheduled_at, total_targets, processed_targets, created_at, updated_at,
-			       submitted_by, approved_by, approved_at, rejection_reason
+			       submitted_by, approved_by, approved_at, rejection_reason,
+			       COALESCE((SELECT r.decision FROM campaign_review_events r WHERE r.tenant_id = campaigns.tenant_id AND r.campaign_id = campaigns.id ORDER BY r.created_at DESC LIMIT 1), '') AS latest_review_decision
 			FROM campaigns
 			WHERE tenant_id = $1
 			ORDER BY created_at DESC
@@ -91,7 +94,7 @@ func (r *PostgresCampaignRepository) ListByTenant(ctx context.Context, tenantID,
 		var appAt sql.NullTime
 		err := rows.Scan(
 			&c.ID, &c.TenantID, &c.Title, &c.MessageBody, &c.ExternalTemplateCode, &c.MediaURL, &c.DeliveryType, &c.SelectedChannels, &c.SelectedTelegramDestinationIDs, &c.SelectedContactIDs, &c.Status, &sched, &c.TotalTargets, &c.ProcessedTargets, &c.CreatedAt, &c.UpdatedAt,
-			&subBy, &appBy, &appAt, &rejReason,
+			&subBy, &appBy, &appAt, &rejReason, &c.LatestReviewDecision,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan row into campaign domain: %w", err)
@@ -124,7 +127,8 @@ func (r *PostgresCampaignRepository) ListByTenant(ctx context.Context, tenantID,
 func (r *PostgresCampaignRepository) GetByID(ctx context.Context, tenantID, id string) (*domain.Campaign, error) {
 	query := `
 		SELECT id, tenant_id, title, message_body, external_template_code, media_url, delivery_type, selected_channels, selected_telegram_destination_ids, selected_contact_ids, status, scheduled_at, total_targets, processed_targets, created_at, updated_at,
-		       submitted_by, approved_by, approved_at, rejection_reason
+		       submitted_by, approved_by, approved_at, rejection_reason,
+			       COALESCE((SELECT r.decision FROM campaign_review_events r WHERE r.tenant_id = campaigns.tenant_id AND r.campaign_id = campaigns.id ORDER BY r.created_at DESC LIMIT 1), '') AS latest_review_decision
 		FROM campaigns
 		WHERE tenant_id = $1 AND id = $2;
 	`
@@ -134,7 +138,7 @@ func (r *PostgresCampaignRepository) GetByID(ctx context.Context, tenantID, id s
 	var appAt sql.NullTime
 	err := r.db.QueryRowContext(ctx, query, tenantID, id).Scan(
 		&c.ID, &c.TenantID, &c.Title, &c.MessageBody, &c.ExternalTemplateCode, &c.MediaURL, &c.DeliveryType, &c.SelectedChannels, &c.SelectedTelegramDestinationIDs, &c.SelectedContactIDs, &c.Status, &sched, &c.TotalTargets, &c.ProcessedTargets, &c.CreatedAt, &c.UpdatedAt,
-		&subBy, &appBy, &appAt, &rejReason,
+		&subBy, &appBy, &appAt, &rejReason, &c.LatestReviewDecision,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -751,4 +755,87 @@ func (r *PostgresCampaignRepository) GetApprovalSetting(ctx context.Context, ten
 		return false, err
 	}
 	return req, nil
+}
+
+// CountAudienceConsent aggregates the consent state of the audience a campaign
+// would target. Filtering mirrors TriggerDispatch exactly: an explicit contact
+// list wins, and channels narrow the result when set.
+func (r *PostgresCampaignRepository) CountAudienceConsent(ctx context.Context, tenantID string, contactIDs, channels []string) (*domain.AudienceConsentCounts, error) {
+	var idFilter, channelFilter interface{}
+	if len(contactIDs) > 0 {
+		idFilter = pq.Array(contactIDs)
+	}
+	if len(channels) > 0 {
+		channelFilter = pq.Array(channels)
+	}
+
+	var counts domain.AudienceConsentCounts
+	err := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*),
+		       COUNT(*) FILTER (WHERE c.status = 'active'),
+		       COUNT(*) FILTER (WHERE c.status = 'opted_out'),
+		       COUNT(*) FILTER (WHERE NOT EXISTS (
+		           SELECT 1 FROM consent_events e WHERE e.contact_id = c.id
+		       ))
+		FROM contacts c
+		WHERE c.tenant_id = $1
+		  AND ($2::uuid[] IS NULL OR c.id = ANY($2::uuid[]))
+		  AND ($3::text[] IS NULL OR c.channel = ANY($3::text[]));
+	`, tenantID, idFilter, channelFilter).Scan(
+		&counts.Total, &counts.Active, &counts.OptedOut, &counts.NoConsent,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to summarize audience consent: %w", err)
+	}
+	return &counts, nil
+}
+
+// StreamAudienceConsent yields one audit row per contact with its latest
+// consent decision, so large exports never buffer in memory.
+func (r *PostgresCampaignRepository) StreamAudienceConsent(ctx context.Context, tenantID string, contactIDs, channels []string, yield func(*domain.AudienceConsentRow) error) error {
+	var idFilter, channelFilter interface{}
+	if len(contactIDs) > 0 {
+		idFilter = pq.Array(contactIDs)
+	}
+	if len(channels) > 0 {
+		channelFilter = pq.Array(channels)
+	}
+
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT c.id, c.first_name, c.channel, c.routing_value, c.status,
+		       (SELECT COUNT(*) FROM consent_events e WHERE e.contact_id = c.id),
+		       COALESCE(l.event_type, ''), COALESCE(l.source, ''),
+		       l.occurred_at, COALESCE(l.evidence, '{}')
+		FROM contacts c
+		LEFT JOIN LATERAL (
+		    SELECT e.event_type, e.source, e.occurred_at, e.evidence::text AS evidence
+		    FROM consent_events e
+		    WHERE e.contact_id = c.id
+		    ORDER BY e.occurred_at DESC, e.recorded_at DESC
+		    LIMIT 1
+		) l ON TRUE
+		WHERE c.tenant_id = $1
+		  AND ($2::uuid[] IS NULL OR c.id = ANY($2::uuid[]))
+		  AND ($3::text[] IS NULL OR c.channel = ANY($3::text[]))
+		ORDER BY c.first_name, c.id;
+	`, tenantID, idFilter, channelFilter)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var row domain.AudienceConsentRow
+		if err := rows.Scan(
+			&row.ContactID, &row.FirstName, &row.Channel, &row.RoutingValue, &row.Status,
+			&row.EventCount, &row.LastEventType, &row.LastSource,
+			&row.LastOccurredAt, &row.LastEvidence,
+		); err != nil {
+			return err
+		}
+		if err := yield(&row); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
 }

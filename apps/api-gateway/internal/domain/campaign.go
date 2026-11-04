@@ -25,6 +25,7 @@ type Campaign struct {
 	ApprovedBy                     *string    `json:"approved_by,omitempty"`
 	ApprovedAt                     *time.Time `json:"approved_at,omitempty"`
 	RejectionReason                *string    `json:"rejection_reason,omitempty"`
+	LatestReviewDecision           string     `json:"latest_review_decision,omitempty"`
 	TotalTargets                   int        `json:"total_targets"`
 	ProcessedTargets               int        `json:"processed_targets"`
 	CreatedAt                      time.Time  `json:"created_at"`
@@ -89,6 +90,8 @@ type CampaignRepository interface {
 	ListDeliveriesByCampaign(ctx context.Context, tenantID, campaignID string, status, failureCode string, retryable *bool, limit, offset int) ([]*CampaignDelivery, error)
 	ClaimDeliveriesForRetry(ctx context.Context, tenantID, campaignID string, deliveryIDs []string) ([]*CampaignDelivery, error)
 	ReleaseDeliveryClaims(ctx context.Context, campaignID string, ids []string) error
+	CountAudienceConsent(ctx context.Context, tenantID string, contactIDs, channels []string) (*AudienceConsentCounts, error)
+	StreamAudienceConsent(ctx context.Context, tenantID string, contactIDs, channels []string, yield func(*AudienceConsentRow) error) error
 	FindDueScheduledCampaigns(ctx context.Context) ([]*Campaign, error)
 	CancelScheduledCampaign(ctx context.Context, tenantID, id string) error
 	CountDeliveriesSince(ctx context.Context, tenantID string, since time.Time) (int, error)

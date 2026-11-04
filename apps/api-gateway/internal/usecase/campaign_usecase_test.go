@@ -34,6 +34,8 @@ type mockCampaignRepo struct {
 	getApprovalSettingFunc        func(ctx context.Context, tenantID string) (bool, error)
 	claimDeliveriesForRetryFunc   func(ctx context.Context, tenantID, campaignID string, ids []string) ([]*domain.CampaignDelivery, error)
 	releaseDeliveryClaimsFunc     func(ctx context.Context, campaignID string, ids []string) error
+	countAudienceConsentFunc      func(ctx context.Context, tenantID string, contactIDs, channels []string) (*domain.AudienceConsentCounts, error)
+	streamAudienceConsentFunc     func(ctx context.Context, tenantID string, contactIDs, channels []string, yield func(*domain.AudienceConsentRow) error) error
 }
 
 func (m *mockCampaignRepo) Create(ctx context.Context, c *domain.Campaign) error {
@@ -396,6 +398,25 @@ func TestCampaignApprovalWorkflow(t *testing.T) {
 		}
 	})
 
+	t.Run("ApproveCampaign blocks approval when the brand requested changes", func(t *testing.T) {
+		repo := &mockCampaignRepo{
+			getByIDFunc: func(ctx context.Context, tID, id string) (*domain.Campaign, error) {
+				return &domain.Campaign{
+					ID:                   id,
+					TenantID:             tID,
+					Status:               "pending_approval",
+					LatestReviewDecision: domain.ReviewDecisionChangesRequested,
+				}, nil
+			},
+		}
+		uc := NewCampaignUseCase(repo, nil, nil, &mockPublisher{}, nil)
+		ctx := context.WithValue(context.Background(), ctxkeys.UserRoleKey, "owner")
+		err := uc.ApproveCampaign(ctx, tenantID, campaignID, "owner-id")
+		if err == nil || !strings.Contains(err.Error(), "requested changes") {
+			t.Fatalf("expected changes-requested error, got %v", err)
+		}
+	})
+
 	t.Run("RejectCampaign requires a non-empty reason", func(t *testing.T) {
 		repo := &mockCampaignRepo{
 			getByIDFunc: func(ctx context.Context, tID, id string) (*domain.Campaign, error) {
@@ -434,6 +455,148 @@ func TestCampaignApprovalWorkflow(t *testing.T) {
 		}
 	})
 
+	t.Run("TriggerDispatch blocks owner dispatching an unapproved draft", func(t *testing.T) {
+		repo := &mockCampaignRepo{
+			getByIDFunc: func(ctx context.Context, tID, id string) (*domain.Campaign, error) {
+				return &domain.Campaign{
+					ID:                             id,
+					TenantID:                       tID,
+					Status:                         "draft",
+					SelectedChannels:               "[]",
+					SelectedTelegramDestinationIDs: "[]",
+					SelectedContactIDs:             "[]",
+				}, nil
+			},
+			getApprovalSettingFunc: func(ctx context.Context, tID string) (bool, error) {
+				return true, nil
+			},
+		}
+		uc := NewCampaignUseCase(repo, nil, nil, &mockPublisher{}, nil)
+		ctx := context.WithValue(context.Background(), ctxkeys.UserRoleKey, "owner")
+		err := uc.TriggerDispatch(ctx, tenantID, campaignID)
+		if err == nil || !strings.Contains(err.Error(), "campaign approval is required") {
+			t.Fatalf("expected approval error for owner dispatch of draft, got %v", err)
+		}
+	})
+
+	t.Run("TriggerDispatch blocks pending_approval regardless of role", func(t *testing.T) {
+		repo := &mockCampaignRepo{
+			getByIDFunc: func(ctx context.Context, tID, id string) (*domain.Campaign, error) {
+				return &domain.Campaign{
+					ID:                             id,
+					TenantID:                       tID,
+					Status:                         "pending_approval",
+					SelectedChannels:               "[]",
+					SelectedTelegramDestinationIDs: "[]",
+					SelectedContactIDs:             "[]",
+				}, nil
+			},
+			getApprovalSettingFunc: func(ctx context.Context, tID string) (bool, error) {
+				return true, nil
+			},
+		}
+		uc := NewCampaignUseCase(repo, nil, nil, &mockPublisher{}, nil)
+		ctx := context.WithValue(context.Background(), ctxkeys.UserRoleKey, "admin")
+		err := uc.TriggerDispatch(ctx, tenantID, campaignID)
+		if err == nil || !strings.Contains(err.Error(), "pending approval") {
+			t.Fatalf("expected pending approval error, got %v", err)
+		}
+	})
+
+	t.Run("TriggerDispatch blocks a campaign the brand asked to change", func(t *testing.T) {
+		repo := &mockCampaignRepo{
+			getByIDFunc: func(ctx context.Context, tID, id string) (*domain.Campaign, error) {
+				return &domain.Campaign{
+					ID:                             id,
+					TenantID:                       tID,
+					Status:                         "approved",
+					LatestReviewDecision:           domain.ReviewDecisionChangesRequested,
+					SelectedChannels:               "[]",
+					SelectedTelegramDestinationIDs: "[]",
+					SelectedContactIDs:             "[]",
+				}, nil
+			},
+			getApprovalSettingFunc: func(ctx context.Context, tID string) (bool, error) {
+				return false, nil
+			},
+		}
+		uc := NewCampaignUseCase(repo, nil, nil, &mockPublisher{}, nil)
+		err := uc.TriggerDispatch(context.Background(), tenantID, campaignID)
+		if err == nil || !strings.Contains(err.Error(), "requested changes") {
+			t.Fatalf("expected changes-requested error, got %v", err)
+		}
+	})
+
+	t.Run("ScheduleCampaign requires approval for owners when enabled", func(t *testing.T) {
+		repo := &mockCampaignRepo{
+			getByIDFunc: func(ctx context.Context, tID, id string) (*domain.Campaign, error) {
+				return &domain.Campaign{
+					ID:       id,
+					TenantID: tID,
+					Status:   "draft",
+				}, nil
+			},
+			getApprovalSettingFunc: func(ctx context.Context, tID string) (bool, error) {
+				return true, nil
+			},
+		}
+		uc := NewCampaignUseCase(repo, nil, nil, &mockPublisher{}, nil)
+		ctx := context.WithValue(context.Background(), ctxkeys.UserRoleKey, "owner")
+		err := uc.ScheduleCampaign(ctx, tenantID, campaignID, time.Now().Add(time.Hour))
+		if err == nil || !strings.Contains(err.Error(), "campaign approval is required") {
+			t.Fatalf("expected approval error for owner scheduling draft, got %v", err)
+		}
+	})
+
+	t.Run("ScheduleCampaign allows an approved campaign when approval is required", func(t *testing.T) {
+		scheduled := false
+		repo := &mockCampaignRepo{
+			getByIDFunc: func(ctx context.Context, tID, id string) (*domain.Campaign, error) {
+				return &domain.Campaign{
+					ID:       id,
+					TenantID: tID,
+					Status:   "approved",
+				}, nil
+			},
+			getApprovalSettingFunc: func(ctx context.Context, tID string) (bool, error) {
+				return true, nil
+			},
+			setScheduledFunc: func(ctx context.Context, tID, id string, at time.Time) error {
+				scheduled = true
+				return nil
+			},
+		}
+		uc := NewCampaignUseCase(repo, nil, nil, &mockPublisher{}, nil)
+		ctx := context.WithValue(context.Background(), ctxkeys.UserRoleKey, "member")
+		if err := uc.ScheduleCampaign(ctx, tenantID, campaignID, time.Now().Add(time.Hour)); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !scheduled {
+			t.Fatal("expected setScheduledFunc to be invoked")
+		}
+	})
+
+	t.Run("ScheduleCampaign blocks a campaign the brand asked to change", func(t *testing.T) {
+		repo := &mockCampaignRepo{
+			getByIDFunc: func(ctx context.Context, tID, id string) (*domain.Campaign, error) {
+				return &domain.Campaign{
+					ID:                   id,
+					TenantID:             tID,
+					Status:               "approved",
+					LatestReviewDecision: domain.ReviewDecisionChangesRequested,
+				}, nil
+			},
+			getApprovalSettingFunc: func(ctx context.Context, tID string) (bool, error) {
+				return false, nil
+			},
+		}
+		uc := NewCampaignUseCase(repo, nil, nil, &mockPublisher{}, nil)
+		err := uc.ScheduleCampaign(context.Background(), tenantID, campaignID, time.Now().Add(time.Hour))
+		if err == nil || !strings.Contains(err.Error(), "requested changes") {
+			t.Fatalf("expected changes-requested error, got %v", err)
+		}
+	})
+
 	t.Run("GetCampaignReport computes correct rates", func(t *testing.T) {
 		repo := &mockCampaignRepo{
 			getByIDFunc: func(ctx context.Context, tID, id string) (*domain.Campaign, error) {
@@ -467,6 +630,100 @@ func TestCampaignApprovalWorkflow(t *testing.T) {
 		// 2 reads out of 80 delivered = 2.5%
 		if report.ReadRate != 2.5 {
 			t.Errorf("expected 2.5%% read rate, got %.1f", report.ReadRate)
+		}
+	})
+}
+
+func (m *mockCampaignRepo) CountAudienceConsent(ctx context.Context, tenantID string, contactIDs, channels []string) (*domain.AudienceConsentCounts, error) {
+	if m.countAudienceConsentFunc != nil {
+		return m.countAudienceConsentFunc(ctx, tenantID, contactIDs, channels)
+	}
+	return &domain.AudienceConsentCounts{}, nil
+}
+
+func (m *mockCampaignRepo) StreamAudienceConsent(ctx context.Context, tenantID string, contactIDs, channels []string, yield func(*domain.AudienceConsentRow) error) error {
+	if m.streamAudienceConsentFunc != nil {
+		return m.streamAudienceConsentFunc(ctx, tenantID, contactIDs, channels, yield)
+	}
+	return nil
+}
+
+func TestPreflight(t *testing.T) {
+	newRepo := func(counts *domain.AudienceConsentCounts, destinations []domain.TelegramDestination) *mockCampaignRepo {
+		return &mockCampaignRepo{
+			getByIDFunc: func(ctx context.Context, tenantID, id string) (*domain.Campaign, error) {
+				return &domain.Campaign{
+					ID:                             id,
+					TenantID:                       tenantID,
+					Status:                         "draft",
+					SelectedChannels:               `["whatsapp"]`,
+					SelectedTelegramDestinationIDs: `["d1","d2"]`,
+				}, nil
+			},
+			countAudienceConsentFunc: func(ctx context.Context, tenantID string, contactIDs, channels []string) (*domain.AudienceConsentCounts, error) {
+				return counts, nil
+			},
+		}
+	}
+
+	t.Run("reports skipped contacts and destinations", func(t *testing.T) {
+		repo := newRepo(&domain.AudienceConsentCounts{Total: 100, Active: 95, OptedOut: 5, NoConsent: 2}, nil)
+		destRepo := &mockDestinationRepo{
+			listByIDsFunc: func(ctx context.Context, tenantID string, ids []string) ([]domain.TelegramDestination, error) {
+				return []domain.TelegramDestination{{ID: "d1"}, {ID: "d2"}}, nil
+			},
+		}
+		uc := NewCampaignUseCase(repo, nil, destRepo, &mockPublisher{}, nil)
+
+		got, err := uc.Preflight(context.Background(), "t1", "c1")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.TotalTargets != 102 || got.Sendable != 97 {
+			t.Fatalf("total/sendable = %d/%d, want 102/97", got.TotalTargets, got.Sendable)
+		}
+		if got.OptedOut != 5 || got.NoConsent != 2 {
+			t.Fatalf("opted_out/no_consent = %d/%d, want 5/2", got.OptedOut, got.NoConsent)
+		}
+		codes := map[string]bool{}
+		for _, reason := range got.Reasons {
+			codes[reason.Code] = true
+		}
+		if !codes["opted_out"] || !codes["no_consent"] {
+			t.Fatalf("missing expected reasons, got %+v", got.Reasons)
+		}
+	})
+
+	t.Run("warns when nothing is sendable", func(t *testing.T) {
+		repo := newRepo(&domain.AudienceConsentCounts{Total: 10, Active: 0, OptedOut: 10}, nil)
+		uc := NewCampaignUseCase(repo, nil, &mockDestinationRepo{}, &mockPublisher{}, nil)
+
+		got, err := uc.Preflight(context.Background(), "t1", "c1")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.Sendable != 0 {
+			t.Fatalf("sendable = %d, want 0", got.Sendable)
+		}
+		if len(got.Reasons) == 0 || got.Reasons[len(got.Reasons)-1].Code != "no_sendable_targets" {
+			t.Fatalf("expected no_sendable_targets reason, got %+v", got.Reasons)
+		}
+	})
+
+	t.Run("campaign without an audience reports zero targets", func(t *testing.T) {
+		repo := &mockCampaignRepo{
+			getByIDFunc: func(ctx context.Context, tenantID, id string) (*domain.Campaign, error) {
+				return &domain.Campaign{ID: id, TenantID: tenantID, Status: "draft"}, nil
+			},
+		}
+		uc := NewCampaignUseCase(repo, nil, &mockDestinationRepo{}, &mockPublisher{}, nil)
+
+		got, err := uc.Preflight(context.Background(), "t1", "c1")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.TotalTargets != 0 || got.Sendable != 0 {
+			t.Fatalf("expected empty audience, got %+v", got)
 		}
 	})
 }
