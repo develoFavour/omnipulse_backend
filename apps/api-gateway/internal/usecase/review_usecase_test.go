@@ -329,37 +329,50 @@ func TestStaffLabelHidesEmailDomain(t *testing.T) {
 	}
 }
 
-func TestSendReportEmailRequiresSentCampaign(t *testing.T) {
-	uc, _, _ := newReviewFixture("pending_approval")
-	_, err := uc.SendReportEmail(context.Background(), "tenant-1", "campaign-1", "brand@acme.example", "", "user-1")
-	if !errors.Is(err, domain.ErrReviewOutcomeUnavailable) {
-		t.Fatalf("expected ErrReviewOutcomeUnavailable, got %v", err)
+func TestEmailBrandLinkAllowedBeforeAndAfterDispatch(t *testing.T) {
+	for _, status := range []string{"draft", "pending_approval", "approved", "scheduled", "processing", "completed", "paused", "cancelled"} {
+		uc, reviewRepo, _ := newReviewFixture(status)
+		uc.mailer = utils.NewMailer(&config.Config{})
+		if _, err := uc.EmailBrandLink(context.Background(), "tenant-1", "campaign-1", "brand@acme.example", "", "user-1"); err != nil {
+			t.Fatalf("status %s should accept an emailed brand link: %v", status, err)
+		}
+		if reviewRepo.token == nil {
+			t.Fatalf("status %s should mint a link", status)
+		}
 	}
 }
 
-func TestSendReportEmailValidatesRecipient(t *testing.T) {
+func TestEmailBrandLinkRejectsRejectedCampaign(t *testing.T) {
+	uc, _, _ := newReviewFixture("rejected")
+	uc.mailer = utils.NewMailer(&config.Config{})
+	if _, err := uc.EmailBrandLink(context.Background(), "tenant-1", "campaign-1", "brand@acme.example", "", "user-1"); !errors.Is(err, domain.ErrReviewNotShareable) {
+		t.Fatalf("expected ErrReviewNotShareable, got %v", err)
+	}
+}
+
+func TestEmailBrandLinkValidatesRecipient(t *testing.T) {
 	uc, _, _ := newReviewFixture("completed")
 	for _, email := range []string{"", "not-an-email", "Brand <brand@acme.example>"} {
-		if _, err := uc.SendReportEmail(context.Background(), "tenant-1", "campaign-1", email, "", "user-1"); !errors.Is(err, domain.ErrReviewInvalidRecipient) {
+		if _, err := uc.EmailBrandLink(context.Background(), "tenant-1", "campaign-1", email, "", "user-1"); !errors.Is(err, domain.ErrReviewInvalidRecipient) {
 			t.Fatalf("email %q: expected ErrReviewInvalidRecipient, got %v", email, err)
 		}
 	}
 }
 
-func TestSendReportEmailRequiresMailer(t *testing.T) {
+func TestEmailBrandLinkRequiresMailer(t *testing.T) {
 	uc, _, _ := newReviewFixture("completed")
-	if _, err := uc.SendReportEmail(context.Background(), "tenant-1", "campaign-1", "brand@acme.example", "", "user-1"); err == nil {
+	if _, err := uc.EmailBrandLink(context.Background(), "tenant-1", "campaign-1", "brand@acme.example", "", "user-1"); err == nil {
 		t.Fatal("expected an error when no mailer is configured")
 	}
 }
 
-func TestSendReportEmailMintsReportToken(t *testing.T) {
-	uc, reviewRepo, _ := newReviewFixture("completed")
+func TestEmailBrandLinkMintsToken(t *testing.T) {
+	uc, reviewRepo, _ := newReviewFixture("pending_approval")
 	uc.mailer = utils.NewMailer(&config.Config{})
 
-	link, err := uc.SendReportEmail(context.Background(), "tenant-1", "campaign-1", "brand@acme.example", "Acme marketing", "user-1")
+	link, err := uc.EmailBrandLink(context.Background(), "tenant-1", "campaign-1", "brand@acme.example", "Acme marketing", "user-1")
 	if err != nil {
-		t.Fatalf("SendReportEmail returned error: %v", err)
+		t.Fatalf("EmailBrandLink returned error: %v", err)
 	}
 	if link.Label != "Acme marketing" {
 		t.Fatalf("unexpected label %q", link.Label)

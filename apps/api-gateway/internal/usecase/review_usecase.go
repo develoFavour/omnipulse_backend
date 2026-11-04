@@ -72,10 +72,11 @@ func (u *ReviewUseCase) CreateLink(ctx context.Context, tenantID, campaignID, la
 	return u.mintLink(ctx, campaign, label, createdBy, ttl)
 }
 
-// SendReportEmail mints a fresh report link and emails it to the brand. Tokens
-// are stored hashed, so an email is the only way to deliver a link later; each
-// send produces its own revocable link.
-func (u *ReviewUseCase) SendReportEmail(ctx context.Context, tenantID, campaignID, recipientEmail, recipientName, sentBy string) (*ReviewLink, error) {
+// EmailBrandLink mints a fresh link and emails it to the brand. Before the
+// campaign is sent the email asks them to review it; afterwards it points at the
+// report. Tokens are stored hashed, so an email is the only way to deliver a
+// link later; each send produces its own revocable link.
+func (u *ReviewUseCase) EmailBrandLink(ctx context.Context, tenantID, campaignID, recipientEmail, recipientName, sentBy string) (*ReviewLink, error) {
 	email := strings.TrimSpace(recipientEmail)
 	addr, err := mail.ParseAddress(email)
 	if err != nil || !strings.EqualFold(addr.Address, email) {
@@ -87,11 +88,10 @@ func (u *ReviewUseCase) SendReportEmail(ctx context.Context, tenantID, campaignI
 		return nil, err
 	}
 	switch campaign.Status {
-	case "scheduled", "processing", "completed", "paused", "cancelled":
+	case "draft", "pending_approval", "approved", "scheduled", "processing", "completed", "paused", "cancelled":
 	case "rejected":
 		return nil, domain.ErrReviewNotShareable
 	default:
-		// Every other status predates dispatch, so there are no results to report.
 		return nil, domain.ErrReviewOutcomeUnavailable
 	}
 
@@ -112,10 +112,25 @@ func (u *ReviewUseCase) SendReportEmail(ctx context.Context, tenantID, campaignI
 	if brand, err := u.repo.GetBranding(ctx, tenantID); err == nil && brand != nil && strings.TrimSpace(brand.Name) != "" {
 		workspaceName = brand.Name
 	}
-	reportURL := fmt.Sprintf("%s/review/%s", u.appBaseURL, link.Token)
-	u.mailer.SendCampaignReport(email, workspaceName, campaign.Title, reportURL, link.ExpiresAt)
+	linkURL := fmt.Sprintf("%s/review/%s", u.appBaseURL, link.Token)
+	if reportStage(campaign.Status) {
+		u.mailer.SendCampaignReport(email, workspaceName, campaign.Title, linkURL, link.ExpiresAt)
+	} else {
+		u.mailer.SendBrandReviewRequest(email, workspaceName, campaign.Title, linkURL, link.ExpiresAt)
+	}
 
 	return link, nil
+}
+
+// reportStage separates "the brand should look at the results" from "the brand
+// should approve or request changes".
+func reportStage(status string) bool {
+	switch status {
+	case "scheduled", "processing", "completed", "paused", "cancelled":
+		return true
+	default:
+		return false
+	}
 }
 
 func (u *ReviewUseCase) mintLink(ctx context.Context, campaign *domain.Campaign, label, createdBy string, ttl time.Duration) (*ReviewLink, error) {

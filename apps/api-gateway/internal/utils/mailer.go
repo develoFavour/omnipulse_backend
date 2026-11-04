@@ -279,6 +279,49 @@ func (m *Mailer) SendCampaignReport(toEmail, workspaceName, campaignTitle, repor
 	m.SendEmail(toEmail, subject, htmlBody)
 }
 
+// SendBrandReviewRequest asks a brand to approve a campaign or request changes
+// before it is sent. The link is the credential, so no campaign content travels
+// in the email itself.
+func (m *Mailer) SendBrandReviewRequest(toEmail, workspaceName, campaignTitle, reviewURL string, expiresAt time.Time) {
+	if strings.TrimSpace(toEmail) == "" || strings.TrimSpace(reviewURL) == "" {
+		return
+	}
+
+	escapedWorkspace := html.EscapeString(workspaceName)
+	escapedTitle := html.EscapeString(campaignTitle)
+	escapedURL := html.EscapeString(reviewURL)
+	expiry := expiresAt.Format("2 January 2006")
+	subject := fmt.Sprintf("Review requested: %s", campaignTitle)
+
+	htmlBody := fmt.Sprintf(`<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Campaign review requested</title></head>
+<body style="margin:0;padding:32px 16px;background:#f9fafb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:#111827;">
+  <table role="presentation" width="100%%" cellspacing="0" cellpadding="0"><tr><td align="center">
+    <table role="presentation" width="100%%" cellspacing="0" cellpadding="0" style="max-width:560px;background:#fff;border:1px solid #e5e7eb;border-radius:12px;">
+      <tr><td style="padding:24px 32px 18px;border-bottom:1px solid #f3f4f6;">
+        <table role="presentation" width="100%%"><tr>
+          <td align="left"><strong style="font-size:16px;color:#14532d;">MessageRail</strong></td>
+          <td align="right"><span style="display:inline-block;background:#eef2ff;color:#4338ca;border:1px solid #c7d2fe;font-size:11px;font-weight:700;padding:4px 10px;border-radius:9999px;text-transform:uppercase;letter-spacing:0.04em;">Review requested</span></td>
+        </tr></table>
+      </td></tr>
+      <tr><td style="padding:28px 32px 32px;">
+        <h1 style="margin:0 0 12px;font-size:21px;line-height:1.3;">Review "%s"</h1>
+        <p style="margin:0 0 18px;font-size:15px;line-height:24px;color:#4b5563;"><strong>%s</strong> would like your approval before this campaign goes out.</p>
+        <table role="presentation" width="100%%" cellspacing="0" cellpadding="0" style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;">
+          <tr><td style="padding:12px 16px;font-size:13px;color:#4b5563;">The message as it will be sent</td></tr>
+          <tr><td style="padding:0 16px 12px;font-size:13px;color:#4b5563;">Audience counts — never names or phone numbers</td></tr>
+          <tr><td style="padding:0 16px 16px;font-size:13px;color:#4b5563;">Approve it, or tell the agency what should change</td></tr>
+        </table>
+        <p style="margin:26px 0 0;text-align:center;"><a href="%s" target="_blank" style="display:inline-block;background:#4338ca;color:#ffffff;text-decoration:none;font-weight:700;font-size:14px;padding:12px 24px;border-radius:8px;">Review campaign &rarr;</a></p>
+      </td></tr>
+    </table>
+    <p style="margin:18px 0 0;font-size:12px;color:#9ca3af;">This secure link expires on %s and can be revoked by the sender at any time.</p>
+  </td></tr></table>
+</body></html>`, escapedTitle, escapedWorkspace, escapedURL, html.EscapeString(expiry))
+
+	m.SendEmail(toEmail, subject, htmlBody)
+}
+
 // been assigned to them. It is intentionally asynchronous, so a mail provider
 // outage never makes an otherwise successful assignment fail.
 func (m *Mailer) SendConversationAssignments(toEmail, recipientName, workspaceName, inboxURL string, assignments []ConversationAssignment) {
