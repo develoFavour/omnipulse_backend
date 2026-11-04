@@ -236,7 +236,49 @@ func (m *Mailer) SendTeamInvitation(toEmail, inviterName, workspaceName, role, i
 	m.SendEmail(toEmail, subject, htmlBody)
 }
 
-// SendConversationAssignments notifies a teammate that conversations have
+// SendCampaignReport delivers a tokenised campaign report link to a brand. The
+// link is the credential, so the body never repeats campaign content or contacts.
+func (m *Mailer) SendCampaignReport(toEmail, workspaceName, campaignTitle, reportURL string, expiresAt time.Time) {
+	if strings.TrimSpace(toEmail) == "" || strings.TrimSpace(reportURL) == "" {
+		return
+	}
+
+	escapedWorkspace := html.EscapeString(workspaceName)
+	escapedTitle := html.EscapeString(campaignTitle)
+	escapedURL := html.EscapeString(reportURL)
+	expiry := expiresAt.Format("2 January 2006")
+	subject := fmt.Sprintf("Campaign report: %s", campaignTitle)
+
+	htmlBody := fmt.Sprintf(`<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Campaign report</title></head>
+<body style="margin:0;padding:32px 16px;background:#f9fafb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:#111827;">
+  <table role="presentation" width="100%%" cellspacing="0" cellpadding="0"><tr><td align="center">
+    <table role="presentation" width="100%%" cellspacing="0" cellpadding="0" style="max-width:560px;background:#fff;border:1px solid #e5e7eb;border-radius:12px;">
+      <tr><td style="padding:24px 32px 18px;border-bottom:1px solid #f3f4f6;">
+        <table role="presentation" width="100%%"><tr>
+          <td align="left"><strong style="font-size:16px;color:#14532d;">MessageRail</strong></td>
+          <td align="right"><span style="display:inline-block;background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;font-size:11px;font-weight:700;padding:4px 10px;border-radius:9999px;text-transform:uppercase;letter-spacing:0.04em;">Campaign report</span></td>
+        </tr></table>
+      </td></tr>
+      <tr><td style="padding:28px 32px 32px;">
+        <h1 style="margin:0 0 12px;font-size:21px;line-height:1.3;">Your report for "%s"</h1>
+        <p style="margin:0 0 18px;font-size:15px;line-height:24px;color:#4b5563;"><strong>%s</strong> shared the campaign report with you.</p>
+        <table role="presentation" width="100%%" cellspacing="0" cellpadding="0" style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;">
+          <tr><td style="padding:12px 16px;font-size:13px;color:#4b5563;">The message that went out</td></tr>
+          <tr><td style="padding:0 16px 12px;font-size:13px;color:#4b5563;">Audience counts — never names or phone numbers</td></tr>
+          <tr><td style="padding:0 16px 12px;font-size:13px;color:#4b5563;">Who submitted and approved it, with timestamps</td></tr>
+          <tr><td style="padding:0 16px 16px;font-size:13px;color:#4b5563;">Delivery results</td></tr>
+        </table>
+        <p style="margin:26px 0 0;text-align:center;"><a href="%s" target="_blank" style="display:inline-block;background:#047857;color:#ffffff;text-decoration:none;font-weight:700;font-size:14px;padding:12px 24px;border-radius:8px;">View report &rarr;</a></p>
+      </td></tr>
+    </table>
+    <p style="margin:18px 0 0;font-size:12px;color:#9ca3af;">This secure link expires on %s and can be revoked by the sender at any time.</p>
+  </td></tr></table>
+</body></html>`, escapedTitle, escapedWorkspace, escapedURL, html.EscapeString(expiry))
+
+	m.SendEmail(toEmail, subject, htmlBody)
+}
+
 // been assigned to them. It is intentionally asynchronous, so a mail provider
 // outage never makes an otherwise successful assignment fail.
 func (m *Mailer) SendConversationAssignments(toEmail, recipientName, workspaceName, inboxURL string, assignments []ConversationAssignment) {

@@ -15,6 +15,7 @@ var (
 	ErrReviewNoteRequired       = errors.New("a note is required when requesting changes")
 	ErrReviewOutcomeUnavailable = errors.New("outcome report is not available yet")
 	ErrReviewNotShareable       = errors.New("this campaign cannot be shared with a brand")
+	ErrReviewInvalidRecipient   = errors.New("enter a valid email address")
 )
 
 // Stored decision values. Request payloads use "approve" / "request_changes".

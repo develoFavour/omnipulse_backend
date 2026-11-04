@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net/mail"
 	"strings"
 	"time"
 	"unicode"
 
 	"omnipulse/apps/api-gateway/internal/domain"
+	"omnipulse/apps/api-gateway/internal/utils"
 )
 
 const (
@@ -29,13 +31,21 @@ type campaignPreflighter interface {
 }
 
 type ReviewUseCase struct {
-	repo      domain.ReviewRepository
-	campaigns domain.CampaignRepository
-	preflight campaignPreflighter
+	repo       domain.ReviewRepository
+	campaigns  domain.CampaignRepository
+	preflight  campaignPreflighter
+	mailer     *utils.Mailer
+	appBaseURL string
 }
 
-func NewReviewUseCase(repo domain.ReviewRepository, campaigns domain.CampaignRepository, preflight campaignPreflighter) *ReviewUseCase {
-	return &ReviewUseCase{repo: repo, campaigns: campaigns, preflight: preflight}
+func NewReviewUseCase(repo domain.ReviewRepository, campaigns domain.CampaignRepository, preflight campaignPreflighter, mailer *utils.Mailer, appBaseURL string) *ReviewUseCase {
+	return &ReviewUseCase{
+		repo:       repo,
+		campaigns:  campaigns,
+		preflight:  preflight,
+		mailer:     mailer,
+		appBaseURL: cleanAppBaseURL(appBaseURL),
+	}
 }
 
 type ReviewLink struct {
@@ -55,14 +65,66 @@ func (u *ReviewUseCase) CreateLink(ctx context.Context, tenantID, campaignID, la
 		return nil, domain.ErrReviewNotShareable
 	}
 
+	ttl := reviewTokenTTLDefault
+	if ttlDays > 0 {
+		ttl = time.Duration(ttlDays) * 24 * time.Hour
+	}
+	return u.mintLink(ctx, campaign, label, createdBy, ttl)
+}
+
+// SendReportEmail mints a fresh report link and emails it to the brand. Tokens
+// are stored hashed, so an email is the only way to deliver a link later; each
+// send produces its own revocable link.
+func (u *ReviewUseCase) SendReportEmail(ctx context.Context, tenantID, campaignID, recipientEmail, recipientName, sentBy string) (*ReviewLink, error) {
+	email := strings.TrimSpace(recipientEmail)
+	addr, err := mail.ParseAddress(email)
+	if err != nil || !strings.EqualFold(addr.Address, email) {
+		return nil, domain.ErrReviewInvalidRecipient
+	}
+
+	campaign, err := u.campaigns.GetByID(ctx, tenantID, campaignID)
+	if err != nil {
+		return nil, err
+	}
+	switch campaign.Status {
+	case "scheduled", "processing", "completed", "paused", "cancelled":
+	case "rejected":
+		return nil, domain.ErrReviewNotShareable
+	default:
+		// Every other status predates dispatch, so there are no results to report.
+		return nil, domain.ErrReviewOutcomeUnavailable
+	}
+
+	if u.mailer == nil {
+		return nil, fmt.Errorf("email is not configured")
+	}
+
+	label := strings.TrimSpace(recipientName)
+	if label == "" {
+		label = email
+	}
+	link, err := u.mintLink(ctx, campaign, label, sentBy, 2*reviewTokenTTLDefault)
+	if err != nil {
+		return nil, err
+	}
+
+	workspaceName := "Your agency"
+	if brand, err := u.repo.GetBranding(ctx, tenantID); err == nil && brand != nil && strings.TrimSpace(brand.Name) != "" {
+		workspaceName = brand.Name
+	}
+	reportURL := fmt.Sprintf("%s/review/%s", u.appBaseURL, link.Token)
+	u.mailer.SendCampaignReport(email, workspaceName, campaign.Title, reportURL, link.ExpiresAt)
+
+	return link, nil
+}
+
+func (u *ReviewUseCase) mintLink(ctx context.Context, campaign *domain.Campaign, label, createdBy string, ttl time.Duration) (*ReviewLink, error) {
 	label = strings.TrimSpace(label)
 	if len(label) > 120 {
 		label = label[:120]
 	}
-
-	ttl := reviewTokenTTLDefault
-	if ttlDays > 0 {
-		ttl = time.Duration(ttlDays) * 24 * time.Hour
+	if ttl <= 0 {
+		ttl = reviewTokenTTLDefault
 	}
 	if ttl > reviewTokenTTLMax {
 		ttl = reviewTokenTTLMax
@@ -74,8 +136,8 @@ func (u *ReviewUseCase) CreateLink(ctx context.Context, tenantID, campaignID, la
 	}
 
 	token := &domain.ReviewToken{
-		TenantID:   tenantID,
-		CampaignID: campaignID,
+		TenantID:   campaign.TenantID,
+		CampaignID: campaign.ID,
 		Label:      label,
 		CreatedBy:  createdBy,
 		ExpiresAt:  time.Now().Add(ttl).UTC(),

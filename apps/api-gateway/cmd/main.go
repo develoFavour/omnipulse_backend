@@ -636,7 +636,7 @@ func main() {
 	approvalNotifier := usecase.NewApprovalNotifier(identityRepo, notificationRepo, mailer, cfg.PublicAppBaseURL)
 	campaignUseCase := usecase.NewCampaignUseCase(campaignRepo, contactRepo, destinationRepo, natsPublisher, subRepo, approvalNotifier)
 	reviewRepo := repository.NewPostgresReviewRepository(db)
-	reviewUseCase := usecase.NewReviewUseCase(reviewRepo, campaignRepo, campaignUseCase)
+	reviewUseCase := usecase.NewReviewUseCase(reviewRepo, campaignRepo, campaignUseCase, mailer, cfg.PublicAppBaseURL)
 	identityUseCase := usecase.NewIdentityUseCase(identityRepo, channelRepo, subRepo)
 	dashboardUseCase := usecase.NewDashboardUseCase(dashboardRepo)
 	notificationUseCase := usecase.NewNotificationUseCase(notificationRepo)
@@ -969,6 +969,7 @@ func main() {
 	mux.Handle("POST /api/v1/campaigns/{id}/review-link", handler.RequireRole("owner", "admin")(http.HandlerFunc(reviewHandler.CreateReviewLink)))
 	mux.Handle("GET /api/v1/campaigns/{id}/review-links", handler.RequireRole("owner", "admin")(http.HandlerFunc(reviewHandler.ListReviewLinks)))
 	mux.Handle("DELETE /api/v1/campaigns/{id}/review-links/{linkID}", handler.RequireRole("owner", "admin")(http.HandlerFunc(reviewHandler.RevokeReviewLink)))
+	mux.Handle("POST /api/v1/campaigns/{id}/report-email", handler.RequireRole("owner", "admin")(http.HandlerFunc(reviewHandler.SendReportEmail)))
 
 	// Client Review Portal (public: the bearer token is the credential)
 	mux.HandleFunc("GET /api/v1/public/reviews/{token}", reviewHandler.GetPublicReview)

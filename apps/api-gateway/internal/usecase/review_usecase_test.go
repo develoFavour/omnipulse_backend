@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"omnipulse/apps/api-gateway/internal/config"
 	"omnipulse/apps/api-gateway/internal/domain"
+	"omnipulse/apps/api-gateway/internal/utils"
 )
 
 type mockReviewRepo struct {
@@ -119,7 +121,7 @@ func newReviewFixture(status string) (*ReviewUseCase, *mockReviewRepo, *mockRevi
 	}
 	uc := NewReviewUseCase(reviewRepo, campaignRepo, stubPreflighter{
 		result: &domain.CampaignPreflight{TotalTargets: 10, Sendable: 8, OptedOut: 2},
-	})
+	}, nil, "")
 	return uc, reviewRepo, campaignRepo
 }
 
@@ -324,5 +326,48 @@ func TestStaffLabelHidesEmailDomain(t *testing.T) {
 	}
 	if got := staffLabel(nil, "missing"); got != "An operator" {
 		t.Fatalf("unexpected fallback %q", got)
+	}
+}
+
+func TestSendReportEmailRequiresSentCampaign(t *testing.T) {
+	uc, _, _ := newReviewFixture("pending_approval")
+	_, err := uc.SendReportEmail(context.Background(), "tenant-1", "campaign-1", "brand@acme.example", "", "user-1")
+	if !errors.Is(err, domain.ErrReviewOutcomeUnavailable) {
+		t.Fatalf("expected ErrReviewOutcomeUnavailable, got %v", err)
+	}
+}
+
+func TestSendReportEmailValidatesRecipient(t *testing.T) {
+	uc, _, _ := newReviewFixture("completed")
+	for _, email := range []string{"", "not-an-email", "Brand <brand@acme.example>"} {
+		if _, err := uc.SendReportEmail(context.Background(), "tenant-1", "campaign-1", email, "", "user-1"); !errors.Is(err, domain.ErrReviewInvalidRecipient) {
+			t.Fatalf("email %q: expected ErrReviewInvalidRecipient, got %v", email, err)
+		}
+	}
+}
+
+func TestSendReportEmailRequiresMailer(t *testing.T) {
+	uc, _, _ := newReviewFixture("completed")
+	if _, err := uc.SendReportEmail(context.Background(), "tenant-1", "campaign-1", "brand@acme.example", "", "user-1"); err == nil {
+		t.Fatal("expected an error when no mailer is configured")
+	}
+}
+
+func TestSendReportEmailMintsReportToken(t *testing.T) {
+	uc, reviewRepo, _ := newReviewFixture("completed")
+	uc.mailer = utils.NewMailer(&config.Config{})
+
+	link, err := uc.SendReportEmail(context.Background(), "tenant-1", "campaign-1", "brand@acme.example", "Acme marketing", "user-1")
+	if err != nil {
+		t.Fatalf("SendReportEmail returned error: %v", err)
+	}
+	if link.Label != "Acme marketing" {
+		t.Fatalf("unexpected label %q", link.Label)
+	}
+	if reviewRepo.token == nil || reviewRepo.token.Label != "Acme marketing" {
+		t.Fatalf("expected the token to be stored with the recipient label, got %+v", reviewRepo.token)
+	}
+	if ttl := time.Until(reviewRepo.token.ExpiresAt); ttl < 13*24*time.Hour {
+		t.Fatalf("report links should last about two weeks, got %v", ttl)
 	}
 }
