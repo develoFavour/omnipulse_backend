@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/url"
 	"strings"
 
 	"omnipulse/apps/api-gateway/internal/domain"
@@ -76,7 +77,7 @@ func (n *ApprovalNotifier) NotifySubmitted(ctx context.Context, tenantID, campai
 		workspaceName = tenant.CompanyName
 	}
 
-	queueURL := n.appBaseURL + "/broadcast/scheduled"
+	queueURL := fmt.Sprintf("%s/broadcast/scheduled?campaign=%s", n.appBaseURL, url.QueryEscape(campaignID))
 	for _, approver := range approvers {
 		n.mailer.SendCampaignAwaitingApproval(approver.Email, workspaceName, campaignTitle, submitter, queueURL)
 	}
