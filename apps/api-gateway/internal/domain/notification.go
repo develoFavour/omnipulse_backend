@@ -10,12 +10,13 @@ import (
 type NotificationType string
 
 const (
-	NotifCampaignCompleted     NotificationType = "campaign_completed"
-	NotifDeliveryFailure       NotificationType = "delivery_failure"
-	NotifNewOptOut             NotificationType = "new_opt_out"
-	NotifContactImportFinished NotificationType = "contact_import_finished"
-	NotifChannelDisconnected   NotificationType = "channel_disconnected"
-	NotifSystemAlert           NotificationType = "system_alert" // worker outage / infrastructure alerts
+	NotifCampaignCompleted       NotificationType = "campaign_completed"
+	NotifDeliveryFailure         NotificationType = "delivery_failure"
+	NotifNewOptOut               NotificationType = "new_opt_out"
+	NotifContactImportFinished   NotificationType = "contact_import_finished"
+	NotifChannelDisconnected     NotificationType = "channel_disconnected"
+	NotifCampaignPendingApproval NotificationType = "campaign_pending_approval"
+	NotifSystemAlert             NotificationType = "system_alert" // worker outage / infrastructure alerts
 )
 
 // Notification is a single inbox event scoped to a tenant

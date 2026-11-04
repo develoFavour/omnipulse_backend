@@ -200,7 +200,8 @@ func main() {
 			'delivery_failure',
 			'new_opt_out',
 			'contact_import_finished',
-			'channel_disconnected'
+			'channel_disconnected',
+			'campaign_pending_approval'
 		);
 	EXCEPTION
 		WHEN duplicate_object THEN null;
@@ -219,6 +220,9 @@ func main() {
 	} else {
 		_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_notifications_tenant_read ON notifications(tenant_id, is_read, created_at DESC);`)
 		logger.Println("[DB-MIGRATE] Successfully ensured notifications table and indexes exist.")
+	}
+	if _, err := db.Exec(`ALTER TYPE notification_type ADD VALUE IF NOT EXISTS 'campaign_pending_approval'`); err != nil {
+		logger.Printf("[DB-MIGRATE] notification_type campaign_pending_approval: %v\n", err)
 	}
 
 	// Idempotent schema migrations: Unified Team Inbox (conversations & messages)
@@ -621,13 +625,15 @@ func main() {
 	notificationRepo := repository.NewPostgresNotificationRepository(db)
 	analyticsRepo := repository.NewPostgresAnalyticsRepository(db)
 	inboxRepo := repository.NewPostgresInboxRepository(db)
+	mailer := utils.NewMailer(cfg)
 
 	tagUseCase := usecase.NewTagUseCase(tagRepo)
 	templateUseCase := usecase.NewTemplateUseCase(templateRepo)
 	contactUseCase := usecase.NewContactUseCase(contactRepo, tagRepo, subRepo)
 	consentRepo := repository.NewPostgresConsentRepository(db)
 	consentUseCase := usecase.NewConsentUseCase(consentRepo, contactRepo)
-	campaignUseCase := usecase.NewCampaignUseCase(campaignRepo, contactRepo, destinationRepo, natsPublisher, subRepo)
+	approvalNotifier := usecase.NewApprovalNotifier(identityRepo, notificationRepo, mailer, cfg.PublicAppBaseURL)
+	campaignUseCase := usecase.NewCampaignUseCase(campaignRepo, contactRepo, destinationRepo, natsPublisher, subRepo, approvalNotifier)
 	reviewRepo := repository.NewPostgresReviewRepository(db)
 	reviewUseCase := usecase.NewReviewUseCase(reviewRepo, campaignRepo, campaignUseCase)
 	identityUseCase := usecase.NewIdentityUseCase(identityRepo, channelRepo, subRepo)
@@ -645,7 +651,6 @@ func main() {
 	notificationHandler := handler.NewNotificationHandler(notificationUseCase)
 	analyticsHandler := handler.NewAnalyticsHandler(analyticsUseCase)
 
-	mailer := utils.NewMailer(cfg)
 	teamUseCase := usecase.NewTeamUseCase(identityRepo, mailer, cfg.PublicAppBaseURL, logger, subRepo)
 	teamHandler := handler.NewTeamHandler(teamUseCase)
 

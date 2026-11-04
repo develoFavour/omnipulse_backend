@@ -16,21 +16,26 @@ import (
 )
 
 type CampaignUseCase struct {
-	campaignRepo    domain.CampaignRepository
-	contactRepo     domain.ContactRepository
-	destinationRepo domain.TelegramDestinationRepository
-	publisher       domain.EventPublisher
-	subRepo         domain.SubscriptionRepository
+	campaignRepo     domain.CampaignRepository
+	contactRepo      domain.ContactRepository
+	destinationRepo  domain.TelegramDestinationRepository
+	publisher        domain.EventPublisher
+	subRepo          domain.SubscriptionRepository
+	approvalNotifier *ApprovalNotifier
 }
 
-func NewCampaignUseCase(camRepo domain.CampaignRepository, conRepo domain.ContactRepository, destRepo domain.TelegramDestinationRepository, pub domain.EventPublisher, subRepo domain.SubscriptionRepository) *CampaignUseCase {
-	return &CampaignUseCase{
+func NewCampaignUseCase(camRepo domain.CampaignRepository, conRepo domain.ContactRepository, destRepo domain.TelegramDestinationRepository, pub domain.EventPublisher, subRepo domain.SubscriptionRepository, notifiers ...*ApprovalNotifier) *CampaignUseCase {
+	uc := &CampaignUseCase{
 		campaignRepo:    camRepo,
 		contactRepo:     conRepo,
 		destinationRepo: destRepo,
 		publisher:       pub,
 		subRepo:         subRepo,
 	}
+	if len(notifiers) > 0 {
+		uc.approvalNotifier = notifiers[0]
+	}
+	return uc
 }
 
 func (u *CampaignUseCase) CreateCampaign(ctx context.Context, c *domain.Campaign) error {
@@ -547,7 +552,13 @@ func (u *CampaignUseCase) SubmitForApproval(ctx context.Context, tenantID, campa
 	if c.Status != "draft" && c.Status != "rejected" {
 		return fmt.Errorf("only draft or rejected campaigns can be submitted for approval (current status: %s)", c.Status)
 	}
-	return u.campaignRepo.SubmitForApproval(ctx, tenantID, campaignID, submittedBy)
+	if err := u.campaignRepo.SubmitForApproval(ctx, tenantID, campaignID, submittedBy); err != nil {
+		return err
+	}
+	if u.approvalNotifier != nil {
+		u.approvalNotifier.NotifySubmitted(ctx, tenantID, campaignID, c.Title, submittedBy)
+	}
+	return nil
 }
 
 func (u *CampaignUseCase) ApproveCampaign(ctx context.Context, tenantID, campaignID, approvedBy string) error {
