@@ -20,9 +20,23 @@ type CampaignPreflight struct {
 	NoConsent    int    `json:"no_consent"`
 	// QuietHours counts targets that would be deferred outside allowed sending
 	// windows. Quiet hours are not configurable yet, so this is always 0.
-	QuietHours int               `json:"quiet_hours"`
-	Blocked    int               `json:"blocked"`
-	Reasons    []PreflightReason `json:"reasons"`
+	QuietHours int `json:"quiet_hours"`
+	Blocked    int `json:"blocked"`
+	// Unreachable counts Telegram contacts that never messaged the bot. Telegram
+	// bots cannot open a chat, so dispatch skips them instead of burning quota on
+	// a guaranteed failure.
+	Unreachable int `json:"unreachable"`
+	// WhatsAppConnected is false when the audience includes WhatsApp recipients
+	// but the workspace has no live WhatsApp session. Dispatch is refused.
+	WhatsAppConnected bool              `json:"whatsapp_connected"`
+	Reasons           []PreflightReason `json:"reasons"`
+}
+
+// AudienceReachability is the channel-level readiness of the matched audience.
+type AudienceReachability struct {
+	WhatsAppActive    int
+	TelegramActive    int
+	TelegramUnstarted int
 }
 
 // AudienceConsentCounts is the aggregate consent state of a campaign audience.

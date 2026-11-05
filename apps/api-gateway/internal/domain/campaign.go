@@ -124,6 +124,8 @@ type CampaignRepository interface {
 	ClaimDeliveriesForRetry(ctx context.Context, tenantID, campaignID string, deliveryIDs []string) ([]*CampaignDelivery, error)
 	ReleaseDeliveryClaims(ctx context.Context, campaignID string, ids []string) error
 	CountAudienceConsent(ctx context.Context, tenantID string, contactIDs, channels []string) (*AudienceConsentCounts, error)
+	CountAudienceReachability(ctx context.Context, tenantID string, contactIDs, channels []string) (*AudienceReachability, error)
+	ListUnstartedTelegramContactIDs(ctx context.Context, tenantID string, contactIDs []string) ([]string, error)
 	StreamAudienceConsent(ctx context.Context, tenantID string, contactIDs, channels []string, yield func(*AudienceConsentRow) error) error
 	FindDueScheduledCampaigns(ctx context.Context) ([]*Campaign, error)
 	CancelScheduledCampaign(ctx context.Context, tenantID, id string) error
