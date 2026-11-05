@@ -188,9 +188,11 @@ func (u *ReviewUseCase) GetPublicReview(ctx context.Context, rawToken string) (*
 	return u.buildPublicReview(ctx, token)
 }
 
-// Decide records the client's one-time answer. Approval advances a campaign
-// that is awaiting approval; a change request is recorded without moving the
-// campaign into a state the agency cannot edit out of.
+// Decide records the brand's answer. A link stays usable while the campaign is
+// open for review, so a decision can be updated after the agency revises the
+// content; every answer is kept and the most recent one governs. Approval
+// advances a campaign that is awaiting approval; a change request is recorded
+// without moving the campaign into a state the agency cannot edit out of.
 func (u *ReviewUseCase) Decide(ctx context.Context, rawToken, decision, note, reviewerIP string) (*domain.PublicReview, error) {
 	normalized, err := ParseReviewDecision(decision)
 	if err != nil {
@@ -220,9 +222,8 @@ func (u *ReviewUseCase) Decide(ctx context.Context, rawToken, decision, note, re
 		return nil, domain.ErrReviewNotReviewable
 	}
 
-	// Record first: the unique constraint on token_id is what makes a decision
-	// single-use. Advancing the campaign before this check would let a repeated
-	// decision change status while still returning an error.
+	// Record first: if this insert fails, the campaign must not move. A later
+	// re-decision appends another event; reads pick the newest one.
 	event := &domain.ReviewEvent{
 		TenantID:   token.TenantID,
 		CampaignID: token.CampaignID,
@@ -358,6 +359,9 @@ func (u *ReviewUseCase) buildPublicReview(ctx context.Context, token *domain.Rev
 			Decision:  event.Decision,
 			Note:      event.Note,
 			DecidedAt: event.CreatedAt,
+		}
+		if campaign.ContentRevisedAt != nil && campaign.ContentRevisedAt.After(event.CreatedAt) {
+			view.RevisedSinceDecision = true
 		}
 	} else if err != nil {
 		log.Printf("[REVIEW] decision lookup failed for campaign %s: %v\n", campaign.ID, err)

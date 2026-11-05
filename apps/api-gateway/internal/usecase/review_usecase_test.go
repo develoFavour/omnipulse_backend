@@ -14,15 +14,16 @@ import (
 type mockReviewRepo struct {
 	domain.ReviewRepository
 
-	token      *domain.ReviewToken
-	storedHash string
-	recorded   *domain.ReviewEvent
-	recordErr  error
-	latest     *domain.ReviewEvent
-	revoked    bool
-	lastViewed bool
-	brand      *domain.ReviewBrand
-	names      map[string]string
+	token         *domain.ReviewToken
+	storedHash    string
+	recorded      *domain.ReviewEvent
+	recordErr     error
+	recordedTimes int
+	latest        *domain.ReviewEvent
+	revoked       bool
+	lastViewed    bool
+	brand         *domain.ReviewBrand
+	names         map[string]string
 }
 
 func (m *mockReviewRepo) CreateToken(ctx context.Context, token *domain.ReviewToken, tokenHash string) error {
@@ -48,6 +49,7 @@ func (m *mockReviewRepo) RecordDecision(ctx context.Context, event *domain.Revie
 		return m.recordErr
 	}
 	m.recorded = event
+	m.recordedTimes++
 	return nil
 }
 
@@ -247,9 +249,10 @@ func TestDecideDoesNotNotifyWhenDecisionIsRejected(t *testing.T) {
 		t.Fatalf("CreateLink returned error: %v", err)
 	}
 
-	reviewRepo.recordErr = domain.ErrReviewAlreadyDecided
-	if _, err := uc.Decide(context.Background(), link.Token, "approve", "", ""); !errors.Is(err, domain.ErrReviewAlreadyDecided) {
-		t.Fatalf("expected ErrReviewAlreadyDecided, got %v", err)
+	recordErr := errors.New("database unavailable")
+	reviewRepo.recordErr = recordErr
+	if _, err := uc.Decide(context.Background(), link.Token, "approve", "", ""); !errors.Is(err, recordErr) {
+		t.Fatalf("expected the record error, got %v", err)
 	}
 	if notifier.calls != 0 {
 		t.Fatalf("a rejected decision must not notify the agency, got %d calls", notifier.calls)
@@ -279,7 +282,7 @@ func TestDecideRequestChangesRequiresNoteAndDoesNotApprove(t *testing.T) {
 	}
 }
 
-func TestDecideRejectsExpiredRevokedAndRepeatedLinks(t *testing.T) {
+func TestDecideRejectsExpiredAndRevokedLinks(t *testing.T) {
 	uc, reviewRepo, _ := newReviewFixture("pending_approval")
 	link, err := uc.CreateLink(context.Background(), "tenant-1", "campaign-1", "", "user-1", 7)
 	if err != nil {
@@ -297,27 +300,30 @@ func TestDecideRejectsExpiredRevokedAndRepeatedLinks(t *testing.T) {
 	if _, err := uc.Decide(context.Background(), link.Token, "approve", "", ""); !errors.Is(err, domain.ErrReviewLinkNotFound) {
 		t.Fatalf("expected ErrReviewLinkNotFound, got %v", err)
 	}
-
-	reviewRepo.token.RevokedAt = nil
-	reviewRepo.recordErr = domain.ErrReviewAlreadyDecided
-	if _, err := uc.Decide(context.Background(), link.Token, "approve", "", ""); !errors.Is(err, domain.ErrReviewAlreadyDecided) {
-		t.Fatalf("expected ErrReviewAlreadyDecided, got %v", err)
-	}
 }
 
-func TestDecideDoesNotApproveWhenDecisionAlreadyRecorded(t *testing.T) {
+func TestDecideAcceptsAnotherDecisionOnTheSameLink(t *testing.T) {
 	uc, reviewRepo, campaignRepo := newReviewFixture("pending_approval")
 	link, err := uc.CreateLink(context.Background(), "tenant-1", "campaign-1", "", "user-1", 7)
 	if err != nil {
 		t.Fatalf("CreateLink returned error: %v", err)
 	}
 
-	reviewRepo.recordErr = domain.ErrReviewAlreadyDecided
-	if _, err := uc.Decide(context.Background(), link.Token, "approve", "", ""); !errors.Is(err, domain.ErrReviewAlreadyDecided) {
-		t.Fatalf("expected ErrReviewAlreadyDecided, got %v", err)
+	if _, err := uc.Decide(context.Background(), link.Token, "request_changes", "Fix the pricing", ""); err != nil {
+		t.Fatalf("first Decide returned error: %v", err)
 	}
 	if campaignRepo.approved {
-		t.Fatal("a rejected duplicate must not advance the campaign")
+		t.Fatal("a change request must not approve the campaign")
+	}
+
+	if _, err := uc.Decide(context.Background(), link.Token, "approve", "Pricing fixed", ""); err != nil {
+		t.Fatalf("second Decide returned error: %v", err)
+	}
+	if reviewRepo.recordedTimes != 2 {
+		t.Fatalf("expected two recorded decisions, got %d", reviewRepo.recordedTimes)
+	}
+	if !campaignRepo.approved {
+		t.Fatal("a repeat approval on a pending campaign must advance it")
 	}
 }
 
@@ -396,6 +402,40 @@ func TestGetPublicReviewBuildsApprovalTrail(t *testing.T) {
 	}
 	if got := view.ApprovalTrail[2]; got.Stage != "brand_approved" || got.Actor != "Acme marketing lead" || got.Note != "Looks great" {
 		t.Fatalf("unexpected brand entry %+v", got)
+	}
+}
+
+func TestPublicReviewMarksDecisionAsRevised(t *testing.T) {
+	uc, reviewRepo, campaignRepo := newReviewFixture("approved")
+	decidedAt := time.Now().Add(-time.Hour)
+	reviewRepo.latest = &domain.ReviewEvent{
+		Decision:  domain.ReviewDecisionChangesRequested,
+		Note:      "Fix the pricing",
+		CreatedAt: decidedAt,
+	}
+	revisedAt := time.Now().Add(-30 * time.Minute)
+	campaignRepo.campaign.ContentRevisedAt = &revisedAt
+
+	link, err := uc.CreateLink(context.Background(), "tenant-1", "campaign-1", "", "user-1", 7)
+	if err != nil {
+		t.Fatalf("CreateLink returned error: %v", err)
+	}
+	view, err := uc.GetPublicReview(context.Background(), link.Token)
+	if err != nil {
+		t.Fatalf("GetPublicReview returned error: %v", err)
+	}
+	if !view.RevisedSinceDecision {
+		t.Fatal("expected the previous decision to be marked as revised")
+	}
+
+	// A decision made after the revision still describes the current content.
+	reviewRepo.latest.CreatedAt = time.Now()
+	view, err = uc.GetPublicReview(context.Background(), link.Token)
+	if err != nil {
+		t.Fatalf("GetPublicReview returned error: %v", err)
+	}
+	if view.RevisedSinceDecision {
+		t.Fatal("a decision made after the revision must not be marked as revised")
 	}
 }
 

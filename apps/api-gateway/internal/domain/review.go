@@ -9,7 +9,6 @@ import (
 var (
 	ErrReviewLinkNotFound       = errors.New("review link not found or revoked")
 	ErrReviewLinkExpired        = errors.New("review link has expired")
-	ErrReviewAlreadyDecided     = errors.New("this review has already been decided")
 	ErrReviewNotReviewable      = errors.New("campaign is no longer open for client review")
 	ErrReviewInvalidDecision    = errors.New("invalid review decision")
 	ErrReviewNoteRequired       = errors.New("a note is required when requesting changes")
@@ -58,20 +57,23 @@ type ReviewBrand struct {
 // PublicReview is the PII-free projection shown to an unauthenticated client.
 // It deliberately exposes audience counts, never contact rows.
 type PublicReview struct {
-	CampaignID    string                   `json:"campaign_id"`
-	Title         string                   `json:"title"`
-	MessageBody   string                   `json:"message_body"`
-	MediaURL      *string                  `json:"media_url,omitempty"`
-	DeliveryType  string                   `json:"delivery_type"`
-	Channels      []string                 `json:"channels"`
-	Status        string                   `json:"status"`
-	ScheduledAt   *time.Time               `json:"scheduled_at,omitempty"`
-	Audience      PublicReviewAudience     `json:"audience"`
-	Brand         ReviewBrand              `json:"brand"`
-	ExpiresAt     time.Time                `json:"expires_at"`
-	Decision      *PublicReviewDecision    `json:"decision,omitempty"`
-	ApprovalTrail []PublicReviewTrailEntry `json:"approval_trail"`
-	Report        *PublicOutcomeReport     `json:"report,omitempty"`
+	CampaignID   string                `json:"campaign_id"`
+	Title        string                `json:"title"`
+	MessageBody  string                `json:"message_body"`
+	MediaURL     *string               `json:"media_url,omitempty"`
+	DeliveryType string                `json:"delivery_type"`
+	Channels     []string              `json:"channels"`
+	Status       string                `json:"status"`
+	ScheduledAt  *time.Time            `json:"scheduled_at,omitempty"`
+	Audience     PublicReviewAudience  `json:"audience"`
+	Brand        ReviewBrand           `json:"brand"`
+	ExpiresAt    time.Time             `json:"expires_at"`
+	Decision     *PublicReviewDecision `json:"decision,omitempty"`
+	// RevisedSinceDecision tells the brand the content changed after their last
+	// answer, so they are looking at a version they have not judged yet.
+	RevisedSinceDecision bool                     `json:"revised_since_decision,omitempty"`
+	ApprovalTrail        []PublicReviewTrailEntry `json:"approval_trail"`
+	Report               *PublicOutcomeReport     `json:"report,omitempty"`
 }
 
 // PublicReviewTrailEntry is one step in the accountability chain a brand sees:
