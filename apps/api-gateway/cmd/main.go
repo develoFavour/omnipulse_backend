@@ -1125,7 +1125,10 @@ func main() {
 		AllowedHeaders:   []string{"*"},
 		AllowCredentials: true,
 	})
-	corsHandler := c.Handler(handler.AuthMiddleware(identityUseCase)(mux))
+	// Limits run before Clerk verification so unauthenticated floods never
+	// reach token checks or the database.
+	rateLimiter := handler.NewIPRateLimiter()
+	corsHandler := c.Handler(rateLimiter.Middleware(handler.AuthMiddleware(identityUseCase)(mux)))
 	loggedHandler := handler.RequestLoggerMiddleware(logger)(corsHandler)
 
 	var rootHandler http.Handler = loggedHandler

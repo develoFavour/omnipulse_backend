@@ -251,10 +251,16 @@ func writeReviewError(w http.ResponseWriter, err error) {
 	}
 }
 
+// clientIP resolves the caller behind the platform proxy. Proxies append to
+// X-Forwarded-For, so the last entry is the address the proxy observed; earlier
+// entries are client-supplied and trivial to spoof.
 func clientIP(r *http.Request) string {
 	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
-		if first := strings.TrimSpace(strings.Split(forwarded, ",")[0]); first != "" {
-			return first
+		parts := strings.Split(forwarded, ",")
+		for i := len(parts) - 1; i >= 0; i-- {
+			if ip := strings.TrimSpace(parts[i]); ip != "" {
+				return ip
+			}
 		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
