@@ -42,7 +42,7 @@ func TestContactQuota_Enforcement(t *testing.T) {
 			},
 		}
 
-		uc := NewContactUseCase(contactRepo, nil, subRepo)
+		uc := NewContactUseCase(contactRepo, nil, subRepo, nil)
 		newContact := &domain.Contact{
 			TenantID:     tenantID,
 			FirstName:    "John",
@@ -100,7 +100,7 @@ func TestContactQuota_Enforcement(t *testing.T) {
 			},
 		}
 
-		uc := NewContactUseCase(contactRepo, nil, subRepo)
+		uc := NewContactUseCase(contactRepo, nil, subRepo, nil)
 		updateContact := &domain.Contact{
 			TenantID:     tenantID,
 			FirstName:    "John",
@@ -145,7 +145,7 @@ func TestContactQuota_Enforcement(t *testing.T) {
 			},
 		}
 
-		uc := NewContactUseCase(contactRepo, nil, subRepo)
+		uc := NewContactUseCase(contactRepo, nil, subRepo, nil)
 		newContact := &domain.Contact{
 			TenantID:     tenantID,
 			FirstName:    "Sarah",
