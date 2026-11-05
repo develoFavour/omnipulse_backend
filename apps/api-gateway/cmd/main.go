@@ -978,6 +978,7 @@ func main() {
 	mux.HandleFunc("POST /api/v1/campaigns", campaignHandler.CreateCampaign)
 	mux.HandleFunc("GET /api/v1/campaigns", campaignHandler.ListCampaigns)
 	mux.HandleFunc("GET /api/v1/campaigns/{id}", campaignHandler.GetCampaign)
+	mux.HandleFunc("PUT /api/v1/campaigns/{id}", campaignHandler.UpdateCampaign)
 	mux.HandleFunc("POST /api/v1/campaigns/{id}/dispatch", campaignHandler.DispatchCampaign)
 	mux.HandleFunc("POST /api/v1/campaigns/{id}/pause", campaignHandler.PauseCampaign)
 	mux.HandleFunc("POST /api/v1/campaigns/{id}/resume", campaignHandler.ResumeCampaign)

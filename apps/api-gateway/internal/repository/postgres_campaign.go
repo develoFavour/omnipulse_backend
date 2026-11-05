@@ -40,6 +40,45 @@ func (r *PostgresCampaignRepository) Create(ctx context.Context, c *domain.Campa
 	return nil
 }
 
+// UpdateContent replaces the editable content of a campaign. When resetApproval
+// is true it also returns the campaign to draft and clears the previous
+// submission and approval trail, so edited content is never covered by an
+// approval granted for an earlier version.
+func (r *PostgresCampaignRepository) UpdateContent(ctx context.Context, tenantID, id string, c *domain.Campaign, resetApproval bool) error {
+	query := `
+		UPDATE campaigns
+		SET title = $1,
+		    message_body = $2,
+		    media_url = $3,
+		    delivery_type = $4,
+		    selected_channels = $5,
+		    selected_telegram_destination_ids = $6,
+		    selected_contact_ids = $7,
+		    status = CASE WHEN $8 THEN 'draft' ELSE status END,
+		    submitted_by = CASE WHEN $8 THEN NULL ELSE submitted_by END,
+		    submitted_at = CASE WHEN $8 THEN NULL ELSE submitted_at END,
+		    approved_by = CASE WHEN $8 THEN NULL ELSE approved_by END,
+		    approved_at = CASE WHEN $8 THEN NULL ELSE approved_at END,
+		    rejection_reason = CASE WHEN $8 THEN NULL ELSE rejection_reason END,
+		    updated_at = NOW()
+		WHERE id = $9 AND tenant_id = $10
+		  AND status IN ('draft', 'rejected', 'pending_approval', 'approved');
+	`
+	result, err := r.db.ExecContext(ctx, query,
+		c.Title, c.MessageBody, c.MediaURL, c.DeliveryType, c.SelectedChannels,
+		c.SelectedTelegramDestinationIDs, c.SelectedContactIDs, resetApproval,
+		id, tenantID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update campaign content: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return ErrCampaignNotFound
+	}
+	return nil
+}
+
 func (r *PostgresCampaignRepository) ListByTenant(ctx context.Context, tenantID, status string, limit, offset int) ([]*domain.Campaign, error) {
 	var query string
 	var rows *sql.Rows
@@ -50,7 +89,8 @@ func (r *PostgresCampaignRepository) ListByTenant(ctx context.Context, tenantID,
 			query = `
 				SELECT id, tenant_id, title, message_body, external_template_code, media_url, delivery_type, selected_channels, selected_telegram_destination_ids, selected_contact_ids, status, scheduled_at, total_targets, processed_targets, created_at, updated_at,
 				       submitted_by, approved_by, approved_at, rejection_reason,
-			       COALESCE((SELECT r.decision FROM campaign_review_events r WHERE r.tenant_id = campaigns.tenant_id AND r.campaign_id = campaigns.id ORDER BY r.created_at DESC LIMIT 1), '') AS latest_review_decision
+			       COALESCE((SELECT r.decision FROM campaign_review_events r WHERE r.tenant_id = campaigns.tenant_id AND r.campaign_id = campaigns.id ORDER BY r.created_at DESC LIMIT 1), '') AS latest_review_decision,
+			       COALESCE((SELECT r.note FROM campaign_review_events r WHERE r.tenant_id = campaigns.tenant_id AND r.campaign_id = campaigns.id ORDER BY r.created_at DESC LIMIT 1), '') AS latest_review_note
 				FROM campaigns
 				WHERE tenant_id = $1 AND status = $2
 				ORDER BY scheduled_at ASC NULLS LAST, created_at DESC
@@ -60,7 +100,8 @@ func (r *PostgresCampaignRepository) ListByTenant(ctx context.Context, tenantID,
 			query = `
 				SELECT id, tenant_id, title, message_body, external_template_code, media_url, delivery_type, selected_channels, selected_telegram_destination_ids, selected_contact_ids, status, scheduled_at, total_targets, processed_targets, created_at, updated_at,
 				       submitted_by, approved_by, approved_at, rejection_reason,
-			       COALESCE((SELECT r.decision FROM campaign_review_events r WHERE r.tenant_id = campaigns.tenant_id AND r.campaign_id = campaigns.id ORDER BY r.created_at DESC LIMIT 1), '') AS latest_review_decision
+			       COALESCE((SELECT r.decision FROM campaign_review_events r WHERE r.tenant_id = campaigns.tenant_id AND r.campaign_id = campaigns.id ORDER BY r.created_at DESC LIMIT 1), '') AS latest_review_decision,
+			       COALESCE((SELECT r.note FROM campaign_review_events r WHERE r.tenant_id = campaigns.tenant_id AND r.campaign_id = campaigns.id ORDER BY r.created_at DESC LIMIT 1), '') AS latest_review_note
 				FROM campaigns
 				WHERE tenant_id = $1 AND status = $2
 				ORDER BY created_at DESC
@@ -72,7 +113,8 @@ func (r *PostgresCampaignRepository) ListByTenant(ctx context.Context, tenantID,
 		query = `
 			SELECT id, tenant_id, title, message_body, external_template_code, media_url, delivery_type, selected_channels, selected_telegram_destination_ids, selected_contact_ids, status, scheduled_at, total_targets, processed_targets, created_at, updated_at,
 			       submitted_by, approved_by, approved_at, rejection_reason,
-			       COALESCE((SELECT r.decision FROM campaign_review_events r WHERE r.tenant_id = campaigns.tenant_id AND r.campaign_id = campaigns.id ORDER BY r.created_at DESC LIMIT 1), '') AS latest_review_decision
+			       COALESCE((SELECT r.decision FROM campaign_review_events r WHERE r.tenant_id = campaigns.tenant_id AND r.campaign_id = campaigns.id ORDER BY r.created_at DESC LIMIT 1), '') AS latest_review_decision,
+			       COALESCE((SELECT r.note FROM campaign_review_events r WHERE r.tenant_id = campaigns.tenant_id AND r.campaign_id = campaigns.id ORDER BY r.created_at DESC LIMIT 1), '') AS latest_review_note
 			FROM campaigns
 			WHERE tenant_id = $1
 			ORDER BY created_at DESC
@@ -94,7 +136,7 @@ func (r *PostgresCampaignRepository) ListByTenant(ctx context.Context, tenantID,
 		var appAt sql.NullTime
 		err := rows.Scan(
 			&c.ID, &c.TenantID, &c.Title, &c.MessageBody, &c.ExternalTemplateCode, &c.MediaURL, &c.DeliveryType, &c.SelectedChannels, &c.SelectedTelegramDestinationIDs, &c.SelectedContactIDs, &c.Status, &sched, &c.TotalTargets, &c.ProcessedTargets, &c.CreatedAt, &c.UpdatedAt,
-			&subBy, &appBy, &appAt, &rejReason, &c.LatestReviewDecision,
+			&subBy, &appBy, &appAt, &rejReason, &c.LatestReviewDecision, &c.LatestReviewNote,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan row into campaign domain: %w", err)
@@ -128,7 +170,8 @@ func (r *PostgresCampaignRepository) GetByID(ctx context.Context, tenantID, id s
 	query := `
 		SELECT id, tenant_id, title, message_body, external_template_code, media_url, delivery_type, selected_channels, selected_telegram_destination_ids, selected_contact_ids, status, scheduled_at, total_targets, processed_targets, created_at, updated_at,
 		       submitted_by, submitted_at, approved_by, approved_at, rejection_reason,
-			       COALESCE((SELECT r.decision FROM campaign_review_events r WHERE r.tenant_id = campaigns.tenant_id AND r.campaign_id = campaigns.id ORDER BY r.created_at DESC LIMIT 1), '') AS latest_review_decision
+			       COALESCE((SELECT r.decision FROM campaign_review_events r WHERE r.tenant_id = campaigns.tenant_id AND r.campaign_id = campaigns.id ORDER BY r.created_at DESC LIMIT 1), '') AS latest_review_decision,
+			       COALESCE((SELECT r.note FROM campaign_review_events r WHERE r.tenant_id = campaigns.tenant_id AND r.campaign_id = campaigns.id ORDER BY r.created_at DESC LIMIT 1), '') AS latest_review_note
 		FROM campaigns
 		WHERE tenant_id = $1 AND id = $2;
 	`
@@ -137,7 +180,7 @@ func (r *PostgresCampaignRepository) GetByID(ctx context.Context, tenantID, id s
 	var subBy, appBy, rejReason sql.NullString
 	err := r.db.QueryRowContext(ctx, query, tenantID, id).Scan(
 		&c.ID, &c.TenantID, &c.Title, &c.MessageBody, &c.ExternalTemplateCode, &c.MediaURL, &c.DeliveryType, &c.SelectedChannels, &c.SelectedTelegramDestinationIDs, &c.SelectedContactIDs, &c.Status, &sched, &c.TotalTargets, &c.ProcessedTargets, &c.CreatedAt, &c.UpdatedAt,
-		&subBy, &subAt, &appBy, &appAt, &rejReason, &c.LatestReviewDecision,
+		&subBy, &subAt, &appBy, &appAt, &rejReason, &c.LatestReviewDecision, &c.LatestReviewNote,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

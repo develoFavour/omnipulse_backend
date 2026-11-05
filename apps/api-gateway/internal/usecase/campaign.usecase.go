@@ -39,6 +39,53 @@ func NewCampaignUseCase(camRepo domain.CampaignRepository, conRepo domain.Contac
 }
 
 func (u *CampaignUseCase) CreateCampaign(ctx context.Context, c *domain.Campaign) error {
+	if err := normalizeCampaignContent(c); err != nil {
+		return err
+	}
+
+	c.Status = "draft"
+	c.TotalTargets = 0
+	c.ProcessedTargets = 0
+
+	return u.campaignRepo.Create(ctx, c)
+}
+
+// UpdateCampaign replaces the content of a campaign the agency can still edit.
+// Drafts and rejected campaigns are always editable; anything already approved
+// is editable only when the brand has asked for changes. Saving puts the
+// campaign back into draft so approvals and brand review must be earned again.
+func (u *CampaignUseCase) UpdateCampaign(ctx context.Context, tenantID, id string, c *domain.Campaign) (*domain.Campaign, error) {
+	existing, err := u.campaignRepo.GetByID(ctx, tenantID, id)
+	if err != nil {
+		return nil, err
+	}
+
+	if !campaignEditable(existing) {
+		return nil, fmt.Errorf("this campaign can no longer be edited (current status: %s)", existing.Status)
+	}
+
+	if err := normalizeCampaignContent(c); err != nil {
+		return nil, err
+	}
+
+	if err := u.campaignRepo.UpdateContent(ctx, tenantID, id, c, existing.Status != "draft"); err != nil {
+		return nil, err
+	}
+	return u.campaignRepo.GetByID(ctx, tenantID, id)
+}
+
+func campaignEditable(c *domain.Campaign) bool {
+	switch c.Status {
+	case "draft", "rejected":
+		return true
+	case "pending_approval", "approved":
+		return c.LatestReviewDecision == domain.ReviewDecisionChangesRequested
+	default:
+		return false
+	}
+}
+
+func normalizeCampaignContent(c *domain.Campaign) error {
 	c.Title = strings.TrimSpace(c.Title)
 	if c.Title == "" {
 		return fmt.Errorf("campaign title cannot be empty")
@@ -61,12 +108,7 @@ func (u *CampaignUseCase) CreateCampaign(ctx context.Context, c *domain.Campaign
 	if c.DeliveryType == "" {
 		c.DeliveryType = "direct_message"
 	}
-
-	c.Status = "draft"
-	c.TotalTargets = 0
-	c.ProcessedTargets = 0
-
-	return u.campaignRepo.Create(ctx, c)
+	return nil
 }
 
 // ScheduleCampaign persists a campaign with status="scheduled" and the given scheduled_at time.

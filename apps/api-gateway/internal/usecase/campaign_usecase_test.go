@@ -13,6 +13,7 @@ import (
 
 type mockCampaignRepo struct {
 	createFunc                    func(ctx context.Context, c *domain.Campaign) error
+	updateContentFunc             func(ctx context.Context, tenantID, id string, c *domain.Campaign, resetApproval bool) error
 	getByIDFunc                   func(ctx context.Context, tenantID, id string) (*domain.Campaign, error)
 	listByTenantFunc              func(ctx context.Context, tenantID, status string, limit, offset int) ([]*domain.Campaign, error)
 	updateStatusFunc              func(ctx context.Context, tenantID, id, status string) error
@@ -41,6 +42,12 @@ type mockCampaignRepo struct {
 func (m *mockCampaignRepo) Create(ctx context.Context, c *domain.Campaign) error {
 	if m.createFunc != nil {
 		return m.createFunc(ctx, c)
+	}
+	return nil
+}
+func (m *mockCampaignRepo) UpdateContent(ctx context.Context, tenantID, id string, c *domain.Campaign, resetApproval bool) error {
+	if m.updateContentFunc != nil {
+		return m.updateContentFunc(ctx, tenantID, id, c, resetApproval)
 	}
 	return nil
 }
@@ -726,4 +733,150 @@ func TestPreflight(t *testing.T) {
 			t.Fatalf("expected empty audience, got %+v", got)
 		}
 	})
+}
+
+func TestUpdateCampaignResetsApprovalAfterBrandChanges(t *testing.T) {
+	const tenantID, campaignID = "tenant-1", "campaign-1"
+
+	stored := &domain.Campaign{
+		ID:                   campaignID,
+		TenantID:             tenantID,
+		Status:               "approved",
+		LatestReviewDecision: domain.ReviewDecisionChangesRequested,
+	}
+	resetApproval := false
+	repo := &mockCampaignRepo{
+		getByIDFunc: func(ctx context.Context, tid, id string) (*domain.Campaign, error) {
+			return stored, nil
+		},
+		updateContentFunc: func(ctx context.Context, tid, id string, c *domain.Campaign, reset bool) error {
+			resetApproval = reset
+			stored = &domain.Campaign{
+				ID:                   id,
+				TenantID:             tid,
+				Title:                c.Title,
+				MessageBody:          c.MessageBody,
+				Status:               "draft",
+				SelectedChannels:     c.SelectedChannels,
+				LatestReviewDecision: domain.ReviewDecisionChangesRequested,
+			}
+			return nil
+		},
+	}
+	uc := NewCampaignUseCase(repo, nil, nil, &mockPublisher{}, nil)
+
+	updated, err := uc.UpdateCampaign(context.Background(), tenantID, campaignID, &domain.Campaign{
+		Title:            "  Fixed discount  ",
+		MessageBody:      "  New copy  ",
+		SelectedChannels: `["whatsapp"]`,
+	})
+	if err != nil {
+		t.Fatalf("UpdateCampaign returned error: %v", err)
+	}
+	if !resetApproval {
+		t.Fatal("editing an approved campaign must reset approval")
+	}
+	if updated.Status != "draft" {
+		t.Fatalf("expected the campaign to return to draft, got %q", updated.Status)
+	}
+	if updated.Title != "Fixed discount" || updated.MessageBody != "New copy" {
+		t.Fatalf("content was not normalized: %+v", updated)
+	}
+}
+
+func TestUpdateCampaignKeepsDraftStatus(t *testing.T) {
+	const tenantID, campaignID = "tenant-1", "campaign-1"
+
+	stored := &domain.Campaign{ID: campaignID, TenantID: tenantID, Status: "draft"}
+	repo := &mockCampaignRepo{
+		getByIDFunc: func(ctx context.Context, tid, id string) (*domain.Campaign, error) {
+			return stored, nil
+		},
+		updateContentFunc: func(ctx context.Context, tid, id string, c *domain.Campaign, reset bool) error {
+			if reset {
+				t.Fatal("a draft edit should not reset an approval that does not exist")
+			}
+			return nil
+		},
+	}
+	uc := NewCampaignUseCase(repo, nil, nil, &mockPublisher{}, nil)
+
+	if _, err := uc.UpdateCampaign(context.Background(), tenantID, campaignID, &domain.Campaign{
+		Title:       "Renamed",
+		MessageBody: "Body",
+	}); err != nil {
+		t.Fatalf("UpdateCampaign returned error: %v", err)
+	}
+}
+
+func TestUpdateCampaignRejectsCampaignsUnderReviewOrSent(t *testing.T) {
+	cases := []string{"scheduled", "processing", "completed", "cancelled", "pending_approval", "approved"}
+	for _, status := range cases {
+		repo := &mockCampaignRepo{
+			getByIDFunc: func(ctx context.Context, tenantID, id string) (*domain.Campaign, error) {
+				return &domain.Campaign{ID: id, TenantID: tenantID, Status: status}, nil
+			},
+		}
+		uc := NewCampaignUseCase(repo, nil, nil, &mockPublisher{}, nil)
+		if _, err := uc.UpdateCampaign(context.Background(), "tenant-1", "campaign-1", &domain.Campaign{
+			Title:       "Title",
+			MessageBody: "Body",
+		}); err == nil || !strings.Contains(err.Error(), "can no longer be edited") {
+			t.Fatalf("status %q should not be editable, got %v", status, err)
+		}
+	}
+}
+
+func TestUpdateCampaignAllowsPendingApprovalWithBrandChanges(t *testing.T) {
+	for _, status := range []string{"pending_approval", "approved"} {
+		reset := false
+		repo := &mockCampaignRepo{
+			getByIDFunc: func(ctx context.Context, tenantID, id string) (*domain.Campaign, error) {
+				return &domain.Campaign{
+					ID:                   id,
+					TenantID:             tenantID,
+					Status:               status,
+					LatestReviewDecision: domain.ReviewDecisionChangesRequested,
+				}, nil
+			},
+			updateContentFunc: func(ctx context.Context, tenantID, id string, c *domain.Campaign, resetApproval bool) error {
+				reset = resetApproval
+				return nil
+			},
+		}
+		uc := NewCampaignUseCase(repo, nil, nil, &mockPublisher{}, nil)
+		if _, err := uc.UpdateCampaign(context.Background(), "tenant-1", "campaign-1", &domain.Campaign{
+			Title:       "Title",
+			MessageBody: "Body",
+		}); err != nil {
+			t.Fatalf("status %q with brand changes should be editable: %v", status, err)
+		}
+		if !reset {
+			t.Fatalf("status %q should reset approval on edit", status)
+		}
+	}
+}
+
+func TestUpdateCampaignValidatesContent(t *testing.T) {
+	updateCalled := false
+	repo := &mockCampaignRepo{
+		getByIDFunc: func(ctx context.Context, tenantID, id string) (*domain.Campaign, error) {
+			return &domain.Campaign{ID: id, TenantID: tenantID, Status: "draft"}, nil
+		},
+		updateContentFunc: func(ctx context.Context, tenantID, id string, c *domain.Campaign, resetApproval bool) error {
+			updateCalled = true
+			return nil
+		},
+	}
+	uc := NewCampaignUseCase(repo, nil, nil, &mockPublisher{}, nil)
+
+	if _, err := uc.UpdateCampaign(context.Background(), "tenant-1", "campaign-1", &domain.Campaign{
+		Title:       "   ",
+		MessageBody: "Body",
+	}); err == nil || !strings.Contains(err.Error(), "title cannot be empty") {
+		t.Fatalf("expected a title validation error, got %v", err)
+	}
+	if updateCalled {
+		t.Fatal("invalid content must not reach the repository")
+	}
 }
