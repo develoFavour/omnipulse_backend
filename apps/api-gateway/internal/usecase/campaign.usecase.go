@@ -121,8 +121,11 @@ func (u *CampaignUseCase) ScheduleCampaign(ctx context.Context, tenantID, campai
 		return fmt.Errorf("scheduled time must be at least 1 minute in the future")
 	}
 
-	if campaign.LatestReviewDecision == domain.ReviewDecisionChangesRequested {
-		return fmt.Errorf("the brand requested changes on this campaign. Address them and get a new approval before scheduling")
+	if campaign.BrandChangesOutstanding() {
+		return fmt.Errorf("the brand requested changes on this campaign. Address them before scheduling")
+	}
+	if campaign.BrandReviewStale() {
+		return fmt.Errorf("the brand has not reviewed the latest version of this campaign. Ask them to review it again before scheduling")
 	}
 
 	reqApproval, _ := u.campaignRepo.GetApprovalSetting(ctx, tenantID)
@@ -233,8 +236,11 @@ func (u *CampaignUseCase) TriggerDispatch(ctx context.Context, tenantID, campaig
 		return errors.New(reason)
 	}
 
-	if campaign.LatestReviewDecision == domain.ReviewDecisionChangesRequested {
-		return errors.New("the brand requested changes on this campaign. Address them and get a new approval before dispatching")
+	if campaign.BrandChangesOutstanding() {
+		return errors.New("the brand requested changes on this campaign. Address them before dispatching")
+	}
+	if campaign.BrandReviewStale() {
+		return errors.New("the brand has not reviewed the latest version of this campaign. Ask them to review it again before dispatching")
 	}
 
 	reqApproval, _ := u.campaignRepo.GetApprovalSetting(ctx, tenantID)
@@ -615,7 +621,9 @@ func (u *CampaignUseCase) ApproveCampaign(ctx context.Context, tenantID, campaig
 	if c.Status != "pending_approval" {
 		return fmt.Errorf("only campaigns pending approval can be approved (current status: %s)", c.Status)
 	}
-	if c.LatestReviewDecision == domain.ReviewDecisionChangesRequested {
+	// A change request on content the operator has since revised must not block
+	// internal approval: the new version is what needs approving.
+	if c.BrandChangesOutstanding() {
 		return fmt.Errorf("the brand requested changes on this campaign. Address them before approving")
 	}
 	return u.campaignRepo.ApproveCampaign(ctx, tenantID, campaignID, approvedBy)

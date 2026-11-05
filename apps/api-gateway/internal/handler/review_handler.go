@@ -231,8 +231,6 @@ func writeReviewError(w http.ResponseWriter, err error) {
 		utils.WriteError(w, http.StatusNotFound, "This review link is invalid, expired, or has been revoked")
 	case errors.Is(err, domain.ErrReviewLinkExpired):
 		utils.WriteError(w, http.StatusGone, "This review link has expired")
-	case errors.Is(err, domain.ErrReviewAlreadyDecided):
-		utils.WriteError(w, http.StatusConflict, "This review has already been submitted")
 	case errors.Is(err, domain.ErrReviewNotReviewable):
 		utils.WriteError(w, http.StatusConflict, "This campaign has moved past client review")
 	case errors.Is(err, domain.ErrReviewOutcomeUnavailable):

@@ -424,6 +424,36 @@ func TestCampaignApprovalWorkflow(t *testing.T) {
 		}
 	})
 
+	t.Run("ApproveCampaign allows a resubmission the brand asked changes on earlier", func(t *testing.T) {
+		reviewedAt := time.Now().Add(-2 * time.Hour)
+		revisedAt := time.Now().Add(-time.Hour)
+		approved := false
+		repo := &mockCampaignRepo{
+			getByIDFunc: func(ctx context.Context, tID, id string) (*domain.Campaign, error) {
+				return &domain.Campaign{
+					ID:                   id,
+					TenantID:             tID,
+					Status:               "pending_approval",
+					LatestReviewDecision: domain.ReviewDecisionChangesRequested,
+					LatestReviewAt:       &reviewedAt,
+					ContentRevisedAt:     &revisedAt,
+				}, nil
+			},
+			approveCampaignFunc: func(ctx context.Context, tID, id, approvedBy string) error {
+				approved = true
+				return nil
+			},
+		}
+		uc := NewCampaignUseCase(repo, nil, nil, &mockPublisher{}, nil)
+		ctx := context.WithValue(context.Background(), ctxkeys.UserRoleKey, "owner")
+		if err := uc.ApproveCampaign(ctx, tenantID, campaignID, "owner-id"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !approved {
+			t.Fatal("expected the revised campaign to be approved")
+		}
+	})
+
 	t.Run("RejectCampaign requires a non-empty reason", func(t *testing.T) {
 		repo := &mockCampaignRepo{
 			getByIDFunc: func(ctx context.Context, tID, id string) (*domain.Campaign, error) {
@@ -531,6 +561,67 @@ func TestCampaignApprovalWorkflow(t *testing.T) {
 		err := uc.TriggerDispatch(context.Background(), tenantID, campaignID)
 		if err == nil || !strings.Contains(err.Error(), "requested changes") {
 			t.Fatalf("expected changes-requested error, got %v", err)
+		}
+	})
+
+	t.Run("TriggerDispatch blocks a campaign revised since the brand approved it", func(t *testing.T) {
+		reviewedAt := time.Now().Add(-2 * time.Hour)
+		revisedAt := time.Now().Add(-time.Hour)
+		repo := &mockCampaignRepo{
+			getByIDFunc: func(ctx context.Context, tID, id string) (*domain.Campaign, error) {
+				return &domain.Campaign{
+					ID:                             id,
+					TenantID:                       tID,
+					Status:                         "approved",
+					LatestReviewDecision:           domain.ReviewDecisionApproved,
+					LatestReviewAt:                 &reviewedAt,
+					ContentRevisedAt:               &revisedAt,
+					SelectedChannels:               "[]",
+					SelectedTelegramDestinationIDs: "[]",
+					SelectedContactIDs:             "[]",
+				}, nil
+			},
+			getApprovalSettingFunc: func(ctx context.Context, tID string) (bool, error) {
+				return false, nil
+			},
+		}
+		uc := NewCampaignUseCase(repo, nil, nil, &mockPublisher{}, nil)
+		err := uc.TriggerDispatch(context.Background(), tenantID, campaignID)
+		if err == nil || !strings.Contains(err.Error(), "latest version") {
+			t.Fatalf("expected stale-review error, got %v", err)
+		}
+	})
+
+	t.Run("ScheduleCampaign allows an approved campaign the brand re-approved after revision", func(t *testing.T) {
+		reviewedAt := time.Now().Add(-time.Hour)
+		revisedAt := time.Now().Add(-2 * time.Hour)
+		scheduled := false
+		repo := &mockCampaignRepo{
+			getByIDFunc: func(ctx context.Context, tID, id string) (*domain.Campaign, error) {
+				return &domain.Campaign{
+					ID:                   id,
+					TenantID:             tID,
+					Status:               "approved",
+					LatestReviewDecision: domain.ReviewDecisionApproved,
+					LatestReviewAt:       &reviewedAt,
+					ContentRevisedAt:     &revisedAt,
+				}, nil
+			},
+			getApprovalSettingFunc: func(ctx context.Context, tID string) (bool, error) {
+				return true, nil
+			},
+			setScheduledFunc: func(ctx context.Context, tID, id string, at time.Time) error {
+				scheduled = true
+				return nil
+			},
+		}
+		uc := NewCampaignUseCase(repo, nil, nil, &mockPublisher{}, nil)
+		err := uc.ScheduleCampaign(context.Background(), tenantID, campaignID, time.Now().Add(time.Hour))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !scheduled {
+			t.Fatal("expected the campaign to be scheduled")
 		}
 	})
 

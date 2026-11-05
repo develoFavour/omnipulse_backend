@@ -446,6 +446,10 @@ func (h *CampaignHandler) CancelScheduledCampaign(w http.ResponseWriter, r *http
 			utils.WriteError(w, http.StatusNotFound, "Scheduled campaign not found")
 			return
 		}
+		if errors.Is(err, repository.ErrCampaignNotScheduled) {
+			utils.WriteError(w, http.StatusConflict, "This campaign is no longer scheduled")
+			return
+		}
 		utils.WriteError(w, http.StatusInternalServerError, "Failed to cancel scheduled campaign")
 		return
 	}

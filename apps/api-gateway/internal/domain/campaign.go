@@ -28,10 +28,37 @@ type Campaign struct {
 	RejectionReason                *string    `json:"rejection_reason,omitempty"`
 	LatestReviewDecision           string     `json:"latest_review_decision,omitempty"`
 	LatestReviewNote               string     `json:"latest_review_note,omitempty"`
+	LatestReviewAt                 *time.Time `json:"latest_review_at,omitempty"`
+	ContentRevisedAt               *time.Time `json:"content_revised_at,omitempty"`
 	TotalTargets                   int        `json:"total_targets"`
 	ProcessedTargets               int        `json:"processed_targets"`
 	CreatedAt                      time.Time  `json:"created_at"`
 	UpdatedAt                      time.Time  `json:"updated_at"`
+}
+
+// BrandReviewCurrent reports whether the latest brand decision still describes
+// the current content. A revision after the decision makes that decision stale:
+// it was made against a version the brand can no longer see.
+func (c *Campaign) BrandReviewCurrent() bool {
+	if c.LatestReviewDecision == "" {
+		return false
+	}
+	if c.LatestReviewAt == nil || c.ContentRevisedAt == nil {
+		return true
+	}
+	return !c.LatestReviewAt.Before(*c.ContentRevisedAt)
+}
+
+// BrandChangesOutstanding is true when the brand asked for changes on the
+// current version, so the campaign still needs revising and re-review.
+func (c *Campaign) BrandChangesOutstanding() bool {
+	return c.LatestReviewDecision == ReviewDecisionChangesRequested && c.BrandReviewCurrent()
+}
+
+// BrandReviewStale is true when the content was edited after the brand's last
+// decision, so that decision no longer covers what would be sent.
+func (c *Campaign) BrandReviewStale() bool {
+	return c.LatestReviewDecision != "" && !c.BrandReviewCurrent()
 }
 
 // CampaignStats models real-time execution progress and telemetry for a campaign

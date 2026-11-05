@@ -141,19 +141,17 @@ func (r *PostgresReviewRepository) LatestDecision(ctx context.Context, tenantID,
 	return event, nil
 }
 
-// RecordDecision is insert-once per token: provider retries and double clicks
-// cannot overwrite the client's original answer.
+// RecordDecision appends a brand decision. A token may be used more than once
+// while the campaign is still open for review: revising the campaign changes
+// what the brand sees, so they must be able to answer again. Every decision is
+// kept and the most recent one governs.
 func (r *PostgresReviewRepository) RecordDecision(ctx context.Context, event *domain.ReviewEvent) error {
 	err := r.db.QueryRowContext(ctx, `
 		INSERT INTO campaign_review_events (tenant_id, campaign_id, token_id, decision, note, reviewer_ip)
 		VALUES ($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (token_id) DO NOTHING
 		RETURNING id, created_at
 	`, event.TenantID, event.CampaignID, event.TokenID, event.Decision, event.Note, event.ReviewerIP).Scan(&event.ID, &event.CreatedAt)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return domain.ErrReviewAlreadyDecided
-		}
 		return fmt.Errorf("failed to record review decision: %w", err)
 	}
 	return nil

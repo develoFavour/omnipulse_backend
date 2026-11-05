@@ -111,6 +111,7 @@ func main() {
 		{"campaigns.approved_by", `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS approved_by VARCHAR(255)`},
 		{"campaigns.approved_at", `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP WITH TIME ZONE`},
 		{"campaigns.rejection_reason", `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS rejection_reason TEXT`},
+		{"campaigns.content_revised_at", `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS content_revised_at TIMESTAMP WITH TIME ZONE`},
 	}
 	for _, column := range approvalColumns {
 		if _, err := db.Exec(column.ddl); err != nil {
@@ -126,10 +127,10 @@ func main() {
 		SELECT count(*)
 		FROM information_schema.columns
 		WHERE table_schema = 'public'
-		  AND ((table_name = 'campaigns' AND column_name IN ('submitted_by', 'submitted_at', 'approved_by', 'approved_at', 'rejection_reason'))
+		  AND ((table_name = 'campaigns' AND column_name IN ('submitted_by', 'submitted_at', 'approved_by', 'approved_at', 'rejection_reason', 'content_revised_at'))
 		    OR (table_name = 'tenant_settings' AND column_name = 'require_campaign_approval'))
-	`).Scan(&presentColumns); err == nil && presentColumns < 6 {
-		logger.Fatalf("[DB-MIGRATE] Campaign approval schema is incomplete (%d/6 columns present). Check database permissions and the migration errors above.", presentColumns)
+	`).Scan(&presentColumns); err == nil && presentColumns < 7 {
+		logger.Fatalf("[DB-MIGRATE] Campaign approval schema is incomplete (%d/7 columns present). Check database permissions and the migration errors above.", presentColumns)
 	} else if err != nil {
 		logger.Printf("[DB-MIGRATE] Could not verify campaign approval columns: %v\n", err)
 	} else {
@@ -437,13 +438,19 @@ func main() {
 			decision VARCHAR(32) NOT NULL CHECK (decision IN ('approved', 'changes_requested')),
 			note TEXT NOT NULL DEFAULT '',
 			reviewer_ip TEXT NOT NULL DEFAULT '',
-			created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			CONSTRAINT uq_campaign_review_events_token UNIQUE (token_id)
+			created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);
 		CREATE INDEX IF NOT EXISTS idx_campaign_review_events_campaign
 			ON campaign_review_events(tenant_id, campaign_id, created_at DESC);
 	`); err != nil {
 		logger.Printf("[DB-MIGRATE] campaign review tables migration: %v\n", err)
+	}
+
+	// A link stays usable while the campaign is open for review, so a brand can
+	// answer again after the agency revises the content. Older databases still
+	// carry the one-decision-per-token constraint.
+	if _, err := db.Exec(`ALTER TABLE campaign_review_events DROP CONSTRAINT IF EXISTS uq_campaign_review_events_token;`); err != nil {
+		logger.Printf("[DB-MIGRATE] could not allow repeated brand decisions: %v\n", err)
 	}
 
 	// Idempotent schema migrations: team management & invitations
