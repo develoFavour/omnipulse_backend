@@ -676,8 +676,8 @@ func main() {
 
 	tagUseCase := usecase.NewTagUseCase(tagRepo)
 	templateUseCase := usecase.NewTemplateUseCase(templateRepo)
-	contactUseCase := usecase.NewContactUseCase(contactRepo, tagRepo, subRepo)
 	consentRepo := repository.NewPostgresConsentRepository(db)
+	contactUseCase := usecase.NewContactUseCase(contactRepo, tagRepo, subRepo, consentRepo)
 	consentUseCase := usecase.NewConsentUseCase(consentRepo, contactRepo)
 	approvalNotifier := usecase.NewApprovalNotifier(identityRepo, notificationRepo, mailer, cfg.PublicAppBaseURL)
 	campaignUseCase := usecase.NewCampaignUseCase(campaignRepo, contactRepo, destinationRepo, natsPublisher, subRepo, approvalNotifier)
@@ -969,6 +969,7 @@ func main() {
 
 	// Contact Subsystem Endpoints
 	mux.Handle("GET /api/v1/contacts/export", handler.RequireRole("owner", "admin")(http.HandlerFunc(contactHandler.ExportContacts)))
+	mux.Handle("POST /api/v1/contacts/import", handler.RequireRole("owner", "admin")(http.HandlerFunc(contactHandler.ImportContacts)))
 	mux.HandleFunc("GET /api/v1/contacts/{id}", contactHandler.GetContact)
 	mux.HandleFunc("GET /api/v1/contacts", contactHandler.ListContacts)
 	mux.HandleFunc("POST /api/v1/contacts", contactHandler.CreateContact)

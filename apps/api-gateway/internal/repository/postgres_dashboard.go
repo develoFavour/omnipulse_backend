@@ -313,12 +313,19 @@ func (r *PostgresDashboardRepository) GetStats(ctx context.Context, tenantID str
 	badge := strings.ToUpper(tier)
 	isUnl := mLimit == -1 && cLimit == -1 && chLimit == -1
 
+	// Stored contacts include opt-outs: they still occupy plan capacity even
+	// though TotalAudience only counts reachable recipients.
+	contactsStored := 0
+	if err := r.db.QueryRowContext(ctx, "SELECT count(*) FROM contacts WHERE tenant_id = $1", tenantID).Scan(&contactsStored); err != nil {
+		return nil, fmt.Errorf("failed to count stored contacts: %w", err)
+	}
+
 	stats.PlanUsage = domain.PlanUsageInfo{
 		PlanTier:              tier,
 		PlanBadge:             badge,
 		MonthlyMessageLimit:   mLimit,
 		MessagesSentThisMonth: msgsThisMonth,
-		ContactsStored:        stats.TotalAudience,
+		ContactsStored:        contactsStored,
 		ContactsLimit:         cLimit,
 		ChannelsConnected:     stats.ActiveChannels,
 		ChannelsLimit:         chLimit,

@@ -86,6 +86,43 @@ func (h *ContactHandler) CreateContact(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJSON(w, http.StatusCreated, payload)
 }
 
+// ImportContacts handles: POST /api/v1/contacts/import
+//
+// Accepts a parsed list (paste or CSV) with an optional consent decision per
+// row. Rows are validated independently, so one bad line does not reject the
+// whole file; the response reports what was created, skipped, or rejected.
+func (h *ContactHandler) ImportContacts(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 5<<20) // 5MB cap for a 1,000-row import
+
+	var req domain.ContactImportRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "Invalid import payload")
+		return
+	}
+
+	summary, err := h.useCase.ImportContacts(r.Context(), tenantID, req)
+	if err != nil {
+		if errors.Is(err, domain.ErrQuotaExceeded) {
+			utils.WriteError(w, http.StatusPaymentRequired, err.Error())
+			return
+		}
+		if errors.Is(err, domain.ErrInvalidContact) {
+			utils.WriteError(w, http.StatusUnprocessableEntity, err.Error())
+			return
+		}
+		utils.WriteError(w, http.StatusInternalServerError, "Failed to import contacts")
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, summary)
+}
+
 // ListContacts handles: GET /api/v1/contacts
 func (h *ContactHandler) ListContacts(w http.ResponseWriter, r *http.Request) {
 	tenantID, ok := r.Context().Value(TenantIDKey).(string)
