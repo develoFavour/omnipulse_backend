@@ -21,15 +21,15 @@ func NewPostgresReviewRepository(db *sql.DB) domain.ReviewRepository {
 
 func (r *PostgresReviewRepository) CreateToken(ctx context.Context, token *domain.ReviewToken, tokenHash string) error {
 	return r.db.QueryRowContext(ctx, `
-		INSERT INTO campaign_review_tokens (tenant_id, campaign_id, token_hash, label, created_by, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO campaign_review_tokens (tenant_id, campaign_id, token_hash, label, recipient_email, created_by, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING id, created_at
-	`, token.TenantID, token.CampaignID, tokenHash, token.Label, token.CreatedBy, token.ExpiresAt).Scan(&token.ID, &token.CreatedAt)
+	`, token.TenantID, token.CampaignID, tokenHash, token.Label, token.RecipientEmail, token.CreatedBy, token.ExpiresAt).Scan(&token.ID, &token.CreatedAt)
 }
 
 func (r *PostgresReviewRepository) ListTokens(ctx context.Context, tenantID, campaignID string) ([]*domain.ReviewToken, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT t.id, t.tenant_id, t.campaign_id, t.label, t.created_by,
+		SELECT t.id, t.tenant_id, t.campaign_id, t.label, t.recipient_email, t.created_by,
 		       t.expires_at, t.revoked_at, t.last_viewed_at, t.created_at, e.decision
 		FROM campaign_review_tokens t
 		LEFT JOIN LATERAL (
@@ -53,7 +53,7 @@ func (r *PostgresReviewRepository) ListTokens(ctx context.Context, tenantID, cam
 		var revokedAt, lastViewedAt sql.NullTime
 		var decision sql.NullString
 		if err := rows.Scan(
-			&token.ID, &token.TenantID, &token.CampaignID, &token.Label, &token.CreatedBy,
+			&token.ID, &token.TenantID, &token.CampaignID, &token.Label, &token.RecipientEmail, &token.CreatedBy,
 			&token.ExpiresAt, &revokedAt, &lastViewedAt, &token.CreatedAt, &decision,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan review token: %w", err)

@@ -30,10 +30,13 @@ type Campaign struct {
 	LatestReviewNote               string     `json:"latest_review_note,omitempty"`
 	LatestReviewAt                 *time.Time `json:"latest_review_at,omitempty"`
 	ContentRevisedAt               *time.Time `json:"content_revised_at,omitempty"`
-	TotalTargets                   int        `json:"total_targets"`
-	ProcessedTargets               int        `json:"processed_targets"`
-	CreatedAt                      time.Time  `json:"created_at"`
-	UpdatedAt                      time.Time  `json:"updated_at"`
+	// BrandRevisionNotified is set on the update response when the revision was
+	// emailed to a brand that was previously sent a review link. Never persisted.
+	BrandRevisionNotified bool      `json:"brand_revision_notified,omitempty"`
+	TotalTargets          int       `json:"total_targets"`
+	ProcessedTargets      int       `json:"processed_targets"`
+	CreatedAt             time.Time `json:"created_at"`
+	UpdatedAt             time.Time `json:"updated_at"`
 }
 
 // BrandReviewCurrent reports whether the latest brand decision still describes

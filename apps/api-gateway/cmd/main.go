@@ -419,6 +419,7 @@ func main() {
 			campaign_id UUID NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
 			token_hash VARCHAR(64) NOT NULL,
 			label VARCHAR(120) NOT NULL DEFAULT '',
+			recipient_email VARCHAR(255) NOT NULL DEFAULT '',
 			created_by VARCHAR(255) NOT NULL DEFAULT '',
 			expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
 			revoked_at TIMESTAMP WITH TIME ZONE,
@@ -451,6 +452,12 @@ func main() {
 	// carry the one-decision-per-token constraint.
 	if _, err := db.Exec(`ALTER TABLE campaign_review_events DROP CONSTRAINT IF EXISTS uq_campaign_review_events_token;`); err != nil {
 		logger.Printf("[DB-MIGRATE] could not allow repeated brand decisions: %v\n", err)
+	}
+
+	// Keep the address a link was emailed to so revisions can go to the same
+	// reviewer instead of asking the operator to resend the link by hand.
+	if _, err := db.Exec(`ALTER TABLE campaign_review_tokens ADD COLUMN IF NOT EXISTS recipient_email VARCHAR(255) NOT NULL DEFAULT '';`); err != nil {
+		logger.Printf("[DB-MIGRATE] could not store review recipients: %v\n", err)
 	}
 
 	// Idempotent schema migrations: team management & invitations
@@ -676,6 +683,7 @@ func main() {
 	campaignUseCase := usecase.NewCampaignUseCase(campaignRepo, contactRepo, destinationRepo, natsPublisher, subRepo, approvalNotifier)
 	reviewRepo := repository.NewPostgresReviewRepository(db)
 	reviewUseCase := usecase.NewReviewUseCase(reviewRepo, campaignRepo, campaignUseCase, mailer, cfg.PublicAppBaseURL, approvalNotifier)
+	campaignUseCase.SetBrandRevisionNotifier(reviewUseCase)
 	identityUseCase := usecase.NewIdentityUseCase(identityRepo, channelRepo, subRepo)
 	dashboardUseCase := usecase.NewDashboardUseCase(dashboardRepo)
 	notificationUseCase := usecase.NewNotificationUseCase(notificationRepo)

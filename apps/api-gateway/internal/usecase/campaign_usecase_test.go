@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -969,5 +970,67 @@ func TestUpdateCampaignValidatesContent(t *testing.T) {
 	}
 	if updateCalled {
 		t.Fatal("invalid content must not reach the repository")
+	}
+}
+
+type recordingRevisionNotifier struct {
+	calls int
+	sent  int
+	err   error
+}
+
+func (r *recordingRevisionNotifier) NotifyBrandRevision(ctx context.Context, campaign *domain.Campaign, createdBy string) (int, error) {
+	r.calls++
+	return r.sent, r.err
+}
+
+func TestUpdateCampaignEmailsBrandAboutRevision(t *testing.T) {
+	stored := &domain.Campaign{ID: "campaign-1", TenantID: "tenant-1", Status: "draft"}
+	repo := &mockCampaignRepo{
+		getByIDFunc: func(ctx context.Context, tenantID, id string) (*domain.Campaign, error) {
+			return stored, nil
+		},
+		updateContentFunc: func(ctx context.Context, tenantID, id string, c *domain.Campaign, resetApproval bool) error {
+			return nil
+		},
+	}
+	uc := NewCampaignUseCase(repo, nil, nil, &mockPublisher{}, nil)
+	notifier := &recordingRevisionNotifier{sent: 1}
+	uc.SetBrandRevisionNotifier(notifier)
+
+	updated, err := uc.UpdateCampaign(context.Background(), "tenant-1", "campaign-1", &domain.Campaign{
+		Title:       "Title",
+		MessageBody: "Body",
+	})
+	if err != nil {
+		t.Fatalf("UpdateCampaign returned error: %v", err)
+	}
+	if notifier.calls != 1 {
+		t.Fatalf("expected the brand to be notified once, got %d", notifier.calls)
+	}
+	if !updated.BrandRevisionNotified {
+		t.Fatal("the response should report that the brand was emailed")
+	}
+}
+
+func TestUpdateCampaignSucceedsWhenBrandEmailFails(t *testing.T) {
+	stored := &domain.Campaign{ID: "campaign-1", TenantID: "tenant-1", Status: "draft"}
+	repo := &mockCampaignRepo{
+		getByIDFunc: func(ctx context.Context, tenantID, id string) (*domain.Campaign, error) {
+			return stored, nil
+		},
+	}
+	uc := NewCampaignUseCase(repo, nil, nil, &mockPublisher{}, nil)
+	uc.SetBrandRevisionNotifier(&recordingRevisionNotifier{err: errors.New("mail unavailable")})
+
+	updated, err := uc.UpdateCampaign(context.Background(), "tenant-1", "campaign-1", &domain.Campaign{
+		Title:       "Title",
+		MessageBody: "Body",
+	})
+	if err != nil {
+		t.Fatalf("a mail failure must not undo the save: %v", err)
+	}
+	if updated.BrandRevisionNotified {
+		t.Fatal("the response must not claim the brand was emailed")
 	}
 }

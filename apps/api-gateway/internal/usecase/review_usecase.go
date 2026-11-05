@@ -77,7 +77,7 @@ func (u *ReviewUseCase) CreateLink(ctx context.Context, tenantID, campaignID, la
 	if ttlDays > 0 {
 		ttl = time.Duration(ttlDays) * 24 * time.Hour
 	}
-	return u.mintLink(ctx, campaign, label, createdBy, ttl)
+	return u.mintLink(ctx, campaign, label, createdBy, ttl, "")
 }
 
 // EmailBrandLink mints a fresh link and emails it to the brand. Before the
@@ -111,7 +111,7 @@ func (u *ReviewUseCase) EmailBrandLink(ctx context.Context, tenantID, campaignID
 	if label == "" {
 		label = email
 	}
-	link, err := u.mintLink(ctx, campaign, label, sentBy, 2*reviewTokenTTLDefault)
+	link, err := u.mintLink(ctx, campaign, label, sentBy, 2*reviewTokenTTLDefault, email)
 	if err != nil {
 		return nil, err
 	}
@@ -130,6 +130,59 @@ func (u *ReviewUseCase) EmailBrandLink(ctx context.Context, tenantID, campaignID
 	return link, nil
 }
 
+// NotifyBrandRevision emails the brands that were previously sent a review link
+// for this campaign. Their last decision may describe a version that no longer
+// exists, so a fresh link is minted for each recipient (stored tokens are hashes
+// and cannot be replayed). Returns how many recipients were emailed.
+func (u *ReviewUseCase) NotifyBrandRevision(ctx context.Context, campaign *domain.Campaign, createdBy string) (int, error) {
+	if u.mailer == nil || campaign == nil {
+		return 0, nil
+	}
+
+	tokens, err := u.repo.ListTokens(ctx, campaign.TenantID, campaign.ID)
+	if err != nil {
+		return 0, err
+	}
+
+	type recipient struct {
+		email string
+		label string
+	}
+	seen := make(map[string]bool, len(tokens))
+	recipients := make([]recipient, 0, len(tokens))
+	for _, token := range tokens {
+		// ListTokens is newest first, so the first label seen for an address is
+		// the most recent one the operator used.
+		email := strings.ToLower(strings.TrimSpace(token.RecipientEmail))
+		if email == "" || token.RevokedAt != nil || seen[email] {
+			continue
+		}
+		seen[email] = true
+		recipients = append(recipients, recipient{email: email, label: token.Label})
+	}
+	if len(recipients) == 0 {
+		return 0, nil
+	}
+
+	workspaceName := "Your agency"
+	if brand, brandErr := u.repo.GetBranding(ctx, campaign.TenantID); brandErr == nil && brand != nil && strings.TrimSpace(brand.Name) != "" {
+		workspaceName = brand.Name
+	}
+
+	sent := 0
+	for _, recipient := range recipients {
+		link, mintErr := u.mintLink(ctx, campaign, recipient.label, createdBy, 2*reviewTokenTTLDefault, recipient.email)
+		if mintErr != nil {
+			log.Printf("[REVIEW] could not create a revision link for campaign %s: %v\n", campaign.ID, mintErr)
+			continue
+		}
+		linkURL := fmt.Sprintf("%s/review/%s", u.appBaseURL, link.Token)
+		u.mailer.SendBrandRevisionRequest(recipient.email, workspaceName, campaign.Title, linkURL, link.ExpiresAt)
+		sent++
+	}
+	return sent, nil
+}
+
 // reportStage separates "the brand should look at the results" from "the brand
 // should approve or request changes".
 func reportStage(status string) bool {
@@ -141,7 +194,9 @@ func reportStage(status string) bool {
 	}
 }
 
-func (u *ReviewUseCase) mintLink(ctx context.Context, campaign *domain.Campaign, label, createdBy string, ttl time.Duration) (*ReviewLink, error) {
+// mintLink persists a hashed token and returns the raw URL component once.
+// recipientEmail is empty for links the operator copies manually.
+func (u *ReviewUseCase) mintLink(ctx context.Context, campaign *domain.Campaign, label, createdBy string, ttl time.Duration, recipientEmail string) (*ReviewLink, error) {
 	label = strings.TrimSpace(label)
 	if len(label) > 120 {
 		label = label[:120]
@@ -159,11 +214,12 @@ func (u *ReviewUseCase) mintLink(ctx context.Context, campaign *domain.Campaign,
 	}
 
 	token := &domain.ReviewToken{
-		TenantID:   campaign.TenantID,
-		CampaignID: campaign.ID,
-		Label:      label,
-		CreatedBy:  createdBy,
-		ExpiresAt:  time.Now().Add(ttl).UTC(),
+		TenantID:       campaign.TenantID,
+		CampaignID:     campaign.ID,
+		Label:          label,
+		RecipientEmail: strings.TrimSpace(recipientEmail),
+		CreatedBy:      createdBy,
+		ExpiresAt:      time.Now().Add(ttl).UTC(),
 	}
 	if err := u.repo.CreateToken(ctx, token, hashReviewToken(raw)); err != nil {
 		return nil, err
@@ -366,7 +422,7 @@ func (u *ReviewUseCase) buildPublicReview(ctx context.Context, token *domain.Rev
 	} else if err != nil {
 		log.Printf("[REVIEW] decision lookup failed for campaign %s: %v\n", campaign.ID, err)
 	}
-	view.ApprovalTrail = u.buildApprovalTrail(ctx, token, campaign, latest, view.Brand.Name)
+	view.ApprovalTrail = u.buildApprovalTrail(ctx, token, campaign, latest)
 
 	if hasOutcome(campaign.Status) {
 		if report, err := u.buildOutcomeReport(ctx, campaign); err == nil {
@@ -405,7 +461,7 @@ func (u *ReviewUseCase) buildOutcomeReport(ctx context.Context, campaign *domain
 
 // buildApprovalTrail assembles the chain of accountability a brand cares
 // about. Names, never raw user IDs, reach the public payload.
-func (u *ReviewUseCase) buildApprovalTrail(ctx context.Context, token *domain.ReviewToken, campaign *domain.Campaign, event *domain.ReviewEvent, brandName string) []domain.PublicReviewTrailEntry {
+func (u *ReviewUseCase) buildApprovalTrail(ctx context.Context, token *domain.ReviewToken, campaign *domain.Campaign, event *domain.ReviewEvent) []domain.PublicReviewTrailEntry {
 	trail := make([]domain.PublicReviewTrailEntry, 0, 3)
 	names := u.resolveStaffNames(ctx, campaign.TenantID, campaign.SubmittedBy, campaign.ApprovedBy)
 
@@ -439,10 +495,9 @@ func (u *ReviewUseCase) buildApprovalTrail(ctx context.Context, token *domain.Re
 		if event.Decision == domain.ReviewDecisionChangesRequested {
 			stage = "brand_changes_requested"
 		}
+		// Never fall back to the agency's own name: the trail would then claim
+		// the agency approved its own campaign as the brand.
 		actor := strings.TrimSpace(token.Label)
-		if actor == "" {
-			actor = strings.TrimSpace(brandName)
-		}
 		if actor == "" {
 			actor = "Brand reviewer"
 		}

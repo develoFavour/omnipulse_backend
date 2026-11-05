@@ -26,16 +26,19 @@ const (
 // ReviewToken is a shared, revocable handle to a campaign's client review.
 // Only the SHA-256 hash of the bearer token is persisted.
 type ReviewToken struct {
-	ID           string     `json:"id"`
-	TenantID     string     `json:"tenant_id"`
-	CampaignID   string     `json:"campaign_id"`
-	Label        string     `json:"label"`
-	CreatedBy    string     `json:"created_by"`
-	ExpiresAt    time.Time  `json:"expires_at"`
-	RevokedAt    *time.Time `json:"revoked_at,omitempty"`
-	LastViewedAt *time.Time `json:"last_viewed_at,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
-	Decision     string     `json:"decision,omitempty"`
+	ID         string `json:"id"`
+	TenantID   string `json:"tenant_id"`
+	CampaignID string `json:"campaign_id"`
+	Label      string `json:"label"`
+	// RecipientEmail is set when the link was emailed to a brand, so revisions
+	// can be sent to the same reviewer without asking the operator again.
+	RecipientEmail string     `json:"recipient_email,omitempty"`
+	CreatedBy      string     `json:"created_by"`
+	ExpiresAt      time.Time  `json:"expires_at"`
+	RevokedAt      *time.Time `json:"revoked_at,omitempty"`
+	LastViewedAt   *time.Time `json:"last_viewed_at,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	Decision       string     `json:"decision,omitempty"`
 }
 
 type ReviewEvent struct {
