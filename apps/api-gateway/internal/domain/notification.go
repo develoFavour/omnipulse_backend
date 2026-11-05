@@ -16,6 +16,8 @@ const (
 	NotifContactImportFinished   NotificationType = "contact_import_finished"
 	NotifChannelDisconnected     NotificationType = "channel_disconnected"
 	NotifCampaignPendingApproval NotificationType = "campaign_pending_approval"
+	NotifCampaignBrandApproved   NotificationType = "campaign_brand_approved"
+	NotifCampaignBrandChanges    NotificationType = "campaign_brand_changes_requested"
 	NotifSystemAlert             NotificationType = "system_alert" // worker outage / infrastructure alerts
 )
 

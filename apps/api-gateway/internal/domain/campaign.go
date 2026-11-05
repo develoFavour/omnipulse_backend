@@ -27,6 +27,7 @@ type Campaign struct {
 	ApprovedAt                     *time.Time `json:"approved_at,omitempty"`
 	RejectionReason                *string    `json:"rejection_reason,omitempty"`
 	LatestReviewDecision           string     `json:"latest_review_decision,omitempty"`
+	LatestReviewNote               string     `json:"latest_review_note,omitempty"`
 	TotalTargets                   int        `json:"total_targets"`
 	ProcessedTargets               int        `json:"processed_targets"`
 	CreatedAt                      time.Time  `json:"created_at"`
@@ -76,6 +77,7 @@ type RetryDeliveriesResponse struct {
 // CampaignRepository handles SQL transactions for orchestrating campaign lifecycle boundaries
 type CampaignRepository interface {
 	Create(ctx context.Context, campaign *Campaign) error
+	UpdateContent(ctx context.Context, tenantID, id string, campaign *Campaign, resetApproval bool) error
 	GetByID(ctx context.Context, tenantID, id string) (*Campaign, error)
 	ListByTenant(ctx context.Context, tenantID, status string, limit, offset int) ([]*Campaign, error)
 	UpdateStatus(ctx context.Context, tenantID, id string, status string) error

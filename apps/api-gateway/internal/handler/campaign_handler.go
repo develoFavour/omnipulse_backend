@@ -53,6 +53,42 @@ func (h *CampaignHandler) CreateCampaign(w http.ResponseWriter, r *http.Request)
 	utils.WriteJSON(w, http.StatusCreated, payload)
 }
 
+// UpdateCampaign handles: PUT /api/v1/campaigns/{id}
+func (h *CampaignHandler) UpdateCampaign(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	campaignID := r.PathValue("id")
+	if campaignID == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Missing campaign ID parameter")
+		return
+	}
+
+	var payload domain.Campaign
+	r.Body = http.MaxBytesReader(w, r.Body, 1048576) // 1MB cap
+
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(&payload); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "Invalid JSON structure")
+		return
+	}
+
+	updated, err := h.useCase.UpdateCampaign(r.Context(), tenantID, campaignID, &payload)
+	if err != nil {
+		if errors.Is(err, repository.ErrCampaignNotFound) {
+			utils.WriteError(w, http.StatusNotFound, "Campaign not found or no longer editable")
+			return
+		}
+		utils.WriteError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, updated)
+}
+
 // ListCampaigns handles: GET /api/v1/campaigns
 func (h *CampaignHandler) ListCampaigns(w http.ResponseWriter, r *http.Request) {
 	tenantID, ok := r.Context().Value(TenantIDKey).(string)

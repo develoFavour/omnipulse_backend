@@ -365,6 +365,74 @@ func (m *Mailer) SendConversationAssignments(toEmail, recipientName, workspaceNa
 	m.SendEmail(toEmail, subject, htmlBody)
 }
 
+// SendBrandDecision tells the agency whether the brand approved a campaign or
+// asked for changes. It is sent to the campaign submitter and workspace
+// Owners/Admins as soon as the brand decides.
+func (m *Mailer) SendBrandDecision(toEmail, workspaceName, campaignTitle string, approved bool, note, reviewerLabel, campaignURL string) {
+	if strings.TrimSpace(toEmail) == "" {
+		return
+	}
+
+	escapedWorkspace := html.EscapeString(workspaceName)
+	escapedTitle := html.EscapeString(campaignTitle)
+	escapedReviewer := html.EscapeString(reviewerLabel)
+	escapedURL := html.EscapeString(campaignURL)
+
+	if strings.TrimSpace(reviewerLabel) == "" {
+		escapedReviewer = "Your brand contact"
+	}
+
+	badge := `<span style="display:inline-block;background:#dcfce7;color:#166534;border:1px solid #bbf7d0;font-size:11px;font-weight:700;padding:4px 10px;border-radius:9999px;text-transform:uppercase;letter-spacing:0.04em;">Brand approved</span>`
+	subject := fmt.Sprintf("Approved by your brand: %s", campaignTitle)
+	heading := fmt.Sprintf("%s approved this campaign", escapedReviewer)
+	summary := fmt.Sprintf("%s approved <strong>&quot;%s&quot;</strong> in <strong>%s</strong>. It can now be scheduled or sent.", escapedReviewer, escapedTitle, escapedWorkspace)
+	noteBlock := ""
+
+	if !approved {
+		badge = `<span style="display:inline-block;background:#fef3c7;color:#92400e;border:1px solid #fde68a;font-size:11px;font-weight:700;padding:4px 10px;border-radius:9999px;text-transform:uppercase;letter-spacing:0.04em;">Changes requested</span>`
+		subject = fmt.Sprintf("Changes requested by your brand: %s", campaignTitle)
+		heading = fmt.Sprintf("Changes requested on &quot;%s&quot;", escapedTitle)
+		summary = fmt.Sprintf("%s reviewed this campaign in <strong>%s</strong> and asked for changes. It cannot be scheduled or sent until the changes are made and approved again.", escapedReviewer, escapedWorkspace)
+		if trimmed := strings.TrimSpace(note); trimmed != "" {
+			noteBlock = fmt.Sprintf(`<table role="presentation" width="100%%" cellspacing="0" cellpadding="0" style="margin:18px 0 0;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;">
+          <tr><td style="padding:14px 18px;font-size:13px;line-height:20px;color:#78350f;">%s</td></tr>
+        </table>`, html.EscapeString(trimmed))
+		}
+	}
+
+	cta := ""
+	if campaignURL != "" {
+		cta = fmt.Sprintf(`<p style="margin:26px 0 0;text-align:center;"><a href="%s" target="_blank" style="display:inline-block;background:#163300;color:#9fe870;text-decoration:none;font-weight:700;font-size:14px;padding:12px 24px;border-radius:8px;">Open campaign &rarr;</a></p>`, escapedURL)
+	}
+
+	htmlBody := fmt.Sprintf(`<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Brand decision</title></head>
+<body style="margin:0;padding:32px 16px;background:#f9fafb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:#111827;">
+  <table role="presentation" width="100%%" cellspacing="0" cellpadding="0"><tr><td align="center">
+    <table role="presentation" width="100%%" cellspacing="0" cellpadding="0" style="max-width:560px;background:#fff;border:1px solid #e5e7eb;border-radius:12px;">
+      <tr><td style="padding:24px 32px 18px;border-bottom:1px solid #f3f4f6;">
+        <table role="presentation" width="100%%"><tr>
+          <td align="left"><strong style="font-size:16px;color:#14532d;">MessageRail</strong></td>
+          <td align="right">%s</td>
+        </tr></table>
+      </td></tr>
+      <tr><td style="padding:28px 32px 32px;">
+        <h1 style="margin:0 0 12px;font-size:21px;line-height:1.3;">%s</h1>
+        <p style="margin:0 0 18px;font-size:15px;line-height:24px;color:#4b5563;">%s</p>
+        <table role="presentation" width="100%%" cellspacing="0" cellpadding="0" style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;">
+          <tr><td style="padding:14px 18px;font-size:13px;color:#6b7280;">Campaign</td><td align="right" style="padding:14px 18px;font-size:13px;font-weight:600;color:#111827;">%s</td></tr>
+        </table>
+        %s
+        %s
+      </td></tr>
+    </table>
+    <p style="margin:18px 0 0;font-size:12px;color:#9ca3af;">MessageRail &bull; You are receiving this because you own or collaborate in %s.</p>
+  </td></tr></table>
+</body></html>`, badge, heading, summary, escapedTitle, noteBlock, cta, escapedWorkspace)
+
+	m.SendEmail(toEmail, subject, htmlBody)
+}
+
 // SendCampaignAwaitingApproval notifies an Owner or Admin that a teammate
 // submitted a broadcast for approval.
 func (m *Mailer) SendCampaignAwaitingApproval(toEmail, workspaceName, campaignTitle, submitterEmail, queueURL string) {
