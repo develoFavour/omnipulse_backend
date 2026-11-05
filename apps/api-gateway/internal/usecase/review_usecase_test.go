@@ -412,6 +412,35 @@ func TestGetPublicReviewBuildsApprovalTrail(t *testing.T) {
 	}
 }
 
+func TestBrandTrailNeverUsesTheAgencyName(t *testing.T) {
+	uc, reviewRepo, campaignRepo := newReviewFixture("draft")
+	campaignRepo.campaign.Title = "Autumn launch"
+	reviewRepo.latest = &domain.ReviewEvent{
+		Decision:  domain.ReviewDecisionApproved,
+		CreatedAt: time.Now(),
+	}
+
+	link, err := uc.CreateLink(context.Background(), "tenant-1", "campaign-1", "", "user-1", 7)
+	if err != nil {
+		t.Fatalf("CreateLink returned error: %v", err)
+	}
+	view, err := uc.GetPublicReview(context.Background(), link.Token)
+	if err != nil {
+		t.Fatalf("GetPublicReview returned error: %v", err)
+	}
+
+	for _, entry := range view.ApprovalTrail {
+		if entry.Stage != "brand_approved" {
+			continue
+		}
+		if entry.Actor != "Brand reviewer" {
+			t.Fatalf("expected a neutral brand actor, got %q", entry.Actor)
+		}
+		return
+	}
+	t.Fatalf("expected a brand approval entry, got %+v", view.ApprovalTrail)
+}
+
 func TestPublicReviewMarksDecisionAsRevised(t *testing.T) {
 	uc, reviewRepo, campaignRepo := newReviewFixture("approved")
 	decidedAt := time.Now().Add(-time.Hour)

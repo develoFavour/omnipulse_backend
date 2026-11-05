@@ -422,7 +422,7 @@ func (u *ReviewUseCase) buildPublicReview(ctx context.Context, token *domain.Rev
 	} else if err != nil {
 		log.Printf("[REVIEW] decision lookup failed for campaign %s: %v\n", campaign.ID, err)
 	}
-	view.ApprovalTrail = u.buildApprovalTrail(ctx, token, campaign, latest, view.Brand.Name)
+	view.ApprovalTrail = u.buildApprovalTrail(ctx, token, campaign, latest)
 
 	if hasOutcome(campaign.Status) {
 		if report, err := u.buildOutcomeReport(ctx, campaign); err == nil {
@@ -461,7 +461,7 @@ func (u *ReviewUseCase) buildOutcomeReport(ctx context.Context, campaign *domain
 
 // buildApprovalTrail assembles the chain of accountability a brand cares
 // about. Names, never raw user IDs, reach the public payload.
-func (u *ReviewUseCase) buildApprovalTrail(ctx context.Context, token *domain.ReviewToken, campaign *domain.Campaign, event *domain.ReviewEvent, brandName string) []domain.PublicReviewTrailEntry {
+func (u *ReviewUseCase) buildApprovalTrail(ctx context.Context, token *domain.ReviewToken, campaign *domain.Campaign, event *domain.ReviewEvent) []domain.PublicReviewTrailEntry {
 	trail := make([]domain.PublicReviewTrailEntry, 0, 3)
 	names := u.resolveStaffNames(ctx, campaign.TenantID, campaign.SubmittedBy, campaign.ApprovedBy)
 
@@ -495,10 +495,9 @@ func (u *ReviewUseCase) buildApprovalTrail(ctx context.Context, token *domain.Re
 		if event.Decision == domain.ReviewDecisionChangesRequested {
 			stage = "brand_changes_requested"
 		}
+		// Never fall back to the agency's own name: the trail would then claim
+		// the agency approved its own campaign as the brand.
 		actor := strings.TrimSpace(token.Label)
-		if actor == "" {
-			actor = strings.TrimSpace(brandName)
-		}
 		if actor == "" {
 			actor = "Brand reviewer"
 		}
