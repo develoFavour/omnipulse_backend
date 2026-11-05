@@ -22,6 +22,19 @@ type CampaignUseCase struct {
 	publisher        domain.EventPublisher
 	subRepo          domain.SubscriptionRepository
 	approvalNotifier *ApprovalNotifier
+	revisionNotifier brandRevisionNotifier
+}
+
+// brandRevisionNotifier tells brands their campaign changed. It is an interface
+// so the campaign flow does not depend on the review use case.
+type brandRevisionNotifier interface {
+	NotifyBrandRevision(ctx context.Context, campaign *domain.Campaign, createdBy string) (int, error)
+}
+
+// SetBrandRevisionNotifier wires the review use case in after construction,
+// since the review flow already depends on this use case for preflight.
+func (u *CampaignUseCase) SetBrandRevisionNotifier(n brandRevisionNotifier) {
+	u.revisionNotifier = n
 }
 
 func NewCampaignUseCase(camRepo domain.CampaignRepository, conRepo domain.ContactRepository, destRepo domain.TelegramDestinationRepository, pub domain.EventPublisher, subRepo domain.SubscriptionRepository, notifiers ...*ApprovalNotifier) *CampaignUseCase {
@@ -71,7 +84,27 @@ func (u *CampaignUseCase) UpdateCampaign(ctx context.Context, tenantID, id strin
 	if err := u.campaignRepo.UpdateContent(ctx, tenantID, id, c, existing.Status != "draft"); err != nil {
 		return nil, err
 	}
-	return u.campaignRepo.GetByID(ctx, tenantID, id)
+	updated, err := u.campaignRepo.GetByID(ctx, tenantID, id)
+	if err != nil {
+		return nil, err
+	}
+	u.notifyBrandOfRevision(ctx, updated)
+	return updated, nil
+}
+
+// notifyBrandOfRevision tells brands that already have a review link that the
+// content changed. A mail failure must not undo a saved revision.
+func (u *CampaignUseCase) notifyBrandOfRevision(ctx context.Context, campaign *domain.Campaign) {
+	if u.revisionNotifier == nil {
+		return
+	}
+	createdBy, _ := ctx.Value(ctxkeys.UserIDKey).(string)
+	sent, err := u.revisionNotifier.NotifyBrandRevision(ctx, campaign, createdBy)
+	if err != nil {
+		log.Printf("[CAMPAIGN] could not email the brand about revision %s: %v\n", campaign.ID, err)
+		return
+	}
+	campaign.BrandRevisionNotified = sent > 0
 }
 
 func campaignEditable(c *domain.Campaign) bool {

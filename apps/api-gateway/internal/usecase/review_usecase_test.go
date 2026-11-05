@@ -15,6 +15,8 @@ type mockReviewRepo struct {
 	domain.ReviewRepository
 
 	token         *domain.ReviewToken
+	tokens        []*domain.ReviewToken
+	created       []*domain.ReviewToken
 	storedHash    string
 	recorded      *domain.ReviewEvent
 	recordErr     error
@@ -28,8 +30,13 @@ type mockReviewRepo struct {
 
 func (m *mockReviewRepo) CreateToken(ctx context.Context, token *domain.ReviewToken, tokenHash string) error {
 	m.token = token
+	m.created = append(m.created, token)
 	m.storedHash = tokenHash
 	return nil
+}
+
+func (m *mockReviewRepo) ListTokens(ctx context.Context, tenantID, campaignID string) ([]*domain.ReviewToken, error) {
+	return m.tokens, nil
 }
 
 func (m *mockReviewRepo) FindTokenByHash(ctx context.Context, tokenHash string) (*domain.ReviewToken, error) {
@@ -518,5 +525,70 @@ func TestEmailBrandLinkMintsToken(t *testing.T) {
 	}
 	if ttl := time.Until(reviewRepo.token.ExpiresAt); ttl < 13*24*time.Hour {
 		t.Fatalf("report links should last about two weeks, got %v", ttl)
+	}
+}
+
+func TestEmailBrandLinkStoresRecipientEmail(t *testing.T) {
+	uc, reviewRepo, _ := newReviewFixture("pending_approval")
+	uc.mailer = utils.NewMailer(&config.Config{})
+
+	if _, err := uc.EmailBrandLink(context.Background(), "tenant-1", "campaign-1", "Brand@Acme.example", "", "user-1"); err != nil {
+		t.Fatalf("EmailBrandLink returned error: %v", err)
+	}
+	if reviewRepo.token == nil || reviewRepo.token.RecipientEmail != "Brand@Acme.example" {
+		t.Fatalf("expected the recipient to be stored, got %+v", reviewRepo.token)
+	}
+}
+
+func TestCreateLinkDoesNotStoreRecipientEmail(t *testing.T) {
+	uc, reviewRepo, _ := newReviewFixture("pending_approval")
+
+	if _, err := uc.CreateLink(context.Background(), "tenant-1", "campaign-1", "Copied link", "user-1", 7); err != nil {
+		t.Fatalf("CreateLink returned error: %v", err)
+	}
+	if reviewRepo.token == nil || reviewRepo.token.RecipientEmail != "" {
+		t.Fatalf("a manually shared link has no recipient, got %+v", reviewRepo.token)
+	}
+}
+
+func TestNotifyBrandRevisionEmailsEachRecipientOnce(t *testing.T) {
+	uc, reviewRepo, campaignRepo := newReviewFixture("pending_approval")
+	uc.mailer = utils.NewMailer(&config.Config{})
+	revokedAt := time.Now()
+	reviewRepo.tokens = []*domain.ReviewToken{
+		{ID: "t1", Label: "Ada", RecipientEmail: "ada@brand.example"},
+		{ID: "t2", Label: "Ada stale", RecipientEmail: "ADA@brand.example"},
+		{ID: "t3", Label: "Manual link"},
+		{ID: "t4", Label: "Gone", RecipientEmail: "gone@brand.example", RevokedAt: &revokedAt},
+	}
+	campaign, err := campaignRepo.GetByID(context.Background(), "tenant-1", "campaign-1")
+	if err != nil {
+		t.Fatalf("GetByID returned error: %v", err)
+	}
+
+	sent, err := uc.NotifyBrandRevision(context.Background(), campaign, "user-1")
+	if err != nil {
+		t.Fatalf("NotifyBrandRevision returned error: %v", err)
+	}
+	if sent != 1 {
+		t.Fatalf("expected one emailed recipient, got %d", sent)
+	}
+	if len(reviewRepo.created) != 1 {
+		t.Fatalf("expected one fresh link, got %d", len(reviewRepo.created))
+	}
+	if reviewRepo.created[0].RecipientEmail != "ada@brand.example" {
+		t.Fatalf("unexpected recipient %q", reviewRepo.created[0].RecipientEmail)
+	}
+	if reviewRepo.created[0].Label != "Ada" {
+		t.Fatalf("expected the newest label for the recipient, got %q", reviewRepo.created[0].Label)
+	}
+
+	reviewRepo.tokens = []*domain.ReviewToken{{ID: "manual", Label: "Manual link"}}
+	reviewRepo.created = nil
+	if sent, err = uc.NotifyBrandRevision(context.Background(), campaign, "user-1"); err != nil || sent != 0 {
+		t.Fatalf("expected no email without a brand recipient, got sent=%d err=%v", sent, err)
+	}
+	if len(reviewRepo.created) != 0 {
+		t.Fatalf("expected no links without a brand recipient, got %d", len(reviewRepo.created))
 	}
 }
