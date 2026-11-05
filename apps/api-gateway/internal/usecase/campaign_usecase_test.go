@@ -37,6 +37,8 @@ type mockCampaignRepo struct {
 	claimDeliveriesForRetryFunc   func(ctx context.Context, tenantID, campaignID string, ids []string) ([]*domain.CampaignDelivery, error)
 	releaseDeliveryClaimsFunc     func(ctx context.Context, campaignID string, ids []string) error
 	countAudienceConsentFunc      func(ctx context.Context, tenantID string, contactIDs, channels []string) (*domain.AudienceConsentCounts, error)
+	countAudienceReachabilityFunc func(ctx context.Context, tenantID string, contactIDs, channels []string) (*domain.AudienceReachability, error)
+	listUnstartedTelegramFunc     func(ctx context.Context, tenantID string, contactIDs []string) ([]string, error)
 	streamAudienceConsentFunc     func(ctx context.Context, tenantID string, contactIDs, channels []string, yield func(*domain.AudienceConsentRow) error) error
 }
 
@@ -738,6 +740,20 @@ func (m *mockCampaignRepo) CountAudienceConsent(ctx context.Context, tenantID st
 		return m.countAudienceConsentFunc(ctx, tenantID, contactIDs, channels)
 	}
 	return &domain.AudienceConsentCounts{}, nil
+}
+
+func (m *mockCampaignRepo) CountAudienceReachability(ctx context.Context, tenantID string, contactIDs, channels []string) (*domain.AudienceReachability, error) {
+	if m.countAudienceReachabilityFunc != nil {
+		return m.countAudienceReachabilityFunc(ctx, tenantID, contactIDs, channels)
+	}
+	return &domain.AudienceReachability{}, nil
+}
+
+func (m *mockCampaignRepo) ListUnstartedTelegramContactIDs(ctx context.Context, tenantID string, contactIDs []string) ([]string, error) {
+	if m.listUnstartedTelegramFunc != nil {
+		return m.listUnstartedTelegramFunc(ctx, tenantID, contactIDs)
+	}
+	return nil, nil
 }
 
 func (m *mockCampaignRepo) StreamAudienceConsent(ctx context.Context, tenantID string, contactIDs, channels []string, yield func(*domain.AudienceConsentRow) error) error {

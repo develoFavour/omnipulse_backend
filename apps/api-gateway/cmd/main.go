@@ -16,6 +16,7 @@ import (
 	"omnipulse/apps/api-gateway/internal/config"
 	"omnipulse/apps/api-gateway/internal/event"
 	"omnipulse/apps/api-gateway/internal/handler"
+	"omnipulse/apps/api-gateway/internal/observability"
 
 	"omnipulse/apps/api-gateway/internal/repository"
 	"omnipulse/apps/api-gateway/internal/service"
@@ -35,6 +36,16 @@ func main() {
 	loadEnv(logger)
 
 	cfg := config.Load()
+
+	// Error reporting is opt-in: without SENTRY_DSN the gateway runs exactly as
+	// before and never sends anything off-host.
+	sentryEnabled, sentryErr := observability.InitSentry(cfg.SentryDSN, cfg.SentryEnvironment, cfg.SentryRelease)
+	if sentryErr != nil {
+		logger.Printf("[SENTRY-WARN] Error reporting disabled: %v\n", sentryErr)
+	} else if sentryEnabled {
+		defer observability.Flush()
+		logger.Printf("[SENTRY] Error reporting enabled (environment=%s)\n", cfg.SentryEnvironment)
+	}
 
 	clerk.SetKey(cfg.ClerkSecretKey)
 
@@ -733,6 +744,9 @@ func main() {
 		logger.Printf("[WA-WARN] WhatsApp Multi-Device manager initialization deferred: %v\n", waErr)
 	} else {
 		logger.Println("Successfully initialized WhatsApp Multi-Device session manager.")
+		// Gate dispatch on a live WhatsApp session; the manager is built after the
+		// campaign use case, so the dependency is wired in here.
+		campaignUseCase.SetChannelStatusReader(waManager)
 		waManager.SetInboxRepo(inboxRepo)
 		waManager.SetAIEngine(aiEngine)
 		waManager.SetAIAgentRepo(aiAgentRepo)
@@ -832,12 +846,18 @@ func main() {
 		}
 	}
 
+	// In-process liveness. NATS consumers are checked directly in /health/workers;
+	// these loops have no external signal, so they beat on every cycle.
+	heartbeats := service.NewHeartbeatRegistry()
+
 	// Campaign Watchdog — detects stuck campaigns and fires in-app alerts
 	campaignWatchdog := worker.NewCampaignWatchdog(db, notificationRepo)
+	campaignWatchdog.SetHeartbeatRecorder(heartbeats)
 	campaignWatchdog.Start(globalWorkerCtx)
 
 	// Campaign Scheduler — polls every 15s for due scheduled campaigns
 	schedulerService := service.NewSchedulerService(campaignRepo, campaignUseCase)
+	schedulerService.SetHeartbeat(heartbeats)
 	schedulerService.Start(globalWorkerCtx)
 
 	// 4. Modern Native HTTP Routing Multiplexer
@@ -859,16 +879,22 @@ func main() {
 			ConsumerExists bool   `json:"consumer_exists"`
 		}
 		type healthResponse struct {
-			Status          string       `json:"status"`
-			BroadcastWorker workerStatus `json:"broadcast_worker"`
-			TelemetryWorker workerStatus `json:"telemetry_worker"`
-			NATSStreamMsgs  uint64       `json:"nats_stream_msgs"`
-			CheckedAt       string       `json:"checked_at"`
+			Status          string                    `json:"status"`
+			BroadcastWorker workerStatus              `json:"broadcast_worker"`
+			TelemetryWorker workerStatus              `json:"telemetry_worker"`
+			Heartbeats      []service.HeartbeatStatus `json:"heartbeats"`
+			NATSStreamMsgs  uint64                    `json:"nats_stream_msgs"`
+			CheckedAt       string                    `json:"checked_at"`
 		}
 
 		resp := healthResponse{
-			Status:    "healthy",
-			CheckedAt: time.Now().UTC().Format(time.RFC3339),
+			Status:     "healthy",
+			Heartbeats: heartbeats.Snapshot(),
+			CheckedAt:  time.Now().UTC().Format(time.RFC3339),
+		}
+
+		if !heartbeats.Healthy() {
+			resp.Status = "degraded"
 		}
 
 		if natsJS != nil {
@@ -1102,10 +1128,15 @@ func main() {
 	corsHandler := c.Handler(handler.AuthMiddleware(identityUseCase)(mux))
 	loggedHandler := handler.RequestLoggerMiddleware(logger)(corsHandler)
 
+	var rootHandler http.Handler = loggedHandler
+	if sentryEnabled {
+		rootHandler = observability.Middleware(rootHandler)
+	}
+
 	// 5. Configure Network Server Parameters
 	srv := &http.Server{
 		Addr:         cfg.Port,
-		Handler:      loggedHandler,
+		Handler:      rootHandler,
 		IdleTimeout:  time.Minute,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,

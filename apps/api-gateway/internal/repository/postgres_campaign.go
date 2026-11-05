@@ -850,6 +850,85 @@ func (r *PostgresCampaignRepository) CountAudienceConsent(ctx context.Context, t
 	return &counts, nil
 }
 
+// telegramStartedPredicate is true when the contact has evidence of having
+// messaged the bot. Telegram bots cannot open a private chat, so a contact with
+// no inbound update is unreachable no matter how many times we try.
+const telegramStartedPredicate = `(
+	COALESCE(c.source, '') = 'inbound_webhook'
+	OR EXISTS (
+		SELECT 1
+		FROM conversations cv
+		JOIN messages m ON m.conversation_id = cv.id
+		WHERE cv.tenant_id = c.tenant_id
+		  AND cv.contact_id = c.id
+		  AND cv.channel = 'telegram'
+		  AND m.direction = 'inbound'
+	)
+)`
+
+// CountAudienceReachability reports active contacts per channel and how many
+// Telegram recipients have never started a chat with the bot.
+func (r *PostgresCampaignRepository) CountAudienceReachability(ctx context.Context, tenantID string, contactIDs, channels []string) (*domain.AudienceReachability, error) {
+	var idFilter, channelFilter interface{}
+	if len(contactIDs) > 0 {
+		idFilter = pq.Array(contactIDs)
+	}
+	if len(channels) > 0 {
+		channelFilter = pq.Array(channels)
+	}
+
+	var reach domain.AudienceReachability
+	err := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FILTER (WHERE c.channel = 'whatsapp'),
+		       COUNT(*) FILTER (WHERE c.channel = 'telegram'),
+		       COUNT(*) FILTER (WHERE c.channel = 'telegram' AND NOT `+telegramStartedPredicate+`)
+		FROM contacts c
+		WHERE c.tenant_id = $1
+		  AND c.status = 'active'
+		  AND ($2::uuid[] IS NULL OR c.id = ANY($2::uuid[]))
+		  AND ($3::text[] IS NULL OR c.channel = ANY($3::text[]));
+	`, tenantID, idFilter, channelFilter).Scan(
+		&reach.WhatsAppActive, &reach.TelegramActive, &reach.TelegramUnstarted,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to summarize audience reachability: %w", err)
+	}
+	return &reach, nil
+}
+
+// ListUnstartedTelegramContactIDs returns the Telegram contacts dispatch must
+// skip because the bot has never heard from them.
+func (r *PostgresCampaignRepository) ListUnstartedTelegramContactIDs(ctx context.Context, tenantID string, contactIDs []string) ([]string, error) {
+	var idFilter interface{}
+	if len(contactIDs) > 0 {
+		idFilter = pq.Array(contactIDs)
+	}
+
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT c.id
+		FROM contacts c
+		WHERE c.tenant_id = $1
+		  AND c.status = 'active'
+		  AND c.channel = 'telegram'
+		  AND ($2::uuid[] IS NULL OR c.id = ANY($2::uuid[]))
+		  AND NOT `+telegramStartedPredicate+`;
+	`, tenantID, idFilter)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list unstarted telegram contacts: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // StreamAudienceConsent yields one audit row per contact with its latest
 // consent decision, so large exports never buffer in memory.
 func (r *PostgresCampaignRepository) StreamAudienceConsent(ctx context.Context, tenantID string, contactIDs, channels []string, yield func(*domain.AudienceConsentRow) error) error {

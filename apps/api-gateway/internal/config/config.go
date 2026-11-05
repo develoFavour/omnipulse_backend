@@ -50,6 +50,11 @@ type Config struct {
 	// AI Business Assistant Providers (Free Dual-Engine)
 	GeminiAPIKey string
 	GroqAPIKey   string
+
+	// Error reporting. Empty DSN disables Sentry entirely.
+	SentryDSN         string
+	SentryEnvironment string
+	SentryRelease     string
 }
 
 // Load reads values from the OS environment variables or supplies secure defaults
@@ -92,6 +97,9 @@ func Load() *Config {
 		TelegramWebhookSecret: getEnv("TELEGRAM_WEBHOOK_SECRET", ""),
 		GeminiAPIKey:          getEnv("GEMINI_API_KEY", ""),
 		GroqAPIKey:            getEnv("GROQ_API_KEY", ""),
+		SentryDSN:             getEnv("SENTRY_DSN", ""),
+		SentryEnvironment:     getEnv("SENTRY_ENVIRONMENT", getEnv("APP_ENV", "development")),
+		SentryRelease:         getEnv("SENTRY_RELEASE", ""),
 	}
 }
 

@@ -14,6 +14,11 @@ type SchedulerService struct {
 	campaignRepo domain.CampaignRepository
 	dispatcher   CampaignDispatcher
 	interval     time.Duration
+	heartbeat    *HeartbeatRegistry
+}
+
+func (s *SchedulerService) SetHeartbeat(r *HeartbeatRegistry) {
+	s.heartbeat = r
 }
 
 // CampaignDispatcher is the interface the scheduler calls to fire off a campaign.
@@ -35,6 +40,7 @@ func NewSchedulerService(repo domain.CampaignRepository, dispatcher CampaignDisp
 func (s *SchedulerService) Start(ctx context.Context) {
 	ticker := time.NewTicker(s.interval)
 	log.Println("[SCHEDULER] ✅ Campaign Scheduler Service started (interval: 15s)")
+	s.heartbeat.Beat("scheduler", 60*time.Second)
 
 	go func() {
 		defer ticker.Stop()
@@ -44,6 +50,7 @@ func (s *SchedulerService) Start(ctx context.Context) {
 				log.Println("[SCHEDULER] 🛑 Campaign Scheduler Service stopped.")
 				return
 			case <-ticker.C:
+				s.heartbeat.Beat("scheduler", 60*time.Second)
 				s.processDueCampaigns(ctx)
 			}
 		}

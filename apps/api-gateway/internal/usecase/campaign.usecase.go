@@ -23,6 +23,27 @@ type CampaignUseCase struct {
 	subRepo          domain.SubscriptionRepository
 	approvalNotifier *ApprovalNotifier
 	revisionNotifier brandRevisionNotifier
+	channelStatus    channelStatusReader
+}
+
+// channelStatusReader reports whether an outbound channel can deliver right
+// now. Implemented by the WhatsApp manager; wired after construction because
+// the manager is built later in startup.
+type channelStatusReader interface {
+	GetStatus(ctx context.Context, tenantID string) (status, phone, name string, err error)
+}
+
+func (u *CampaignUseCase) SetChannelStatusReader(r channelStatusReader) {
+	u.channelStatus = r
+}
+
+// whatsAppReady reports whether a WhatsApp audience can be dispatched to.
+func (u *CampaignUseCase) whatsAppReady(ctx context.Context, tenantID string) bool {
+	if u.channelStatus == nil {
+		return false
+	}
+	status, _, _, err := u.channelStatus.GetStatus(ctx, tenantID)
+	return err == nil && status == "connected"
 }
 
 // brandRevisionNotifier tells brands their campaign changed. It is an interface
@@ -306,6 +327,29 @@ func (u *CampaignUseCase) TriggerDispatch(ctx context.Context, tenantID, campaig
 	selectedContacts := parseStringList(campaign.SelectedContactIDs)
 	log.Printf("[DISPATCH-TRACE] Parsed channels=%v destinations=%v contacts=%v\n", selectedChannels, selectedDestinations, selectedContacts)
 
+	// Reachability gates run before anything is published so a doomed dispatch
+	// cannot burn plan quota on targets that cannot possibly receive.
+	reach, err := u.campaignRepo.CountAudienceReachability(ctx, tenantID, selectedContacts, selectedChannels)
+	if err != nil {
+		return fmt.Errorf("could not verify channel reachability: %w", err)
+	}
+	if reach.WhatsAppActive > 0 && !u.whatsAppReady(ctx, tenantID) {
+		log.Printf("[DISPATCH-TRACE] ❌ Rejected: %d WhatsApp targets but the channel is not connected\n", reach.WhatsAppActive)
+		return errors.New("WhatsApp is not connected for this workspace. Reconnect the WhatsApp channel before dispatching")
+	}
+
+	unstartedTelegram := make(map[string]bool, reach.TelegramUnstarted)
+	if reach.TelegramUnstarted > 0 {
+		ids, err := u.campaignRepo.ListUnstartedTelegramContactIDs(ctx, tenantID, selectedContacts)
+		if err != nil {
+			return fmt.Errorf("could not verify Telegram reachability: %w", err)
+		}
+		for _, id := range ids {
+			unstartedTelegram[id] = true
+		}
+		log.Printf("[DISPATCH-TRACE] ⚠️ %d Telegram contact(s) never started the bot; they will be skipped\n", len(ids))
+	}
+
 	publishedTargets := 0
 
 	// 1. Dispatch to contacts
@@ -333,6 +377,10 @@ func (u *CampaignUseCase) TriggerDispatch(ctx context.Context, tenantID, campaig
 				}
 				if contact.Status != "active" {
 					log.Printf("[DISPATCH-TRACE] Skipping selected contact %s: inactive status\n", contact.ID)
+					continue
+				}
+				if unstartedTelegram[contact.ID] {
+					log.Printf("[DISPATCH-TRACE] Skipping selected contact %s: Telegram bot was never started\n", contact.ID)
 					continue
 				}
 				if len(selectedChannels) > 0 && !containsString(selectedChannels, contact.Channel) {
@@ -366,6 +414,10 @@ func (u *CampaignUseCase) TriggerDispatch(ctx context.Context, tenantID, campaig
 				if contact.Status != "active" || !containsString(selectedChannels, contact.Channel) {
 					log.Printf("[DISPATCH-TRACE] Skipping contact %s: status=%s channel=%s (not in %v)\n",
 						contact.ID, contact.Status, contact.Channel, selectedChannels)
+					continue
+				}
+				if unstartedTelegram[contact.ID] {
+					log.Printf("[DISPATCH-TRACE] Skipping contact %s: Telegram bot was never started\n", contact.ID)
 					continue
 				}
 				log.Printf("[DISPATCH-TRACE] Emitting task for contact %s (%s) on %s\n",
@@ -483,9 +535,10 @@ func (u *CampaignUseCase) Preflight(ctx context.Context, tenantID, campaignID st
 	selectedDestinations := parseStringList(cmp.SelectedTelegramDestinationIDs)
 
 	preflight := &domain.CampaignPreflight{
-		CampaignID: cmp.ID,
-		Status:     cmp.Status,
-		Reasons:    []domain.PreflightReason{},
+		CampaignID:        cmp.ID,
+		Status:            cmp.Status,
+		WhatsAppConnected: true,
+		Reasons:           []domain.PreflightReason{},
 	}
 
 	if len(selectedContacts) > 0 || len(selectedChannels) > 0 {
@@ -511,6 +564,33 @@ func (u *CampaignUseCase) Preflight(ctx context.Context, tenantID, campaignID st
 				Count:   counts.NoConsent,
 				Message: fmt.Sprintf("%d contact(s) have no recorded consent evidence; they will still be messaged", counts.NoConsent),
 			})
+		}
+
+		reach, err := u.campaignRepo.CountAudienceReachability(ctx, tenantID, selectedContacts, selectedChannels)
+		if err != nil {
+			return nil, err
+		}
+		if reach.TelegramUnstarted > 0 {
+			preflight.Unreachable = reach.TelegramUnstarted
+			preflight.Sendable -= reach.TelegramUnstarted
+			if preflight.Sendable < 0 {
+				preflight.Sendable = 0
+			}
+			preflight.Reasons = append(preflight.Reasons, domain.PreflightReason{
+				Code:    "telegram_not_started",
+				Count:   reach.TelegramUnstarted,
+				Message: fmt.Sprintf("%d Telegram contact(s) never started a chat with your bot and cannot receive messages; they will be skipped", reach.TelegramUnstarted),
+			})
+		}
+		if reach.WhatsAppActive > 0 {
+			preflight.WhatsAppConnected = u.whatsAppReady(ctx, tenantID)
+			if !preflight.WhatsAppConnected {
+				preflight.Reasons = append(preflight.Reasons, domain.PreflightReason{
+					Code:    "whatsapp_disconnected",
+					Count:   reach.WhatsAppActive,
+					Message: fmt.Sprintf("WhatsApp is not connected, so the %d WhatsApp target(s) cannot be reached until the channel is reconnected", reach.WhatsAppActive),
+				})
+			}
 		}
 	}
 

@@ -19,6 +19,22 @@ type CampaignWatchdog struct {
 	notifRepo    domain.NotificationRepository
 	pollInterval time.Duration
 	stuckAfter   time.Duration
+	heartbeat    HeartbeatRecorder
+}
+
+// HeartbeatRecorder is the liveness sink for the watchdog loop.
+type HeartbeatRecorder interface {
+	Beat(name string, staleAfter time.Duration)
+}
+
+func (w *CampaignWatchdog) SetHeartbeatRecorder(r HeartbeatRecorder) {
+	w.heartbeat = r
+}
+
+func (w *CampaignWatchdog) beat() {
+	if w.heartbeat != nil {
+		w.heartbeat.Beat("watchdog", 12*time.Minute)
+	}
 }
 
 // NewCampaignWatchdog creates a watchdog with sensible defaults:
@@ -34,6 +50,7 @@ func NewCampaignWatchdog(db *sql.DB, notifRepo domain.NotificationRepository) *C
 
 // Start launches the watchdog loop in the background.
 func (w *CampaignWatchdog) Start(ctx context.Context) {
+	w.beat()
 	go w.run(ctx)
 	log.Println("[WATCHDOG] Campaign delivery watchdog active — polling every 5m for stuck campaigns")
 }
@@ -46,6 +63,7 @@ func (w *CampaignWatchdog) run(ctx context.Context) {
 		initialTimer.Stop()
 		return
 	case <-initialTimer.C:
+		w.beat()
 		w.scan(ctx)
 	}
 
@@ -58,6 +76,7 @@ func (w *CampaignWatchdog) run(ctx context.Context) {
 			log.Println("[WATCHDOG] Campaign delivery watchdog shutting down.")
 			return
 		case <-ticker.C:
+			w.beat()
 			w.scan(ctx)
 		}
 	}
