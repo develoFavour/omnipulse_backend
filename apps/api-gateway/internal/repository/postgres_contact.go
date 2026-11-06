@@ -25,17 +25,14 @@ func (r *PostgresContactRepository) GetByID(ctx context.Context, tenantID, id st
 		FROM contacts
 		WHERE tenant_id = $1 AND id = $2;
 	`
-	var c domain.Contact
-	err := r.db.QueryRowContext(ctx, query, tenantID, id).Scan(
-		&c.ID, &c.TenantID, &c.FirstName, &c.LastName, &c.Channel, &c.RoutingValue, &c.Source, &c.Status, &c.CreatedAt, &c.UpdatedAt, &c.AnonymizedAt, &c.DeleteAfterAt,
-	)
+	c, err := scanContact(r.db.QueryRowContext(ctx, query, tenantID, id))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, domain.ErrContactNotFound
 		}
 		return nil, fmt.Errorf("failed to fetch contact: %w", err)
 	}
-	return &c, nil
+	return c, nil
 }
 
 func (r *PostgresContactRepository) GetByRoutingValue(ctx context.Context, tenantID, channel, routingValue string) (*domain.Contact, error) {
@@ -44,17 +41,14 @@ func (r *PostgresContactRepository) GetByRoutingValue(ctx context.Context, tenan
 		FROM contacts
 		WHERE tenant_id = $1 AND channel = $2 AND routing_value = $3;
 	`
-	var c domain.Contact
-	err := r.db.QueryRowContext(ctx, query, tenantID, channel, routingValue).Scan(
-		&c.ID, &c.TenantID, &c.FirstName, &c.LastName, &c.Channel, &c.RoutingValue, &c.Source, &c.Status, &c.CreatedAt, &c.UpdatedAt, &c.AnonymizedAt, &c.DeleteAfterAt,
-	)
+	c, err := scanContact(r.db.QueryRowContext(ctx, query, tenantID, channel, routingValue))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, domain.ErrContactNotFound
 		}
 		return nil, fmt.Errorf("failed to fetch contact by routing value: %w", err)
 	}
-	return &c, nil
+	return c, nil
 }
 
 func (r *PostgresContactRepository) Create(ctx context.Context, c *domain.Contact) error {
@@ -107,14 +101,11 @@ func (r *PostgresContactRepository) ListByTenant(ctx context.Context, tenantID, 
 
 	contacts := make([]*domain.Contact, 0, limit)
 	for rows.Next() {
-		var c domain.Contact
-		err := rows.Scan(
-			&c.ID, &c.TenantID, &c.FirstName, &c.LastName, &c.Channel, &c.RoutingValue, &c.Source, &c.Status, &c.CreatedAt, &c.UpdatedAt, &c.AnonymizedAt, &c.DeleteAfterAt,
-		)
+		c, err := scanContact(rows)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan row into contact domain: %w", err)
 		}
-		contacts = append(contacts, &c)
+		contacts = append(contacts, c)
 	}
 
 	if err = rows.Err(); err != nil {
@@ -230,14 +221,11 @@ func (r *PostgresContactRepository) ListWithFilter(ctx context.Context, tenantID
 
 	contacts := make([]*domain.Contact, 0, limit)
 	for rows.Next() {
-		var c domain.Contact
-		err := rows.Scan(
-			&c.ID, &c.TenantID, &c.FirstName, &c.LastName, &c.Channel, &c.RoutingValue, &c.Source, &c.Status, &c.CreatedAt, &c.UpdatedAt, &c.AnonymizedAt, &c.DeleteAfterAt,
-		)
+		c, err := scanContact(rows)
 		if err != nil {
 			return nil, 0, fmt.Errorf("failed to scan contact: %w", err)
 		}
-		contacts = append(contacts, &c)
+		contacts = append(contacts, c)
 	}
 
 	if err = rows.Err(); err != nil {
@@ -336,12 +324,16 @@ const contactColumns = `id, tenant_id, first_name, last_name, channel, routing_v
 
 func scanContact(row interface{ Scan(...interface{}) error }) (*domain.Contact, error) {
 	var c domain.Contact
+	// Nullable: erasure blanks the surname, and an inbound contact may never
+	// have had one.
+	var lastName sql.NullString
 	err := row.Scan(
-		&c.ID, &c.TenantID, &c.FirstName, &c.LastName, &c.Channel, &c.RoutingValue, &c.Source, &c.Status, &c.CreatedAt, &c.UpdatedAt, &c.AnonymizedAt, &c.DeleteAfterAt,
+		&c.ID, &c.TenantID, &c.FirstName, &lastName, &c.Channel, &c.RoutingValue, &c.Source, &c.Status, &c.CreatedAt, &c.UpdatedAt, &c.AnonymizedAt, &c.DeleteAfterAt,
 	)
 	if err != nil {
 		return nil, err
 	}
+	c.LastName = lastName.String
 	return &c, nil
 }
 
