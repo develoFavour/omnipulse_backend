@@ -5,7 +5,9 @@
 # =========================================================================
 
 # --- Stage 1: Builder ---
-FROM golang:1.25-alpine AS builder
+# Official images set GOTOOLCHAIN=local, so the toolchain must already satisfy
+# every dependency's go directive (x/* modules here require >= 1.26.0).
+FROM golang:1.27-alpine AS builder
 
 WORKDIR /workspace
 
