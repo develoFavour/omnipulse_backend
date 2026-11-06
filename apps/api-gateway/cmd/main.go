@@ -238,6 +238,21 @@ func main() {
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_contacts_tenant_name ON contacts(tenant_id, first_name);`)
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_contacts_tenant_routing ON contacts(tenant_id, routing_value);`)
 
+	// Recipient erasure: deleting a recipient anonymizes the row immediately
+	// and the retention sweep hard-deletes it once delete_after_at passes.
+	if _, err := db.Exec(`ALTER TABLE contacts ADD COLUMN IF NOT EXISTS anonymized_at TIMESTAMP WITH TIME ZONE;`); err != nil {
+		logger.Printf("[DB-MIGRATE] contacts anonymized_at migration: %v\n", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE contacts ADD COLUMN IF NOT EXISTS delete_after_at TIMESTAMP WITH TIME ZONE;`); err != nil {
+		logger.Printf("[DB-MIGRATE] contacts delete_after_at migration: %v\n", err)
+	}
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_contacts_delete_after ON contacts(delete_after_at) WHERE delete_after_at IS NOT NULL;`)
+	// Delivery rows must outlive the recipient so reports keep their history
+	// after the sweep unlinks them.
+	if _, err := db.Exec(`ALTER TABLE campaign_deliveries ALTER COLUMN contact_id DROP NOT NULL;`); err != nil {
+		logger.Printf("[DB-MIGRATE] campaign_deliveries nullable contact_id migration: %v\n", err)
+	}
+
 	// Idempotent schema migrations: notifications table
 	_, _ = db.Exec(`DO $$ BEGIN
 		CREATE TYPE notification_type AS ENUM (
@@ -860,6 +875,12 @@ func main() {
 	schedulerService.SetHeartbeat(heartbeats)
 	schedulerService.Start(globalWorkerCtx)
 
+	// Retention Sweep — hourly, permanently deletes recipients whose 30-day
+	// anonymized window has elapsed
+	retentionSweep := service.NewRetentionSweepService(contactRepo)
+	retentionSweep.SetHeartbeat(heartbeats)
+	retentionSweep.Start(globalWorkerCtx)
+
 	// 4. Modern Native HTTP Routing Multiplexer
 	mux := http.NewServeMux()
 
@@ -996,6 +1017,7 @@ func main() {
 	// Contact Subsystem Endpoints
 	mux.Handle("GET /api/v1/contacts/export", handler.RequireRole("owner", "admin")(http.HandlerFunc(contactHandler.ExportContacts)))
 	mux.Handle("POST /api/v1/contacts/import", handler.RequireRole("owner", "admin")(http.HandlerFunc(contactHandler.ImportContacts)))
+	mux.Handle("DELETE /api/v1/contacts/{id}", handler.RequireRole("owner", "admin")(http.HandlerFunc(contactHandler.DeleteContact)))
 	mux.HandleFunc("GET /api/v1/contacts/{id}", contactHandler.GetContact)
 	mux.HandleFunc("GET /api/v1/contacts", contactHandler.ListContacts)
 	mux.HandleFunc("POST /api/v1/contacts", contactHandler.CreateContact)
@@ -1126,12 +1148,14 @@ func main() {
 		AllowCredentials: true,
 	})
 	// Limits run before Clerk verification so unauthenticated floods never
-	// reach token checks or the database.
+	// reach token checks or the database. Security headers sit outermost so
+	// every response — including 429s — carries them.
 	rateLimiter := handler.NewIPRateLimiter()
 	corsHandler := c.Handler(rateLimiter.Middleware(handler.AuthMiddleware(identityUseCase)(mux)))
 	loggedHandler := handler.RequestLoggerMiddleware(logger)(corsHandler)
+	securedHandler := handler.SecurityHeaders(loggedHandler)
 
-	var rootHandler http.Handler = loggedHandler
+	var rootHandler http.Handler = securedHandler
 	if sentryEnabled {
 		rootHandler = observability.Middleware(rootHandler)
 	}

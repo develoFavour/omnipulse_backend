@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"omnipulse/apps/api-gateway/internal/domain"
 )
@@ -20,13 +21,13 @@ func NewPostgresContactRepository(db *sql.DB) domain.ContactRepository {
 
 func (r *PostgresContactRepository) GetByID(ctx context.Context, tenantID, id string) (*domain.Contact, error) {
 	query := `
-		SELECT id, tenant_id, first_name, last_name, channel, routing_value, source, status, created_at, updated_at
+		SELECT id, tenant_id, first_name, last_name, channel, routing_value, source, status, created_at, updated_at, anonymized_at, delete_after_at
 		FROM contacts
 		WHERE tenant_id = $1 AND id = $2;
 	`
 	var c domain.Contact
 	err := r.db.QueryRowContext(ctx, query, tenantID, id).Scan(
-		&c.ID, &c.TenantID, &c.FirstName, &c.LastName, &c.Channel, &c.RoutingValue, &c.Source, &c.Status, &c.CreatedAt, &c.UpdatedAt,
+		&c.ID, &c.TenantID, &c.FirstName, &c.LastName, &c.Channel, &c.RoutingValue, &c.Source, &c.Status, &c.CreatedAt, &c.UpdatedAt, &c.AnonymizedAt, &c.DeleteAfterAt,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -39,13 +40,13 @@ func (r *PostgresContactRepository) GetByID(ctx context.Context, tenantID, id st
 
 func (r *PostgresContactRepository) GetByRoutingValue(ctx context.Context, tenantID, channel, routingValue string) (*domain.Contact, error) {
 	query := `
-		SELECT id, tenant_id, first_name, last_name, channel, routing_value, source, status, created_at, updated_at
+		SELECT id, tenant_id, first_name, last_name, channel, routing_value, source, status, created_at, updated_at, anonymized_at, delete_after_at
 		FROM contacts
 		WHERE tenant_id = $1 AND channel = $2 AND routing_value = $3;
 	`
 	var c domain.Contact
 	err := r.db.QueryRowContext(ctx, query, tenantID, channel, routingValue).Scan(
-		&c.ID, &c.TenantID, &c.FirstName, &c.LastName, &c.Channel, &c.RoutingValue, &c.Source, &c.Status, &c.CreatedAt, &c.UpdatedAt,
+		&c.ID, &c.TenantID, &c.FirstName, &c.LastName, &c.Channel, &c.RoutingValue, &c.Source, &c.Status, &c.CreatedAt, &c.UpdatedAt, &c.AnonymizedAt, &c.DeleteAfterAt,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -81,7 +82,7 @@ func (r *PostgresContactRepository) ListByTenant(ctx context.Context, tenantID, 
 
 	if channelFilter != "" {
 		query = `
-			SELECT id, tenant_id, first_name, last_name, channel, routing_value, source, status, created_at, updated_at
+			SELECT id, tenant_id, first_name, last_name, channel, routing_value, source, status, created_at, updated_at, anonymized_at, delete_after_at
 			FROM contacts
 			WHERE tenant_id = $1 AND channel = $2
 			ORDER BY created_at DESC
@@ -90,7 +91,7 @@ func (r *PostgresContactRepository) ListByTenant(ctx context.Context, tenantID, 
 		rows, err = r.db.QueryContext(ctx, query, tenantID, channelFilter, limit, offset)
 	} else {
 		query = `
-			SELECT id, tenant_id, first_name, last_name, channel, routing_value, source, status, created_at, updated_at
+			SELECT id, tenant_id, first_name, last_name, channel, routing_value, source, status, created_at, updated_at, anonymized_at, delete_after_at
 			FROM contacts
 			WHERE tenant_id = $1
 			ORDER BY created_at DESC
@@ -108,7 +109,7 @@ func (r *PostgresContactRepository) ListByTenant(ctx context.Context, tenantID, 
 	for rows.Next() {
 		var c domain.Contact
 		err := rows.Scan(
-			&c.ID, &c.TenantID, &c.FirstName, &c.LastName, &c.Channel, &c.RoutingValue, &c.Source, &c.Status, &c.CreatedAt, &c.UpdatedAt,
+			&c.ID, &c.TenantID, &c.FirstName, &c.LastName, &c.Channel, &c.RoutingValue, &c.Source, &c.Status, &c.CreatedAt, &c.UpdatedAt, &c.AnonymizedAt, &c.DeleteAfterAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan row into contact domain: %w", err)
@@ -204,7 +205,7 @@ func (r *PostgresContactRepository) ListWithFilter(ctx context.Context, tenantID
 	// 3. Query paginated slice
 	dataArgs := append([]interface{}{}, args...)
 	dataQuery := fmt.Sprintf(`
-		SELECT c.id, c.tenant_id, c.first_name, c.last_name, c.channel, c.routing_value, c.source, c.status, c.created_at, c.updated_at
+		SELECT c.id, c.tenant_id, c.first_name, c.last_name, c.channel, c.routing_value, c.source, c.status, c.created_at, c.updated_at, c.anonymized_at, c.delete_after_at
 		FROM contacts c
 		WHERE %s
 		ORDER BY %s %s
@@ -231,7 +232,7 @@ func (r *PostgresContactRepository) ListWithFilter(ctx context.Context, tenantID
 	for rows.Next() {
 		var c domain.Contact
 		err := rows.Scan(
-			&c.ID, &c.TenantID, &c.FirstName, &c.LastName, &c.Channel, &c.RoutingValue, &c.Source, &c.Status, &c.CreatedAt, &c.UpdatedAt,
+			&c.ID, &c.TenantID, &c.FirstName, &c.LastName, &c.Channel, &c.RoutingValue, &c.Source, &c.Status, &c.CreatedAt, &c.UpdatedAt, &c.AnonymizedAt, &c.DeleteAfterAt,
 		)
 		if err != nil {
 			return nil, 0, fmt.Errorf("failed to scan contact: %w", err)
@@ -283,21 +284,23 @@ func (r *PostgresContactRepository) StreamContacts(ctx context.Context, tenantID
 	whereClause := strings.Join(conditions, " AND ")
 
 	query := fmt.Sprintf(`
-		SELECT 
-			c.id, 
-			c.tenant_id, 
-			c.first_name, 
-			COALESCE(c.last_name, ''), 
-			c.channel, 
-			c.routing_value, 
-			c.source, 
-			c.status, 
-			c.created_at, 
+		SELECT
+			c.id,
+			c.tenant_id,
+			c.first_name,
+			COALESCE(c.last_name, ''),
+			c.channel,
+			c.routing_value,
+			c.source,
+			c.status,
+			c.created_at,
 			c.updated_at,
+			c.anonymized_at,
+			c.delete_after_at,
 			COALESCE((
-				SELECT string_agg(t.name, '; ') 
-				FROM contact_tags ct 
-				JOIN tags t ON ct.tag_id = t.id 
+				SELECT string_agg(t.name, '; ')
+				FROM contact_tags ct
+				JOIN tags t ON ct.tag_id = t.id
 				WHERE ct.contact_id = c.id
 			), '') AS tag_names
 		FROM contacts c
@@ -315,7 +318,7 @@ func (r *PostgresContactRepository) StreamContacts(ctx context.Context, tenantID
 		var c domain.Contact
 		var tagNames string
 		err := rows.Scan(
-			&c.ID, &c.TenantID, &c.FirstName, &c.LastName, &c.Channel, &c.RoutingValue, &c.Source, &c.Status, &c.CreatedAt, &c.UpdatedAt,
+			&c.ID, &c.TenantID, &c.FirstName, &c.LastName, &c.Channel, &c.RoutingValue, &c.Source, &c.Status, &c.CreatedAt, &c.UpdatedAt, &c.AnonymizedAt, &c.DeleteAfterAt,
 			&tagNames,
 		)
 		if err != nil {
@@ -327,4 +330,105 @@ func (r *PostgresContactRepository) StreamContacts(ctx context.Context, tenantID
 	}
 
 	return rows.Err()
+}
+
+const contactColumns = `id, tenant_id, first_name, last_name, channel, routing_value, source, status, created_at, updated_at, anonymized_at, delete_after_at`
+
+func scanContact(row interface{ Scan(...interface{}) error }) (*domain.Contact, error) {
+	var c domain.Contact
+	err := row.Scan(
+		&c.ID, &c.TenantID, &c.FirstName, &c.LastName, &c.Channel, &c.RoutingValue, &c.Source, &c.Status, &c.CreatedAt, &c.UpdatedAt, &c.AnonymizedAt, &c.DeleteAfterAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// Anonymize blanks the PII of a recipient row in place. The row survives so
+// delivery history stays queryable, and the unique routing placeholder keeps
+// the (tenant, channel, routing) index satisfied. Re-invoking is idempotent:
+// the original anonymization timestamp and deadline are kept.
+func (r *PostgresContactRepository) Anonymize(ctx context.Context, tenantID, id string, deleteAfter time.Time) (*domain.Contact, error) {
+	query := fmt.Sprintf(`
+		UPDATE contacts
+		SET first_name = 'Redacted recipient',
+		    last_name = NULL,
+		    routing_value = 'redacted-' || id::text,
+		    status = 'opted_out',
+		    anonymized_at = COALESCE(anonymized_at, NOW()),
+		    delete_after_at = COALESCE(delete_after_at, $3),
+		    updated_at = NOW()
+		WHERE tenant_id = $1 AND id = $2
+		RETURNING %s;
+	`, contactColumns)
+
+	c, err := scanContact(r.db.QueryRowContext(ctx, query, tenantID, id, deleteAfter))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, domain.ErrContactNotFound
+		}
+		return nil, fmt.Errorf("failed to anonymize contact: %w", err)
+	}
+	return c, nil
+}
+
+// FindAnonymizedExpired returns IDs of recipients whose retention window has
+// elapsed, oldest deadline first.
+func (r *PostgresContactRepository) FindAnonymizedExpired(ctx context.Context, now time.Time, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id FROM contacts
+		WHERE delete_after_at IS NOT NULL AND delete_after_at <= $1
+		ORDER BY delete_after_at ASC
+		LIMIT $2;
+	`, now, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list expired anonymized contacts: %w", err)
+	}
+	defer rows.Close()
+
+	ids := make([]string, 0, limit)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("failed to scan expired contact id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read expired contact ids: %w", err)
+	}
+	return ids, nil
+}
+
+// HardDelete permanently removes a recipient row. Delivery rows are unlinked
+// rather than cascaded so campaign reports keep their history; every other
+// child row (tags, consent ledger, conversations, dispatches) cascades.
+func (r *PostgresContactRepository) HardDelete(ctx context.Context, id string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin contact hard-delete: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `UPDATE campaign_deliveries SET contact_id = NULL, updated_at = NOW() WHERE contact_id = $1;`, id); err != nil {
+		return fmt.Errorf("failed to unlink deliveries: %w", err)
+	}
+
+	res, err := tx.ExecContext(ctx, `DELETE FROM contacts WHERE id = $1;`, id)
+	if err != nil {
+		return fmt.Errorf("failed to hard-delete contact: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to confirm contact hard-delete: %w", err)
+	}
+	if rows == 0 {
+		return domain.ErrContactNotFound
+	}
+
+	return tx.Commit()
 }

@@ -42,3 +42,15 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+      # govulncheck is advisory for now: it analyzes the scanning toolchain's
+      # standard library too, so a Go advisory the pinned toolchain cannot take
+      # (like the current crypto/x509 one) would block every push. Its
+      # call-graph analysis still separates reachable findings from noise in
+      # the log — reachable third-party findings must be bumped, as the recent
+      # x/net / go-jose / compress upgrades were.
+      - name: Vulnerability scan
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+          govulncheck ./...
+        continue-on-error: true

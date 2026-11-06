@@ -73,6 +73,14 @@ var defaultRateLimitRules = []rateLimitRule{
 		window: time.Minute,
 	},
 	{
+		// Covers recipient erasure and tag removal; both are destructive and
+		// cheap to abuse at high volume.
+		class:  "contact-mutation",
+		match:  func(m, p string) bool { return m == http.MethodDelete && hasPrefix(p, "/api/v1/contacts/") },
+		limit:  30,
+		window: time.Minute,
+	},
+	{
 		class: "export",
 		match: func(m, p string) bool {
 			return m == http.MethodGet && (hasSuffix(p, "/export") || hasSuffix(p, "/consent-export"))

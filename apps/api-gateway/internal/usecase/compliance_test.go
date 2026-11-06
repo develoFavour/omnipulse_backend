@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"omnipulse/apps/api-gateway/internal/domain"
 	"omnipulse/shared/contracts"
@@ -17,6 +18,7 @@ type mockContactRepo struct {
 	listByTenantFunc      func(ctx context.Context, tenantID, channelFilter string, limit, offset int) ([]*domain.Contact, error)
 	listWithFilterFunc    func(ctx context.Context, tenantID string, filter domain.ContactFilter) ([]*domain.Contact, int, error)
 	streamContactsFunc    func(ctx context.Context, tenantID string, filter domain.ContactFilter, yield func(c *domain.Contact, tagNames string) error) error
+	anonymizeFunc         func(ctx context.Context, tenantID, id string, deleteAfter time.Time) (*domain.Contact, error)
 }
 
 func (m *mockContactRepo) GetByID(ctx context.Context, tenantID, id string) (*domain.Contact, error) {
@@ -58,6 +60,21 @@ func (m *mockContactRepo) StreamContacts(ctx context.Context, tenantID string, f
 	if m.streamContactsFunc != nil {
 		return m.streamContactsFunc(ctx, tenantID, filter, yield)
 	}
+	return nil
+}
+
+func (m *mockContactRepo) Anonymize(ctx context.Context, tenantID, id string, deleteAfter time.Time) (*domain.Contact, error) {
+	if m.anonymizeFunc != nil {
+		return m.anonymizeFunc(ctx, tenantID, id, deleteAfter)
+	}
+	return nil, nil
+}
+
+func (m *mockContactRepo) FindAnonymizedExpired(ctx context.Context, now time.Time, limit int) ([]string, error) {
+	return nil, nil
+}
+
+func (m *mockContactRepo) HardDelete(ctx context.Context, id string) error {
 	return nil
 }
 
