@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"omnipulse/apps/api-gateway/internal/domain"
 )
@@ -152,6 +153,44 @@ func (u *ContactUseCase) GetAllContacts(ctx context.Context, tenantID string, fi
 
 func (u *ContactUseCase) StreamContacts(ctx context.Context, tenantID string, filter domain.ContactFilter, yield func(c *domain.Contact, tagNames string) error) error {
 	return u.repo.StreamContacts(ctx, tenantID, filter, yield)
+}
+
+// DeleteRecipient erases a recipient. Their PII is blanked immediately, they
+// are suppressed from every future send, and the row survives in anonymized
+// form until the retention sweep hard-deletes it — delivery history included
+// in reports survives even that, because the sweep unlinks rather than
+// cascades delivery rows.
+func (u *ContactUseCase) DeleteRecipient(ctx context.Context, tenantID, id string) (*domain.Contact, error) {
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("%w: contact ID cannot be blank", domain.ErrInvalidContact)
+	}
+
+	deleteAfter := time.Now().Add(domain.AnonymizedRetention)
+	contact, err := u.repo.Anonymize(ctx, tenantID, id, deleteAfter)
+	if err != nil {
+		return nil, err
+	}
+
+	// The ledger only knows grant/revoke. Erasure lands as a revocation so the
+	// suppression is auditable; a failed ledger write must not block the
+	// erasure itself.
+	if u.consentRepo != nil {
+		evidence, _ := json.Marshal(map[string]interface{}{
+			"basis":        "erasure_request",
+			"anonymized":   true,
+			"delete_after": deleteAfter.UTC().Format(time.RFC3339),
+		})
+		_, _ = u.consentRepo.ApplyEvent(ctx, &domain.ConsentEvent{
+			TenantID:  tenantID,
+			ContactID: contact.ID,
+			EventType: domain.ConsentRevoked,
+			Source:    domain.ConsentSourceOperator,
+			Channel:   contact.Channel,
+			Evidence:  string(evidence),
+		})
+	}
+
+	return contact, nil
 }
 
 // parseImportConsent maps the vocabulary people use in exported lists onto the

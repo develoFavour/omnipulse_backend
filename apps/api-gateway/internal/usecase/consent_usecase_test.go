@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"omnipulse/apps/api-gateway/internal/domain"
 )
@@ -85,6 +86,18 @@ func (m *mockConsentContactRepo) ListWithFilter(ctx context.Context, tenantID st
 }
 
 func (m *mockConsentContactRepo) StreamContacts(ctx context.Context, tenantID string, filter domain.ContactFilter, yield func(c *domain.Contact, tagNames string) error) error {
+	return nil
+}
+
+func (m *mockConsentContactRepo) Anonymize(ctx context.Context, tenantID, id string, deleteAfter time.Time) (*domain.Contact, error) {
+	return nil, nil
+}
+
+func (m *mockConsentContactRepo) FindAnonymizedExpired(ctx context.Context, now time.Time, limit int) ([]string, error) {
+	return nil, nil
+}
+
+func (m *mockConsentContactRepo) HardDelete(ctx context.Context, id string) error {
 	return nil
 }
 

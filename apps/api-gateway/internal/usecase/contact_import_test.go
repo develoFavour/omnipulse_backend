@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"omnipulse/apps/api-gateway/internal/domain"
 )
@@ -67,6 +68,18 @@ func (m *importContactRepo) ListWithFilter(ctx context.Context, tenantID string,
 }
 
 func (m *importContactRepo) StreamContacts(ctx context.Context, tenantID string, filter domain.ContactFilter, yield func(c *domain.Contact, tagNames string) error) error {
+	return nil
+}
+
+func (m *importContactRepo) Anonymize(ctx context.Context, tenantID, id string, deleteAfter time.Time) (*domain.Contact, error) {
+	return nil, nil
+}
+
+func (m *importContactRepo) FindAnonymizedExpired(ctx context.Context, now time.Time, limit int) ([]string, error) {
+	return nil, nil
+}
+
+func (m *importContactRepo) HardDelete(ctx context.Context, id string) error {
 	return nil
 }
 

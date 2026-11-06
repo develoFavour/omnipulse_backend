@@ -50,6 +50,38 @@ func (h *ContactHandler) GetContact(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJSON(w, http.StatusOK, contact)
 }
 
+// DeleteContact handles: DELETE /api/v1/contacts/{id}
+//
+// Erasure is anonymize-now, hard-delete-later: the recipient's PII is blanked
+// and they are opted out immediately, the row survives (delivery history
+// intact) until the retention sweep permanently deletes it after
+// domain.AnonymizedRetention, and the response carries delete_after_at so the
+// UI can show the operator a live countdown.
+func (h *ContactHandler) DeleteContact(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	id := r.PathValue("id")
+	contact, err := h.useCase.DeleteRecipient(r.Context(), tenantID, id)
+	if err != nil {
+		if errors.Is(err, domain.ErrContactNotFound) {
+			utils.WriteError(w, http.StatusNotFound, "Target audience member not found")
+			return
+		}
+		if errors.Is(err, domain.ErrInvalidContact) {
+			utils.WriteError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		utils.WriteError(w, http.StatusInternalServerError, "Failed to erase audience member")
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, contact)
+}
+
 // CreateContact handles: POST /api/v1/contacts
 func (h *ContactHandler) CreateContact(w http.ResponseWriter, r *http.Request) {
 	tenantID, ok := r.Context().Value(TenantIDKey).(string)
