@@ -148,7 +148,7 @@ func (p *PaystackService) InitializePaymentLink(
 	}
 
 	email := strings.TrimSpace(customerEmail)
-	if email == "" {
+	if email == "" || !strings.Contains(email, "@") || !strings.Contains(email, ".") {
 		cleanedPhone := strings.Map(func(r rune) rune {
 			if r >= '0' && r <= '9' {
 				return r
@@ -156,9 +156,9 @@ func (p *PaystackService) InitializePaymentLink(
 			return -1
 		}, customerPhone)
 		if cleanedPhone == "" {
-			cleanedPhone = contactID
+			cleanedPhone = strings.ReplaceAll(contactID, "-", "")
 		}
-		email = fmt.Sprintf("customer.%s@omnipulse.customer", cleanedPhone)
+		email = fmt.Sprintf("customer.%s@messagerail.com", cleanedPhone)
 	}
 
 	metadata := map[string]interface{}{

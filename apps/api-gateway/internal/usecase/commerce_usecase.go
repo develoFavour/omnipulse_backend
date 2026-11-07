@@ -128,7 +128,7 @@ func (u *commerceUseCase) CreatePaymentLink(
 		contact.ID,
 		conversationID,
 		campaignID,
-		"", // Customer email synthesis inside paystack service if empty
+		req.CustomerEmail,
 		contact.RoutingValue,
 		req.AmountKobo,
 		req.Description,
