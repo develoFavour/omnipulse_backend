@@ -495,7 +495,7 @@ func TestCampaignApprovalWorkflow(t *testing.T) {
 		}
 	})
 
-	t.Run("TriggerDispatch blocks owner dispatching an unapproved draft", func(t *testing.T) {
+	t.Run("TriggerDispatch allows owner to bypass approval for draft", func(t *testing.T) {
 		repo := &mockCampaignRepo{
 			getByIDFunc: func(ctx context.Context, tID, id string) (*domain.Campaign, error) {
 				return &domain.Campaign{
@@ -514,12 +514,12 @@ func TestCampaignApprovalWorkflow(t *testing.T) {
 		uc := NewCampaignUseCase(repo, nil, nil, &mockPublisher{}, nil)
 		ctx := context.WithValue(context.Background(), ctxkeys.UserRoleKey, "owner")
 		err := uc.TriggerDispatch(ctx, tenantID, campaignID)
-		if err == nil || !strings.Contains(err.Error(), "campaign approval is required") {
-			t.Fatalf("expected approval error for owner dispatch of draft, got %v", err)
+		if err != nil && strings.Contains(err.Error(), "campaign approval is required") {
+			t.Fatalf("expected owner to bypass approval error, got %v", err)
 		}
 	})
 
-	t.Run("TriggerDispatch blocks pending_approval regardless of role", func(t *testing.T) {
+	t.Run("TriggerDispatch blocks member on pending_approval", func(t *testing.T) {
 		repo := &mockCampaignRepo{
 			getByIDFunc: func(ctx context.Context, tID, id string) (*domain.Campaign, error) {
 				return &domain.Campaign{
@@ -536,10 +536,10 @@ func TestCampaignApprovalWorkflow(t *testing.T) {
 			},
 		}
 		uc := NewCampaignUseCase(repo, nil, nil, &mockPublisher{}, nil)
-		ctx := context.WithValue(context.Background(), ctxkeys.UserRoleKey, "admin")
+		ctx := context.WithValue(context.Background(), ctxkeys.UserRoleKey, "member")
 		err := uc.TriggerDispatch(ctx, tenantID, campaignID)
 		if err == nil || !strings.Contains(err.Error(), "pending approval") {
-			t.Fatalf("expected pending approval error, got %v", err)
+			t.Fatalf("expected pending approval error for member, got %v", err)
 		}
 	})
 
@@ -628,7 +628,7 @@ func TestCampaignApprovalWorkflow(t *testing.T) {
 		}
 	})
 
-	t.Run("ScheduleCampaign requires approval for owners when enabled", func(t *testing.T) {
+	t.Run("ScheduleCampaign requires approval for members when enabled", func(t *testing.T) {
 		repo := &mockCampaignRepo{
 			getByIDFunc: func(ctx context.Context, tID, id string) (*domain.Campaign, error) {
 				return &domain.Campaign{
@@ -642,10 +642,39 @@ func TestCampaignApprovalWorkflow(t *testing.T) {
 			},
 		}
 		uc := NewCampaignUseCase(repo, nil, nil, &mockPublisher{}, nil)
-		ctx := context.WithValue(context.Background(), ctxkeys.UserRoleKey, "owner")
+		ctx := context.WithValue(context.Background(), ctxkeys.UserRoleKey, "member")
 		err := uc.ScheduleCampaign(ctx, tenantID, campaignID, time.Now().Add(time.Hour))
 		if err == nil || !strings.Contains(err.Error(), "campaign approval is required") {
-			t.Fatalf("expected approval error for owner scheduling draft, got %v", err)
+			t.Fatalf("expected approval error for member scheduling draft, got %v", err)
+		}
+	})
+
+	t.Run("ScheduleCampaign allows owner to schedule draft when approval is enabled", func(t *testing.T) {
+		scheduled := false
+		repo := &mockCampaignRepo{
+			getByIDFunc: func(ctx context.Context, tID, id string) (*domain.Campaign, error) {
+				return &domain.Campaign{
+					ID:       id,
+					TenantID: tID,
+					Status:   "draft",
+				}, nil
+			},
+			getApprovalSettingFunc: func(ctx context.Context, tID string) (bool, error) {
+				return true, nil
+			},
+			setScheduledFunc: func(ctx context.Context, tID, id string, at time.Time) error {
+				scheduled = true
+				return nil
+			},
+		}
+		uc := NewCampaignUseCase(repo, nil, nil, &mockPublisher{}, nil)
+		ctx := context.WithValue(context.Background(), ctxkeys.UserRoleKey, "owner")
+		err := uc.ScheduleCampaign(ctx, tenantID, campaignID, time.Now().Add(time.Hour))
+		if err != nil {
+			t.Fatalf("expected owner to schedule draft directly, got error: %v", err)
+		}
+		if !scheduled {
+			t.Fatal("expected setScheduledFunc to be called")
 		}
 	})
 

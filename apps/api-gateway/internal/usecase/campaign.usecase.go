@@ -183,8 +183,10 @@ func (u *CampaignUseCase) ScheduleCampaign(ctx context.Context, tenantID, campai
 	}
 
 	reqApproval, _ := u.campaignRepo.GetApprovalSetting(ctx, tenantID)
+	role, _ := ctx.Value(ctxkeys.UserRoleKey).(string)
+	isApprover := strings.EqualFold(role, "owner") || strings.EqualFold(role, "admin")
 
-	if reqApproval && campaign.Status != "approved" {
+	if reqApproval && !isApprover && campaign.Status != "approved" {
 		if campaign.Status == "pending_approval" {
 			return fmt.Errorf("campaign is pending approval from an Owner or Admin before it can be scheduled")
 		}
@@ -298,7 +300,9 @@ func (u *CampaignUseCase) TriggerDispatch(ctx context.Context, tenantID, campaig
 	}
 
 	reqApproval, _ := u.campaignRepo.GetApprovalSetting(ctx, tenantID)
-	if reqApproval && campaign.Status != "approved" && campaign.Status != "scheduled" {
+	role, _ := ctx.Value(ctxkeys.UserRoleKey).(string)
+	isApprover := strings.EqualFold(role, "owner") || strings.EqualFold(role, "admin")
+	if reqApproval && !isApprover && campaign.Status != "approved" && campaign.Status != "scheduled" {
 		if campaign.Status == "pending_approval" {
 			return fmt.Errorf("campaign is pending approval from an Owner or Admin before dispatching")
 		}
