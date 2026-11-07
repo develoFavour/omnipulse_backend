@@ -37,9 +37,10 @@ type PaymentTransaction struct {
 }
 
 type CreatePaymentLinkRequest struct {
-	AmountKobo  int64   `json:"amount"` // in kobo
-	Description string  `json:"description"`
-	CampaignID  *string `json:"campaign_id,omitempty"`
+	AmountKobo    int64   `json:"amount"` // in kobo
+	Description   string  `json:"description"`
+	CustomerEmail string  `json:"customer_email,omitempty"`
+	CampaignID    *string `json:"campaign_id,omitempty"`
 }
 
 type PaymentRepository interface {
