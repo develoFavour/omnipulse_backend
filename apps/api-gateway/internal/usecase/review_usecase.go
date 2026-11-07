@@ -447,15 +447,17 @@ func (u *ReviewUseCase) buildOutcomeReport(ctx context.Context, campaign *domain
 	}
 
 	return &domain.PublicOutcomeReport{
-		CampaignID:   campaign.ID,
-		Title:        campaign.Title,
-		Status:       campaign.Status,
-		TotalTargets: stats.TotalTargets,
-		Sent:         stats.Sent,
-		Delivered:    stats.Delivered,
-		Failed:       stats.Failed,
-		DeliveryRate: deliveryRate,
-		GeneratedAt:  time.Now().UTC(),
+		CampaignID:      campaign.ID,
+		Title:           campaign.Title,
+		Status:          campaign.Status,
+		TotalTargets:    stats.TotalTargets,
+		Sent:            stats.Sent,
+		Delivered:       stats.Delivered,
+		Failed:          stats.Failed,
+		DeliveryRate:    deliveryRate,
+		RevenueKobo:     stats.RevenueKobo,
+		PaidOrdersCount: stats.PaidOrdersCount,
+		GeneratedAt:     time.Now().UTC(),
 	}, nil
 }
 

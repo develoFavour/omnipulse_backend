@@ -655,6 +655,35 @@ func main() {
 		logger.Println("[DB-MIGRATE] Successfully ensured AI Business Assistant tables and conversation columns exist.")
 	}
 
+	// Idempotent schema migrations: Conversational Commerce & Payment Transactions
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS payment_transactions (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+			conversation_id UUID REFERENCES conversations(id) ON DELETE SET NULL,
+			contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+			campaign_id UUID REFERENCES campaigns(id) ON DELETE SET NULL,
+			amount BIGINT NOT NULL,
+			currency VARCHAR(10) NOT NULL DEFAULT 'NGN',
+			description TEXT NOT NULL,
+			reference VARCHAR(120) NOT NULL UNIQUE,
+			paystack_url TEXT NOT NULL,
+			status VARCHAR(30) NOT NULL DEFAULT 'pending',
+			paid_at TIMESTAMP WITH TIME ZONE,
+			created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE INDEX IF NOT EXISTS idx_payment_trans_tenant ON payment_transactions(tenant_id);
+		CREATE INDEX IF NOT EXISTS idx_payment_trans_contact ON payment_transactions(contact_id);
+		CREATE INDEX IF NOT EXISTS idx_payment_trans_campaign ON payment_transactions(campaign_id);
+		CREATE INDEX IF NOT EXISTS idx_payment_trans_conv ON payment_transactions(conversation_id);
+		CREATE INDEX IF NOT EXISTS idx_payment_trans_ref ON payment_transactions(reference);
+	`); err != nil {
+		logger.Printf("[DB-MIGRATE] Payment transactions migration: %v\n", err)
+	} else {
+		logger.Println("[DB-MIGRATE] Successfully ensured payment_transactions table exists.")
+	}
+
 	// Ensure pgvector extension and embedding column exist if supported by the host
 	if _, err := db.Exec(`CREATE EXTENSION IF NOT EXISTS vector;`); err != nil {
 		logger.Printf("[DB-MIGRATE] ℹ️ pgvector extension not available on this Postgres host (%v); continuing with GIN full-text search fallback.\n", err)
@@ -811,6 +840,12 @@ func main() {
 	}
 	webhookHandler.SetBroadcaster(inboxHub)
 	inboxUseCase.SetBroadcaster(inboxHub)
+
+	paymentRepo := repository.NewPostgresPaymentRepository(db)
+	commerceUseCase := usecase.NewCommerceUseCase(paymentRepo, inboxRepo, inboxUseCase, contactRepo, tagRepo, paystackSvc, db, cfg.PublicAppBaseURL)
+	commerceUseCase.SetBroadcaster(inboxHub)
+	billingUseCase.SetCommerceUseCase(commerceUseCase)
+	commerceHandler := handler.NewCommerceHandler(commerceUseCase, paymentRepo)
 
 	var mediaService *service.MediaService
 	if cfg.CloudinaryURL != "" {
@@ -1103,6 +1138,11 @@ func main() {
 	mux.HandleFunc("PATCH /api/v1/inbox/messages/{msgID}", inboxHandler.EditMessage)
 	mux.HandleFunc("DELETE /api/v1/inbox/messages/{msgID}", inboxHandler.DeleteMessage)
 	mux.HandleFunc("GET /api/v1/ws/inbox", inboxHub.HandleWebSocket)
+
+	// Conversational Commerce Endpoints
+	mux.HandleFunc("POST /api/v1/conversations/{id}/payment-link", commerceHandler.CreatePaymentLink)
+	mux.HandleFunc("GET /api/v1/conversations/{id}/payment-links", commerceHandler.ListConversationPaymentLinks)
+	mux.HandleFunc("GET /api/v1/contacts/{id}/payment-links", commerceHandler.ListContactPaymentLinks)
 
 	// AI Business Assistant Subsystem Endpoints
 	mux.HandleFunc("GET /api/v1/ai-agent/config", aiAgentHandler.GetConfig)

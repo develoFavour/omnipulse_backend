@@ -792,11 +792,13 @@ func (u *CampaignUseCase) GetCampaignReport(ctx context.Context, tenantID, campa
 	}
 
 	return &domain.CampaignReport{
-		Campaign:     campaign,
-		Stats:        stats,
-		Deliveries:   deliveries,
-		ReadRate:     math.Round(readRate*10) / 10,
-		DeliveryRate: math.Round(deliveryRate*10) / 10,
+		Campaign:        campaign,
+		Stats:           stats,
+		Deliveries:      deliveries,
+		ReadRate:        math.Round(readRate*10) / 10,
+		DeliveryRate:    math.Round(deliveryRate*10) / 10,
+		RevenueKobo:     stats.RevenueKobo,
+		PaidOrdersCount: stats.PaidOrdersCount,
 	}, nil
 }
 

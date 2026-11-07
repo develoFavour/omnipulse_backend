@@ -18,6 +18,11 @@ type BillingUseCase struct {
 	stripeSvc   *service.StripeService
 	paystackSvc *service.PaystackService
 	appBaseURL  string
+	commerceUC  CommerceUseCase
+}
+
+func (u *BillingUseCase) SetCommerceUseCase(commerceUC CommerceUseCase) {
+	u.commerceUC = commerceUC
 }
 
 func NewBillingUseCase(
@@ -319,6 +324,14 @@ func (u *BillingUseCase) handlePaystackChargeSuccess(ctx context.Context, dataRa
 	tenantID := payload.Metadata.TenantID
 	if tenantID == "" {
 		log.Printf("[PAYSTACK-WEBHOOK] Missing tenant_id in charge.success metadata (ref: %s)\n", payload.Reference)
+		return nil
+	}
+
+	if payload.Metadata.Intent == "payment_link" {
+		log.Printf("[PAYSTACK-WEBHOOK] Routing payment_link charge (ref: %s, amount: %d)\n", payload.Reference, payload.Amount)
+		if u.commerceUC != nil {
+			return u.commerceUC.HandlePaymentWebhook(ctx, payload.Reference, int64(payload.Amount), time.Now())
+		}
 		return nil
 	}
 

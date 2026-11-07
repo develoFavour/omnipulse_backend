@@ -454,6 +454,11 @@ func (r *PostgresCampaignRepository) GetCampaignStats(ctx context.Context, tenan
 		}
 	}
 
+	var revKobo int64
+	var paidCount int
+	revQuery := `SELECT COALESCE(SUM(amount), 0), COUNT(*) FROM payment_transactions WHERE campaign_id = $1 AND status = 'paid'`
+	_ = r.db.QueryRowContext(ctx, revQuery, campaignID).Scan(&revKobo, &paidCount)
+
 	return &domain.CampaignStats{
 		CampaignID:       campaignID,
 		TenantID:         tID,
@@ -467,6 +472,8 @@ func (r *PostgresCampaignRepository) GetCampaignStats(ctx context.Context, tenan
 		RetryableFailed:  retryableFailed,
 		TerminalFailed:   terminalFailed,
 		FailureBreakdown: failureBreakdown,
+		RevenueKobo:      revKobo,
+		PaidOrdersCount:  paidCount,
 	}, nil
 }
 
