@@ -104,15 +104,17 @@ type PublicReviewDecision struct {
 }
 
 type PublicOutcomeReport struct {
-	CampaignID   string    `json:"campaign_id"`
-	Title        string    `json:"title"`
-	Status       string    `json:"status"`
-	TotalTargets int       `json:"total_targets"`
-	Sent         int       `json:"sent"`
-	Delivered    int       `json:"delivered"`
-	Failed       int       `json:"failed"`
-	DeliveryRate float64   `json:"delivery_rate"`
-	GeneratedAt  time.Time `json:"generated_at"`
+	CampaignID      string    `json:"campaign_id"`
+	Title           string    `json:"title"`
+	Status          string    `json:"status"`
+	TotalTargets    int       `json:"total_targets"`
+	Sent            int       `json:"sent"`
+	Delivered       int       `json:"delivered"`
+	Failed          int       `json:"failed"`
+	DeliveryRate    float64   `json:"delivery_rate"`
+	RevenueKobo     int64     `json:"revenue_kobo"`
+	PaidOrdersCount int       `json:"paid_orders_count"`
+	GeneratedAt     time.Time `json:"generated_at"`
 }
 
 type ReviewRepository interface {

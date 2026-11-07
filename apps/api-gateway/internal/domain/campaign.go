@@ -78,6 +78,8 @@ type CampaignStats struct {
 	RetryableFailed  int            `json:"retryable_failed"`
 	TerminalFailed   int            `json:"terminal_failed"`
 	FailureBreakdown map[string]int `json:"failure_breakdown,omitempty"`
+	RevenueKobo      int64          `json:"revenue_kobo"`
+	PaidOrdersCount  int            `json:"paid_orders_count"`
 }
 
 // CampaignHealth aggregates detailed delivery state counts and categorized failure reasons
@@ -138,11 +140,13 @@ type CampaignRepository interface {
 
 // CampaignReport aggregates executive data for one-click agency reports
 type CampaignReport struct {
-	Campaign     *Campaign           `json:"campaign"`
-	Stats        *CampaignStats      `json:"stats"`
-	Deliveries   []*CampaignDelivery `json:"deliveries,omitempty"`
-	ReadRate     float64             `json:"read_rate"`
-	DeliveryRate float64             `json:"delivery_rate"`
+	Campaign        *Campaign           `json:"campaign"`
+	Stats           *CampaignStats      `json:"stats"`
+	Deliveries      []*CampaignDelivery `json:"deliveries,omitempty"`
+	ReadRate        float64             `json:"read_rate"`
+	DeliveryRate    float64             `json:"delivery_rate"`
+	RevenueKobo     int64               `json:"revenue_kobo"`
+	PaidOrdersCount int                 `json:"paid_orders_count"`
 }
 
 // EventPublisher defines our outbound streaming Port (DIP)
