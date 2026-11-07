@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -75,6 +76,7 @@ func (h *ContactHandler) DeleteContact(w http.ResponseWriter, r *http.Request) {
 			utils.WriteError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		log.Printf("[ContactHandler] erase failed for tenant=%s contact=%s: %v\n", tenantID, id, err)
 		utils.WriteError(w, http.StatusInternalServerError, "Failed to erase audience member")
 		return
 	}
@@ -187,6 +189,7 @@ func (h *ContactHandler) ListContacts(w http.ResponseWriter, r *http.Request) {
 
 	contacts, err := h.useCase.GetAllContacts(r.Context(), tenantID, filter)
 	if err != nil {
+		log.Printf("[ContactHandler] ListContacts error for tenant %s filter=%+v: %v\n", tenantID, filter, err)
 		utils.WriteError(w, http.StatusInternalServerError, "Error streaming query collection results")
 		return
 	}

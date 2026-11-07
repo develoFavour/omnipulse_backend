@@ -10,6 +10,7 @@
 FROM golang:1.27-alpine AS builder
 
 WORKDIR /workspace
+ENV GOTOOLCHAIN=auto
 
 # Copy workspace-level dependency files first (layer caching)
 COPY go.work go.work.sum ./
