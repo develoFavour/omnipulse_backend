@@ -304,15 +304,21 @@ func (r *PostgresContactRepository) StreamContacts(ctx context.Context, tenantID
 
 	for rows.Next() {
 		var c domain.Contact
-		var tagNames string
+		var firstName, lastName, channel, routingValue, source, status, tagNames sql.NullString
 		err := rows.Scan(
-			&c.ID, &c.TenantID, &c.FirstName, &c.LastName, &c.Channel, &c.RoutingValue, &c.Source, &c.Status, &c.CreatedAt, &c.UpdatedAt, &c.AnonymizedAt, &c.DeleteAfterAt,
+			&c.ID, &c.TenantID, &firstName, &lastName, &channel, &routingValue, &source, &status, &c.CreatedAt, &c.UpdatedAt, &c.AnonymizedAt, &c.DeleteAfterAt,
 			&tagNames,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to scan streaming contact: %w", err)
 		}
-		if err := yield(&c, tagNames); err != nil {
+		c.FirstName = firstName.String
+		c.LastName = lastName.String
+		c.Channel = channel.String
+		c.RoutingValue = routingValue.String
+		c.Source = source.String
+		c.Status = status.String
+		if err := yield(&c, tagNames.String); err != nil {
 			return err
 		}
 	}
@@ -325,15 +331,20 @@ const contactColumns = `id, tenant_id, first_name, last_name, channel, routing_v
 func scanContact(row interface{ Scan(...interface{}) error }) (*domain.Contact, error) {
 	var c domain.Contact
 	// Nullable: erasure blanks the surname, and an inbound contact may never
-	// have had one.
-	var lastName sql.NullString
+	// have had one or may have null/empty text fields.
+	var firstName, lastName, channel, routingValue, source, status sql.NullString
 	err := row.Scan(
-		&c.ID, &c.TenantID, &c.FirstName, &lastName, &c.Channel, &c.RoutingValue, &c.Source, &c.Status, &c.CreatedAt, &c.UpdatedAt, &c.AnonymizedAt, &c.DeleteAfterAt,
+		&c.ID, &c.TenantID, &firstName, &lastName, &channel, &routingValue, &source, &status, &c.CreatedAt, &c.UpdatedAt, &c.AnonymizedAt, &c.DeleteAfterAt,
 	)
 	if err != nil {
 		return nil, err
 	}
+	c.FirstName = firstName.String
 	c.LastName = lastName.String
+	c.Channel = channel.String
+	c.RoutingValue = routingValue.String
+	c.Source = source.String
+	c.Status = status.String
 	return &c, nil
 }
 

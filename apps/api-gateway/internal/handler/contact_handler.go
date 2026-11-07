@@ -189,6 +189,7 @@ func (h *ContactHandler) ListContacts(w http.ResponseWriter, r *http.Request) {
 
 	contacts, err := h.useCase.GetAllContacts(r.Context(), tenantID, filter)
 	if err != nil {
+		log.Printf("[ContactHandler] ListContacts error for tenant %s filter=%+v: %v\n", tenantID, filter, err)
 		utils.WriteError(w, http.StatusInternalServerError, "Error streaming query collection results")
 		return
 	}
