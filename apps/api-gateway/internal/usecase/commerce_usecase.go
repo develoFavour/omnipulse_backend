@@ -18,6 +18,11 @@ type CommerceUseCase interface {
 	ListPaymentLinks(ctx context.Context, tenantID, conversationID string) ([]domain.PaymentTransaction, error)
 	HandlePaymentWebhook(ctx context.Context, reference string, amountKobo int64, paidAt time.Time) error
 	SetBroadcaster(b domain.InboxBroadcaster)
+
+	GetSettlementAccount(ctx context.Context, tenantID string) (*domain.SettlementAccount, error)
+	SaveSettlementAccount(ctx context.Context, tenantID string, req domain.SaveSettlementAccountRequest) (*domain.SettlementAccount, error)
+	ListBanks(ctx context.Context, country string) ([]domain.BankInfo, error)
+	ResolveAccount(ctx context.Context, accountNumber, bankCode string) (*domain.ResolveAccountResponse, error)
 }
 
 type commerceUseCase struct {
@@ -121,7 +126,13 @@ func (u *commerceUseCase) CreatePaymentLink(
 		}
 	}
 
-	// 4. Initialize transaction on Paystack
+	// 4. Resolve settlement subaccount if configured for this workspace
+	var subaccountCode string
+	if settlement, err := u.paymentRepo.GetSettlementAccount(ctx, tenantID); err == nil && settlement != nil && settlement.SubaccountCode != "" {
+		subaccountCode = settlement.SubaccountCode
+	}
+
+	// 5. Initialize transaction on Paystack
 	callbackURL := fmt.Sprintf("%s/inbox?conversation=%s&paid=true", strings.TrimRight(u.appBaseURL, "/"), conversationID)
 	checkout, err := u.paystackSvc.InitializePaymentLink(
 		tenantID,
@@ -130,6 +141,7 @@ func (u *commerceUseCase) CreatePaymentLink(
 		campaignID,
 		req.CustomerEmail,
 		contact.RoutingValue,
+		subaccountCode,
 		req.AmountKobo,
 		req.Description,
 		callbackURL,
@@ -138,7 +150,11 @@ func (u *commerceUseCase) CreatePaymentLink(
 		return nil, fmt.Errorf("failed to create Paystack payment link: %w", err)
 	}
 
-	// 5. Store record in database
+	// 6. Store record in database
+	var subCodePtr *string
+	if subaccountCode != "" {
+		subCodePtr = &subaccountCode
+	}
 	tx := &domain.PaymentTransaction{
 		TenantID:       tenantID,
 		ConversationID: &conversationID,
@@ -149,6 +165,7 @@ func (u *commerceUseCase) CreatePaymentLink(
 		Description:    req.Description,
 		Reference:      checkout.Reference,
 		PaystackURL:    checkout.CheckoutURL,
+		SubaccountCode: subCodePtr,
 		Status:         domain.PaymentStatusPending,
 	}
 
@@ -230,4 +247,84 @@ func (u *commerceUseCase) HandlePaymentWebhook(ctx context.Context, reference st
 	}
 
 	return nil
+}
+
+func (u *commerceUseCase) GetSettlementAccount(ctx context.Context, tenantID string) (*domain.SettlementAccount, error) {
+	return u.paymentRepo.GetSettlementAccount(ctx, tenantID)
+}
+
+func (u *commerceUseCase) SaveSettlementAccount(
+	ctx context.Context,
+	tenantID string,
+	req domain.SaveSettlementAccountRequest,
+) (*domain.SettlementAccount, error) {
+	businessName := strings.TrimSpace(req.BusinessName)
+	if businessName == "" {
+		return nil, errors.New("business name is required")
+	}
+	settlementBank := strings.TrimSpace(req.SettlementBank)
+	if settlementBank == "" {
+		return nil, errors.New("settlement bank code is required")
+	}
+	accountNumber := strings.TrimSpace(req.AccountNumber)
+	if len(accountNumber) != 10 {
+		return nil, errors.New("a valid 10-digit NUBAN account number is required")
+	}
+
+	// 1. Resolve account name via Paystack to ensure account validity
+	accountName, err := u.paystackSvc.ResolveAccountNumber(accountNumber, settlementBank)
+	if err != nil {
+		return nil, fmt.Errorf("bank account resolution failed: %w", err)
+	}
+
+	// 2. Create or update subaccount on Paystack with 1.5% platform fee
+	subaccountCode, err := u.paystackSvc.CreateOrUpdateSubaccount(
+		businessName,
+		settlementBank,
+		accountNumber,
+		domain.PlatformCommissionPercent,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to register settlement subaccount on Paystack: %w", err)
+	}
+
+	// 3. Persist settlement account record in database
+	bankName := req.BankName
+	if bankName == "" {
+		bankName = settlementBank
+	}
+
+	account := &domain.SettlementAccount{
+		TenantID:         tenantID,
+		BusinessName:     businessName,
+		SettlementBank:   settlementBank,
+		BankName:         bankName,
+		AccountNumber:    accountNumber,
+		AccountName:      accountName,
+		SubaccountCode:   subaccountCode,
+		PercentageCharge: domain.PlatformCommissionPercent,
+		Currency:         "NGN",
+		IsVerified:       true,
+	}
+
+	if err := u.paymentRepo.UpsertSettlementAccount(ctx, account); err != nil {
+		return nil, err
+	}
+
+	return account, nil
+}
+
+func (u *commerceUseCase) ListBanks(ctx context.Context, country string) ([]domain.BankInfo, error) {
+	return u.paystackSvc.ListBanks(country)
+}
+
+func (u *commerceUseCase) ResolveAccount(ctx context.Context, accountNumber, bankCode string) (*domain.ResolveAccountResponse, error) {
+	accountName, err := u.paystackSvc.ResolveAccountNumber(accountNumber, bankCode)
+	if err != nil {
+		return nil, err
+	}
+	return &domain.ResolveAccountResponse{
+		AccountNumber: accountNumber,
+		AccountName:   accountName,
+	}, nil
 }

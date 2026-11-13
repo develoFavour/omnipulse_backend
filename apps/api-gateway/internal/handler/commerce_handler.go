@@ -108,3 +108,81 @@ func (h *CommerceHandler) ListContactPaymentLinks(w http.ResponseWriter, r *http
 		"payment_links": links,
 	})
 }
+
+// GetSettlementAccount handles GET /api/v1/commerce/settlement
+func (h *CommerceHandler) GetSettlementAccount(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok || tenantID == "" {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	acc, err := h.commerceUC.GetSettlementAccount(r.Context(), tenantID)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"settlement_account": acc,
+	})
+}
+
+// SaveSettlementAccount handles POST /api/v1/commerce/settlement
+func (h *CommerceHandler) SaveSettlementAccount(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok || tenantID == "" {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	var req domain.SaveSettlementAccountRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	acc, err := h.commerceUC.SaveSettlementAccount(r.Context(), tenantID, req)
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"settlement_account": acc,
+		"message":            "Settlement bank account successfully verified and linked with Paystack",
+	})
+}
+
+// ListBanks handles GET /api/v1/commerce/banks
+func (h *CommerceHandler) ListBanks(w http.ResponseWriter, r *http.Request) {
+	country := r.URL.Query().Get("country")
+	banks, err := h.commerceUC.ListBanks(r.Context(), country)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"banks": banks,
+	})
+}
+
+// ResolveAccount handles GET /api/v1/commerce/resolve-account
+func (h *CommerceHandler) ResolveAccount(w http.ResponseWriter, r *http.Request) {
+	accountNumber := r.URL.Query().Get("account_number")
+	bankCode := r.URL.Query().Get("bank_code")
+
+	if accountNumber == "" || bankCode == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Both account_number and bank_code are required")
+		return
+	}
+
+	res, err := h.commerceUC.ResolveAccount(r.Context(), accountNumber, bankCode)
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, res)
+}

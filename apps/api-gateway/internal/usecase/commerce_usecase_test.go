@@ -72,6 +72,14 @@ func (m *mockPaymentRepo) GetCampaignRevenue(ctx context.Context, tenantID, camp
 	return 2500000, 1, nil
 }
 
+func (m *mockPaymentRepo) GetSettlementAccount(ctx context.Context, tenantID string) (*domain.SettlementAccount, error) {
+	return nil, nil
+}
+
+func (m *mockPaymentRepo) UpsertSettlementAccount(ctx context.Context, account *domain.SettlementAccount) error {
+	return nil
+}
+
 type mockBroadcaster struct {
 	messages []*domain.Message
 }

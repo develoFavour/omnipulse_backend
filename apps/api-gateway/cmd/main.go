@@ -678,6 +678,24 @@ func main() {
 		CREATE INDEX IF NOT EXISTS idx_payment_trans_campaign ON payment_transactions(campaign_id);
 		CREATE INDEX IF NOT EXISTS idx_payment_trans_conv ON payment_transactions(conversation_id);
 		CREATE INDEX IF NOT EXISTS idx_payment_trans_ref ON payment_transactions(reference);
+		ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS subaccount_code VARCHAR(120);
+
+		CREATE TABLE IF NOT EXISTS tenant_settlement_accounts (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL UNIQUE REFERENCES tenants(id) ON DELETE CASCADE,
+			business_name VARCHAR(255) NOT NULL,
+			settlement_bank VARCHAR(100) NOT NULL,
+			bank_name VARCHAR(255) NOT NULL,
+			account_number VARCHAR(50) NOT NULL,
+			account_name VARCHAR(255) NOT NULL,
+			subaccount_code VARCHAR(120) NOT NULL,
+			percentage_charge NUMERIC(5, 2) NOT NULL DEFAULT 1.50,
+			currency VARCHAR(10) NOT NULL DEFAULT 'NGN',
+			is_verified BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE INDEX IF NOT EXISTS idx_settlement_tenant ON tenant_settlement_accounts(tenant_id);
 	`); err != nil {
 		logger.Printf("[DB-MIGRATE] Payment transactions migration: %v\n", err)
 	} else {
@@ -1139,10 +1157,14 @@ func main() {
 	mux.HandleFunc("DELETE /api/v1/inbox/messages/{msgID}", inboxHandler.DeleteMessage)
 	mux.HandleFunc("GET /api/v1/ws/inbox", inboxHub.HandleWebSocket)
 
-	// Conversational Commerce Endpoints
+	// Conversational Commerce & Settlement Endpoints
 	mux.HandleFunc("POST /api/v1/conversations/{id}/payment-link", commerceHandler.CreatePaymentLink)
 	mux.HandleFunc("GET /api/v1/conversations/{id}/payment-links", commerceHandler.ListConversationPaymentLinks)
 	mux.HandleFunc("GET /api/v1/contacts/{id}/payment-links", commerceHandler.ListContactPaymentLinks)
+	mux.HandleFunc("GET /api/v1/commerce/settlement", commerceHandler.GetSettlementAccount)
+	mux.Handle("POST /api/v1/commerce/settlement", handler.RequireRole("owner", "admin")(http.HandlerFunc(commerceHandler.SaveSettlementAccount)))
+	mux.HandleFunc("GET /api/v1/commerce/banks", commerceHandler.ListBanks)
+	mux.HandleFunc("GET /api/v1/commerce/resolve-account", commerceHandler.ResolveAccount)
 
 	// AI Business Assistant Subsystem Endpoints
 	mux.HandleFunc("GET /api/v1/ai-agent/config", aiAgentHandler.GetConfig)
