@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 )
 
 // Config holds all operational parameters for the API Gateway
@@ -55,6 +56,10 @@ type Config struct {
 	SentryDSN         string
 	SentryEnvironment string
 	SentryRelease     string
+
+	// PlatformAdminUserIDs is the Clerk user ID allowlist for the cross-tenant
+	// admin surface. Empty means nobody, including the product owner.
+	PlatformAdminUserIDs []string
 }
 
 // Load reads values from the OS environment variables or supplies secure defaults
@@ -100,6 +105,7 @@ func Load() *Config {
 		SentryDSN:             getEnv("SENTRY_DSN", ""),
 		SentryEnvironment:     getEnv("SENTRY_ENVIRONMENT", getEnv("APP_ENV", "development")),
 		SentryRelease:         getEnv("SENTRY_RELEASE", ""),
+		PlatformAdminUserIDs:  splitList(getEnv("PLATFORM_ADMIN_USER_IDS", "")),
 	}
 }
 
@@ -116,4 +122,19 @@ func getEnvAsInt(key string, fallback int) int {
 		return value
 	}
 	return fallback
+}
+
+// splitList turns a comma-separated env value into trimmed, non-empty items.
+func splitList(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	items := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			items = append(items, trimmed)
+		}
+	}
+	return items
 }

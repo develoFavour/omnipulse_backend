@@ -934,6 +934,15 @@ func main() {
 	retentionSweep.SetHeartbeat(heartbeats)
 	retentionSweep.Start(globalWorkerCtx)
 
+	// Platform admin surface: cross-tenant and read-only. Authorization is the
+	// PLATFORM_ADMIN_USER_IDS allowlist, never a workspace role — owning one
+	// workspace must not grant a view of every other workspace.
+	adminRepo := repository.NewPostgresAdminRepository(db)
+	adminHandler := handler.NewAdminHandler(adminRepo, heartbeats)
+	adminHandler.SetJetStream(natsJS)
+	platformGate := handler.NewPlatformAdminGate(cfg.PlatformAdminUserIDs)
+	logger.Printf("[PLATFORM-ADMIN] %d identity(ies) allowlisted for the platform dashboard\n", platformGate.Configured())
+
 	// 4. Modern Native HTTP Routing Multiplexer
 	mux := http.NewServeMux()
 
@@ -1014,6 +1023,19 @@ func main() {
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		utils.WriteJSON(w, http.StatusOK, map[string]string{"status": "healthy", "service": "api-gateway"})
 	})
+
+	// Platform Admin Endpoints — cross-tenant, read-only. Every route below is
+	// gated by the Clerk user ID allowlist in PLATFORM_ADMIN_USER_IDS.
+	adminRoute := func(h http.HandlerFunc) http.Handler {
+		return platformGate.RequirePlatformAdmin(h)
+	}
+	mux.Handle("GET /api/v1/admin/me", adminRoute(platformGate.Me))
+	mux.Handle("GET /api/v1/admin/overview", adminRoute(adminHandler.GetOverview))
+	mux.Handle("GET /api/v1/admin/growth", adminRoute(adminHandler.GetGrowth))
+	mux.Handle("GET /api/v1/admin/revenue", adminRoute(adminHandler.GetRevenue))
+	mux.Handle("GET /api/v1/admin/health", adminRoute(adminHandler.GetHealth))
+	mux.Handle("GET /api/v1/admin/workspaces", adminRoute(adminHandler.ListWorkspaces))
+	mux.Handle("GET /api/v1/admin/workspaces/{id}", adminRoute(adminHandler.GetWorkspace))
 
 	// Identity Subsystem Endpoints
 	mux.HandleFunc("POST /api/v1/auth/sync", identityHandler.SyncUser)
