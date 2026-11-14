@@ -734,6 +734,9 @@ func main() {
 
 	subRepo := repository.NewPostgresSubscriptionRepository(db)
 	contactRepo := repository.NewPostgresContactRepository(db)
+	// One guard for every bulk recipient source, so WhatsApp and Telegram
+	// imports share the same plan allowance and serialise per workspace.
+	contactCapacity := service.NewContactCapacityGuard(subRepo, contactRepo)
 	campaignRepo := repository.NewPostgresCampaignRepository(db)
 	identityRepo := repository.NewPostgresIdentityRepository(db)
 	channelRepo := repository.NewPostgresChannelRepository(db, cfg.EncryptionKey)
@@ -813,6 +816,7 @@ func main() {
 		waManager.SetAIEngine(aiEngine)
 		waManager.SetAIAgentRepo(aiAgentRepo)
 		waManager.SetAIReplyDispatcher(aiDispatcher)
+		waManager.SetContactCapacity(contactCapacity)
 	}
 
 	channelHandler := handler.NewChannelHandler(channelRepo, contactRepo, subRepo, cfg.PublicAPIBaseURL, cfg.PublicAppBaseURL, handler.MetaAppConfig{
@@ -821,7 +825,7 @@ func main() {
 		WABAConfigID:  cfg.MetaWABAConfigID,
 		WABAID:        cfg.MetaWABAID,
 		PhoneNumberID: cfg.MetaPhoneNumberID,
-	}, waManager)
+	}, waManager, contactCapacity)
 	webhookHandler := handler.NewWebhookHandler(contactUseCase, channelRepo, destinationRepo, inboxRepo, cfg.MetaAppSecret, cfg.TelegramWebhookSecret)
 	webhookHandler.SetConsentUseCase(consentUseCase)
 	webhookHandler.SetAIEngine(aiEngine)
