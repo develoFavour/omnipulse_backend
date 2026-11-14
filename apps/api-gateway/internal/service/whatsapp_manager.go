@@ -1080,20 +1080,41 @@ func (m *WhatsAppManager) saveContact(tenantID, rawPhone, name, source string) (
 	return contactID, created
 }
 
-// importContact is saveContact for bulk imports. Once the plan's remaining
-// slots are spent it stops touching the directory, so a workspace at its cap
-// keeps the recipients it already has and gains no new ones.
+// importContact is saveContact for bulk imports. When the plan's remaining
+// slots are spent it still refreshes recipients already in the directory (an
+// update costs no capacity) and only refuses genuinely new ones.
 func (m *WhatsAppManager) importContact(tenantID, rawPhone, name, source string, budget *ContactBudget) (string, bool) {
-	if !budget.Allows() {
-		budget.RecordSkipped()
+	phone := strings.TrimPrefix(strings.TrimSpace(rawPhone), "+")
+	if len(phone) < 7 {
 		return "", false
 	}
 
-	contactID, created := m.saveContact(tenantID, rawPhone, name, source)
-	if created {
-		budget.RecordNew()
+	if budget.Allows() {
+		contactID, created := m.saveContact(tenantID, phone, name, source)
+		if created {
+			budget.RecordNew()
+		}
+		return contactID, created
 	}
-	return contactID, created
+
+	if !m.contactExists(tenantID, phone) {
+		budget.RecordSkipped()
+		return "", false
+	}
+	return m.saveContact(tenantID, phone, name, source)
+}
+
+func (m *WhatsAppManager) contactExists(tenantID, phone string) bool {
+	execCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	var exists bool
+	err := m.db.QueryRowContext(execCtx, `
+		SELECT EXISTS (
+			SELECT 1 FROM contacts WHERE tenant_id = $1 AND channel = 'whatsapp' AND routing_value = $2
+		)
+	`, tenantID, "+"+phone).Scan(&exists)
+	return err == nil && exists
 }
 
 // ensureSession guarantees an active, connected WhatsApp client session for the tenant,
