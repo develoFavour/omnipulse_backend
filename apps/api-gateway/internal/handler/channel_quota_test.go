@@ -103,7 +103,7 @@ func TestChannelQuota_Enforcement(t *testing.T) {
 			},
 		}
 
-		h := NewChannelHandler(channelRepo, nil, subRepo, "http://localhost", "http://localhost", MetaAppConfig{}, nil)
+		h := NewChannelHandler(channelRepo, nil, subRepo, "http://localhost", "http://localhost", MetaAppConfig{}, nil, nil)
 
 		// 1. Direct method check
 		err := h.checkChannelQuota(context.Background(), tenantID)
@@ -157,7 +157,7 @@ func TestChannelQuota_Enforcement(t *testing.T) {
 			},
 		}
 
-		h := NewChannelHandler(channelRepo, nil, subRepo, "http://localhost", "http://localhost", MetaAppConfig{}, nil)
+		h := NewChannelHandler(channelRepo, nil, subRepo, "http://localhost", "http://localhost", MetaAppConfig{}, nil, nil)
 
 		err := h.checkChannelQuota(context.Background(), tenantID)
 		if err != nil {
@@ -189,7 +189,7 @@ func TestChannelQuota_Enforcement(t *testing.T) {
 			},
 		}
 
-		h := NewChannelHandler(channelRepo, nil, subRepo, "http://localhost", "http://localhost", MetaAppConfig{}, nil)
+		h := NewChannelHandler(channelRepo, nil, subRepo, "http://localhost", "http://localhost", MetaAppConfig{}, nil, nil)
 
 		err := h.checkChannelQuota(context.Background(), tenantID)
 		if err != nil {

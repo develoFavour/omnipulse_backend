@@ -149,9 +149,10 @@ type ChannelHandler struct {
 	publicAppBaseURL string
 	metaConfig       MetaAppConfig
 	waManager        *service.WhatsAppManager
+	capacity         *service.ContactCapacityGuard
 }
 
-func NewChannelHandler(repo domain.ChannelRepository, contactRepo domain.ContactRepository, subRepo domain.SubscriptionRepository, publicAPIBaseURL, publicAppBaseURL string, metaConfig MetaAppConfig, waManager *service.WhatsAppManager) *ChannelHandler {
+func NewChannelHandler(repo domain.ChannelRepository, contactRepo domain.ContactRepository, subRepo domain.SubscriptionRepository, publicAPIBaseURL, publicAppBaseURL string, metaConfig MetaAppConfig, waManager *service.WhatsAppManager, capacity *service.ContactCapacityGuard) *ChannelHandler {
 	return &ChannelHandler{
 		repo:             repo,
 		contactRepo:      contactRepo,
@@ -160,6 +161,7 @@ func NewChannelHandler(repo domain.ChannelRepository, contactRepo domain.Contact
 		publicAppBaseURL: publicAppBaseURL,
 		metaConfig:       metaConfig,
 		waManager:        waManager,
+		capacity:         capacity,
 	}
 }
 
@@ -862,16 +864,30 @@ func (h *ChannelHandler) HandleWhatsAppSyncContacts(w http.ResponseWriter, r *ht
 		return
 	}
 
-	syncedCount, err := h.waManager.SyncContacts(r.Context(), tenantID, h.contactRepo)
+	result, err := h.waManager.SyncContacts(r.Context(), tenantID)
 	if err != nil {
 		log.Printf("[WhatsAppSyncContacts] Error syncing contacts for tenant %s: %v\n", tenantID, err)
 		utils.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to sync WhatsApp contacts: %v", err))
 		return
 	}
 
+	msg := fmt.Sprintf("Successfully synced %d contacts from your WhatsApp", result.Total)
+	if result.LimitReached() {
+		msg = fmt.Sprintf("Imported %d new recipient(s). %d contact(s) were left out because your workspace is at its %d-recipient plan limit — upgrade to bring them in.",
+			result.Created, result.Skipped, result.Limit)
+	} else if result.OverCapacity {
+		msg = fmt.Sprintf("Your workspace already holds more recipients than your %d-recipient plan allows. New contacts were not imported — upgrade to increase capacity.", result.Limit)
+	}
+
 	utils.WriteJSON(w, http.StatusOK, map[string]interface{}{
-		"synced_count": syncedCount,
-		"message":      fmt.Sprintf("Successfully synced %d contacts from your WhatsApp", syncedCount),
+		"synced_count":   result.Total,
+		"imported_count": result.Created,
+		"skipped_count":  result.Skipped,
+		"total_count":    result.Total,
+		"limit":          result.Limit,
+		"limit_reached":  result.LimitReached(),
+		"over_capacity":  result.OverCapacity,
+		"message":        msg,
 	})
 }
 
@@ -1019,10 +1035,27 @@ func (h *ChannelHandler) HandleTelegramSyncContacts(w http.ResponseWriter, r *ht
 		}
 	}
 
-	// 6. Upsert each unique user as a contact
+	// 6. Upsert each unique user as a contact. Users already in the directory
+	// are updates and cost no capacity, so re-syncing a full workspace still
+	// refreshes names while new recipients wait for plan room.
+	unlock := h.capacity.Lock(tenantID)
+	defer unlock()
+	budget := h.capacity.Budget(r.Context(), tenantID)
+
 	syncedCount := 0
 	for _, user := range seen {
 		chatIDStr := fmt.Sprintf("%d", user.id)
+
+		existing, lookupErr := h.contactRepo.GetByRoutingValue(r.Context(), tenantID, "telegram", chatIDStr)
+		if lookupErr != nil && !errors.Is(lookupErr, domain.ErrContactNotFound) {
+			log.Printf("[TelegramSyncContacts] Failed to check contact %s for tenant %s: %v\n", chatIDStr, tenantID, lookupErr)
+			continue
+		}
+		if existing == nil && !budget.Allows() {
+			budget.RecordSkipped()
+			continue
+		}
+
 		contact := &domain.Contact{
 			TenantID:     tenantID,
 			FirstName:    user.firstName,
@@ -1036,6 +1069,9 @@ func (h *ChannelHandler) HandleTelegramSyncContacts(w http.ResponseWriter, r *ht
 		if err := h.contactRepo.Create(r.Context(), contact); err != nil {
 			log.Printf("[TelegramSyncContacts] Failed to upsert contact %s for tenant %s: %v\n", chatIDStr, tenantID, err)
 			continue
+		}
+		if existing == nil {
+			budget.RecordNew()
 		}
 		syncedCount++
 	}
@@ -1055,12 +1091,21 @@ func (h *ChannelHandler) HandleTelegramSyncContacts(w http.ResponseWriter, r *ht
 		botLink = fmt.Sprintf("https://t.me/%s", cleanUsername)
 	}
 
+	skippedCount := budget.Skipped()
+	limit := budget.Limit()
+	limitReached := skippedCount > 0
+
 	var msg string
-	if syncedCount > 0 {
+	switch {
+	case skippedCount > 0 && syncedCount > 0:
+		msg = fmt.Sprintf("Imported %d new contact(s) and stopped at your plan's %d-recipient limit. %d more were skipped — upgrade to bring them in.", syncedCount, limit, skippedCount)
+	case skippedCount > 0:
+		msg = fmt.Sprintf("Your workspace has reached its %d-recipient plan limit, so %d Telegram contact(s) were not imported. Upgrade to increase capacity.", limit, skippedCount)
+	case syncedCount > 0:
 		msg = fmt.Sprintf("Successfully synced %d new contact(s). You now have %d Telegram contact(s) in your audience.", syncedCount, totalCount)
-	} else if totalCount > 0 {
+	case totalCount > 0:
 		msg = fmt.Sprintf("Your directory is up to date! All %d Telegram contact(s) are already synced in your audience.", totalCount)
-	} else {
+	default:
 		if botUsername != "" {
 			msg = fmt.Sprintf("No Telegram contacts found yet. Users must open your bot (%s) and tap Start to be automatically synced.", botUsername)
 		} else {
@@ -1068,12 +1113,16 @@ func (h *ChannelHandler) HandleTelegramSyncContacts(w http.ResponseWriter, r *ht
 		}
 	}
 
-	log.Printf("[TelegramSyncContacts] Synced %d new, %d total Telegram contacts for tenant %s\n", syncedCount, totalCount, tenantID)
+	log.Printf("[TelegramSyncContacts] Synced %d new, %d skipped by plan limit, %d total Telegram contacts for tenant %s\n", syncedCount, skippedCount, totalCount, tenantID)
 	utils.WriteJSON(w, http.StatusOK, map[string]interface{}{
-		"synced_count": syncedCount,
-		"total_count":  totalCount,
-		"bot_username": botUsername,
-		"bot_link":     botLink,
-		"message":      msg,
+		"synced_count":  syncedCount,
+		"skipped_count": skippedCount,
+		"total_count":   totalCount,
+		"limit":         limit,
+		"limit_reached": limitReached,
+		"over_capacity": budget.OverCapacity(),
+		"bot_username":  botUsername,
+		"bot_link":      botLink,
+		"message":       msg,
 	})
 }

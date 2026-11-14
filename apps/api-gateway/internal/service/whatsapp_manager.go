@@ -37,6 +37,7 @@ type WhatsAppManager struct {
 	aiEngine      *AIEngineService
 	aiAgentRepo   domain.AIAgentRepository
 	aiDispatcher  AIReplyDispatcher
+	capacity      *ContactCapacityGuard
 	clients       sync.Map // map[string]*tenantSession (key: tenantID)
 	mu            sync.Mutex
 }
@@ -132,6 +133,17 @@ func (m *WhatsAppManager) SetAIReplyDispatcher(dispatcher AIReplyDispatcher) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.aiDispatcher = dispatcher
+}
+
+func (m *WhatsAppManager) SetContactCapacity(guard *ContactCapacityGuard) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.capacity = guard
+}
+
+// contactBudget is nil-safe: without a guard wired in, imports stay unlimited.
+func (m *WhatsAppManager) contactBudget(ctx context.Context, tenantID string) *ContactBudget {
+	return m.capacity.Budget(ctx, tenantID)
 }
 
 func (m *WhatsAppManager) ProcessAIReplyJob(ctx context.Context, job AIReplyJob) error {
@@ -365,11 +377,12 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 			go func() {
 				syncCtx, syncCancel := context.WithTimeout(context.Background(), 60*time.Second)
 				defer syncCancel()
-				count, err := m.SyncContacts(syncCtx, tenantID, nil)
+				result, err := m.SyncContacts(syncCtx, tenantID)
 				if err != nil {
 					log.Printf("[WhatsAppManager] ⚠️ Background contact sync failed for tenant %s: %v\n", tenantID, err)
 				} else {
-					log.Printf("[WhatsAppManager] ✅ Background contact sync complete for tenant %s: %d contacts\n", tenantID, count)
+					log.Printf("[WhatsAppManager] ✅ Background contact sync complete for tenant %s: %d new, %d skipped by plan limit, %d total\n",
+						tenantID, result.Created, result.Skipped, result.Total)
 				}
 			}()
 		case *events.PairSuccess:
@@ -435,6 +448,14 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 		case *events.HistorySync:
 			log.Printf("[WhatsAppManager] 🔄 Received HistorySync (%v) for tenant %s\n", evt.Data.GetSyncType(), tenantID)
 			count := 0
+
+			// A first pair can carry thousands of contacts in one history sync.
+			// The plan allowance applies to the import as a whole, so it gets one
+			// budget and the workspace's import lock for the duration of the event.
+			syncCtx, syncCancel := context.WithTimeout(context.Background(), 20*time.Second)
+			budget := m.contactBudget(syncCtx, tenantID)
+			syncCancel()
+			unlock := m.capacity.Lock(tenantID)
 
 			// 0. Store explicit Phone-to-LID mappings provided by WhatsApp
 			if sess.client != nil {
@@ -507,8 +528,9 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 				if name == "" {
 					name = ic.GetUsername()
 				}
-				m.saveContact(tenantID, phoneUser, name, "whatsapp_sync")
-				count++
+				if _, ok := m.importContact(tenantID, phoneUser, name, "whatsapp_sync", budget); ok {
+					count++
+				}
 			}
 
 			// 2. Process Conversations — includes both phone and LID-based chats
@@ -574,8 +596,9 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 					}
 				}
 
-				m.saveContact(tenantID, phoneUser, name, "whatsapp_sync")
-				count++
+				if _, ok := m.importContact(tenantID, phoneUser, name, "whatsapp_sync", budget); ok {
+					count++
+				}
 			}
 
 			// 3. Process Pushnames — includes LID pushnames
@@ -607,10 +630,12 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 					}
 					resCancel()
 				}
-				m.saveContact(tenantID, phoneUser, pn.GetPushname(), "whatsapp_sync")
-				count++
+				if _, ok := m.importContact(tenantID, phoneUser, pn.GetPushname(), "whatsapp_sync", budget); ok {
+					count++
+				}
 			}
-			log.Printf("[WhatsAppManager] 📥 Auto-imported %d contacts from HistorySync for tenant %s\n", count, tenantID)
+			unlock()
+			log.Printf("[WhatsAppManager] 📥 Auto-imported %d contacts from HistorySync for tenant %s (%d skipped by plan limit)\n", count, tenantID, budget.Skipped())
 
 		case *events.PushName:
 			phoneUser := evt.JID.User
@@ -695,7 +720,7 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 			}
 
 			if contactPhone != "" {
-				contactID := m.saveContact(tenantID, contactPhone, pushName, "whatsapp_sync")
+				contactID, _ := m.saveContact(tenantID, contactPhone, pushName, "whatsapp_sync")
 				text := extractMessageText(evt.Message)
 
 				var mediaURL *string
@@ -991,10 +1016,12 @@ func (m *WhatsAppManager) resolveAndMigrateLID(tenantID, lidUser, phoneUser stri
 	`, tenantID, lidRouting, phoneRouting)
 }
 
-func (m *WhatsAppManager) saveContact(tenantID, rawPhone, name, source string) string {
+// saveContact upserts one WhatsApp recipient and reports whether the row was
+// newly created rather than updated.
+func (m *WhatsAppManager) saveContact(tenantID, rawPhone, name, source string) (string, bool) {
 	phone := strings.TrimPrefix(strings.TrimSpace(rawPhone), "+")
 	if len(phone) < 7 {
-		return ""
+		return "", false
 	}
 
 	routingValue := "+" + phone
@@ -1014,9 +1041,9 @@ func (m *WhatsAppManager) saveContact(tenantID, rawPhone, name, source string) s
 			`, tenantID, routingValue).Scan(&existingID)
 			cancel()
 			if err == nil && existingID != "" {
-				return existingID
+				return existingID, false
 			}
-			return ""
+			return "", false
 		}
 	}
 
@@ -1035,6 +1062,7 @@ func (m *WhatsAppManager) saveContact(tenantID, rawPhone, name, source string) s
 	defer cancel()
 
 	var contactID string
+	var created bool
 	err := m.db.QueryRowContext(execCtx, `
 		INSERT INTO contacts (tenant_id, first_name, last_name, channel, routing_value, source, status, created_at, updated_at)
 		VALUES ($1, $2, $3, 'whatsapp', $4, $5, 'active', NOW(), NOW())
@@ -1043,13 +1071,29 @@ func (m *WhatsAppManager) saveContact(tenantID, rawPhone, name, source string) s
 			first_name = CASE WHEN contacts.first_name IN ('WhatsApp User', 'WhatsApp Contact') AND EXCLUDED.first_name NOT IN ('WhatsApp User', 'WhatsApp Contact') THEN EXCLUDED.first_name ELSE contacts.first_name END,
 			last_name = CASE WHEN contacts.last_name = '' AND EXCLUDED.last_name != '' THEN EXCLUDED.last_name ELSE contacts.last_name END,
 			updated_at = NOW()
-		RETURNING id;
-	`, tenantID, fn, ln, routingValue, source).Scan(&contactID)
+		RETURNING id, (xmax = 0);
+	`, tenantID, fn, ln, routingValue, source).Scan(&contactID, &created)
 	if err != nil {
 		log.Printf("[WhatsAppManager] Warning: failed to save contact %s (%s): %v\n", name, routingValue, err)
-		return ""
+		return "", false
 	}
-	return contactID
+	return contactID, created
+}
+
+// importContact is saveContact for bulk imports. Once the plan's remaining
+// slots are spent it stops touching the directory, so a workspace at its cap
+// keeps the recipients it already has and gains no new ones.
+func (m *WhatsAppManager) importContact(tenantID, rawPhone, name, source string, budget *ContactBudget) (string, bool) {
+	if !budget.Allows() {
+		budget.RecordSkipped()
+		return "", false
+	}
+
+	contactID, created := m.saveContact(tenantID, rawPhone, name, source)
+	if created {
+		budget.RecordNew()
+	}
+	return contactID, created
 }
 
 // ensureSession guarantees an active, connected WhatsApp client session for the tenant,
@@ -1334,18 +1378,24 @@ func (m *WhatsAppManager) EditMessage(ctx context.Context, tenantID string, reci
 // SyncContacts reads all saved contacts from the linked WhatsApp account, groups, and local store.
 // It handles both standard phone-number JIDs (s.whatsapp.net) and LID-based JIDs (lid server)
 // by attempting to resolve LIDs to their real phone numbers before saving.
-func (m *WhatsAppManager) SyncContacts(ctx context.Context, tenantID string, contactRepo domain.ContactRepository) (int, error) {
+func (m *WhatsAppManager) SyncContacts(ctx context.Context, tenantID string) (ContactSyncResult, error) {
 	sess, err := m.ensureSession(ctx, tenantID)
 	if err != nil {
-		return 0, fmt.Errorf("WhatsApp is not connected for tenant %s: %w", tenantID, err)
+		return ContactSyncResult{}, fmt.Errorf("WhatsApp is not connected for tenant %s: %w", tenantID, err)
 	}
 
-	syncedCount := 0
+	// Serialise with HistorySync and the Telegram sync so two sources cannot
+	// both spend the same remaining slots.
+	unlock := m.capacity.Lock(tenantID)
+	defer unlock()
+	budget := m.contactBudget(ctx, tenantID)
+
 	lidResolutionFailed := 0
 
 	// 1. Sync from local store — process both DefaultUserServer and HiddenUserServer (LID) contacts
 	if contactsMap, err := sess.client.Store.Contacts.GetAllContacts(ctx); err == nil && len(contactsMap) > 0 {
 		log.Printf("[WhatsAppManager] 🔍 Found %d contacts in local WA store for tenant %s\n", len(contactsMap), tenantID)
+		storeCreated := 0
 		for jid, info := range contactsMap {
 			if jid.Server == types.GroupServer || jid.Server == types.BroadcastServer || jid.User == "" {
 				continue // skip groups and broadcast lists
@@ -1391,11 +1441,12 @@ func (m *WhatsAppManager) SyncContacts(ctx context.Context, tenantID string, con
 					log.Printf("[WhatsAppManager] ℹ️ SyncContacts: could not resolve LID %s, saving as-is (name: %q)\n", jid.String(), name)
 				}
 			}
-			m.saveContact(tenantID, phoneUser, name, "whatsapp_sync")
-			syncedCount++
+			if _, created := m.importContact(tenantID, phoneUser, name, "whatsapp_sync", budget); created {
+				storeCreated++
+			}
 		}
-		log.Printf("[WhatsAppManager] 📋 SyncContacts store pass: %d processed, %d LIDs unresolved for tenant %s\n",
-			syncedCount, lidResolutionFailed, tenantID)
+		log.Printf("[WhatsAppManager] 📋 SyncContacts store pass: %d new, %d skipped by plan limit, %d LIDs unresolved for tenant %s\n",
+			storeCreated, budget.Skipped(), lidResolutionFailed, tenantID)
 	} else if err != nil {
 		log.Printf("[WhatsAppManager] ⚠️ SyncContacts: failed to get contacts from local store: %v\n", err)
 	}
@@ -1422,8 +1473,9 @@ func (m *WhatsAppManager) SyncContacts(ctx context.Context, tenantID string, con
 					}
 					resCancel()
 				}
-				m.saveContact(tenantID, phoneUser, "WhatsApp Contact", "whatsapp_group_sync")
-				groupCount++
+				if _, created := m.importContact(tenantID, phoneUser, "WhatsApp Contact", "whatsapp_group_sync", budget); created {
+					groupCount++
+				}
 			}
 		}
 		log.Printf("[WhatsAppManager] 👥 SyncContacts: imported %d group participants for tenant %s\n", groupCount, tenantID)
@@ -1433,8 +1485,20 @@ func (m *WhatsAppManager) SyncContacts(ctx context.Context, tenantID string, con
 	var totalInDB int
 	_ = m.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM contacts WHERE tenant_id = $1 AND channel = 'whatsapp'`, tenantID).Scan(&totalInDB)
 
-	log.Printf("[WhatsAppManager] 📥 SyncContacts complete: %d WhatsApp contacts in DB for tenant %s\n", totalInDB, tenantID)
-	return totalInDB, nil
+	result := ContactSyncResult{
+		Created:      budget.Created(),
+		Skipped:      budget.Skipped(),
+		Total:        totalInDB,
+		Limit:        budget.Limit(),
+		OverCapacity: budget.OverCapacity(),
+	}
+	if result.LimitReached() {
+		log.Printf("[WhatsAppManager] ⚠️ SyncContacts stopped for tenant %s after %d new recipients: plan allows %d\n",
+			tenantID, result.Created, result.Limit)
+	}
+	log.Printf("[WhatsAppManager] 📥 SyncContacts complete: %d new, %d skipped, %d WhatsApp contacts in DB for tenant %s\n",
+		result.Created, result.Skipped, totalInDB, tenantID)
+	return result, nil
 }
 
 func (m *WhatsAppManager) handleAIAutoResponse(tenantID string, conv *domain.Conversation, contactPhone, incomingText string) error {
