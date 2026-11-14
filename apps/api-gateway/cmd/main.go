@@ -1235,7 +1235,7 @@ func main() {
 	// reach token checks or the database. Security headers sit outermost so
 	// every response — including 429s — carries them.
 	rateLimiter := handler.NewIPRateLimiter()
-	corsHandler := c.Handler(rateLimiter.Middleware(handler.AuthMiddleware(identityUseCase)(mux)))
+	corsHandler := c.Handler(rateLimiter.Middleware(handler.AuthMiddleware(identityUseCase, platformGate)(mux)))
 	loggedHandler := handler.RequestLoggerMiddleware(logger)(corsHandler)
 	securedHandler := handler.SecurityHeaders(loggedHandler)
 

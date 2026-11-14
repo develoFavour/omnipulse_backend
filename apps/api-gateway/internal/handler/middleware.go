@@ -86,7 +86,7 @@ func RequestLoggerMiddleware(logger *log.Logger) func(http.Handler) http.Handler
 }
 
 // AuthMiddleware intercepts raw HTTP streams to validate credentials
-func AuthMiddleware(identityUC *usecase.IdentityUseCase) func(http.Handler) http.Handler {
+func AuthMiddleware(identityUC *usecase.IdentityUseCase, platformGate *PlatformAdminGate) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Bypass health check, root path, external webhooks, invitation preview, and billing webhooks
@@ -108,6 +108,11 @@ func AuthMiddleware(identityUC *usecase.IdentityUseCase) func(http.Handler) http
 					claims, err := jwt.Verify(r.Context(), &jwt.VerifyParams{Token: token})
 					if err == nil {
 						clerkUserID := claims.Subject
+						// Platform identities have no workspace to stream from.
+						if platformGate != nil && platformGate.Allows(clerkUserID) {
+							utils.WriteError(w, http.StatusForbidden, "This account is reserved for platform operations")
+							return
+						}
 						userEmail := r.Header.Get("X-User-Email")
 						userName := r.Header.Get("X-User-Name")
 						syncRes, err := identityUC.SyncUser(r.Context(), clerkUserID, userEmail, userName)
@@ -151,8 +156,24 @@ func AuthMiddleware(identityUC *usecase.IdentityUseCase) func(http.Handler) http
 				return
 			}
 
-			// 4. JIT Provisioning & Tenant Resolution
+			// 4. Platform operators are their own identity class. They are
+			// allowlisted by Clerk ID and intentionally have no workspace, so
+			// JIT provisioning is skipped entirely — otherwise every admin
+			// sign-in would create an empty tenant and skew workspace metrics.
+			// Anything outside the admin API is refused rather than resolved.
 			clerkUserID := claims.Subject
+			if platformGate != nil && platformGate.Allows(clerkUserID) {
+				if !strings.HasPrefix(r.URL.Path, "/api/v1/admin/") {
+					log.Printf("[PLATFORM-ADMIN] workspace route refused for platform identity user=%s %s %s", clerkUserID, r.Method, r.URL.Path)
+					utils.WriteError(w, http.StatusForbidden, "This account is reserved for platform operations and has no workspace access")
+					return
+				}
+				ctx := context.WithValue(r.Context(), UserIDKey, clerkUserID)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+
+			// 5. JIT Provisioning & Tenant Resolution
 			userEmail := r.Header.Get("X-User-Email")
 			userName := r.Header.Get("X-User-Name")
 			syncRes, err := identityUC.SyncUser(r.Context(), clerkUserID, userEmail, userName)
@@ -167,12 +188,12 @@ func AuthMiddleware(identityUC *usecase.IdentityUseCase) func(http.Handler) http
 				return
 			}
 
-			// 5. Inject the proven identity data cleanly downstream into the request lifetime context
+			// 6. Inject the proven identity data cleanly downstream into the request lifetime context
 			ctx := context.WithValue(r.Context(), TenantIDKey, syncRes.Tenant.ID)
 			ctx = context.WithValue(ctx, UserIDKey, syncRes.User.ID)
 			ctx = context.WithValue(ctx, UserRoleKey, syncRes.User.Role)
 
-			// 6. Pass the structurally updated request envelope down to the next handler stage
+			// 7. Pass the structurally updated request envelope down to the next handler stage
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
