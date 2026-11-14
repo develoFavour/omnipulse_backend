@@ -131,6 +131,10 @@ type ContactUseCase interface {
 	FetchContact(ctx context.Context, tenantID, id string) (*Contact, error)
 	GetContactByRoutingValue(ctx context.Context, tenantID, channel, routingValue string) (*Contact, error)
 	RegisterContact(ctx context.Context, contact *Contact) error
+	// RegisterInboundContact records someone who messaged the workspace first.
+	// It skips the plan capacity check so a full workspace never drops a new
+	// conversation; new bulk imports from channels remain blocked.
+	RegisterInboundContact(ctx context.Context, contact *Contact) error
 	ImportContacts(ctx context.Context, tenantID string, req ContactImportRequest) (*ContactImportSummary, error)
 	GetAllContacts(ctx context.Context, tenantID string, filter ContactFilter) (*PaginatedContacts, error)
 	StreamContacts(ctx context.Context, tenantID string, filter ContactFilter, yield func(c *Contact, tagNames string) error) error

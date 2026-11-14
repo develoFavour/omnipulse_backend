@@ -161,6 +161,61 @@ func TestContactQuota_Enforcement(t *testing.T) {
 			t.Fatal("expected contact to be created on Growth plan")
 		}
 	})
+
+	t.Run("Allows an inbound-first contact past a full contact limit", func(t *testing.T) {
+		createdCalled := false
+
+		subRepo := &mockSubscriptionRepo{
+			getByTenantIDFunc: func(ctx context.Context, tID string) (*domain.Subscription, error) {
+				return &domain.Subscription{
+					TenantID:      tID,
+					PlanTier:      domain.PlanStarter,
+					ContactsLimit: 500,
+				}, nil
+			},
+		}
+
+		contactRepo := &mockContactRepo{
+			getByRoutingValueFunc: func(ctx context.Context, tID, channel, routingValue string) (*domain.Contact, error) {
+				return nil, domain.ErrContactNotFound
+			},
+			listWithFilterFunc: func(ctx context.Context, tID string, filter domain.ContactFilter) ([]*domain.Contact, int, error) {
+				return nil, 500, nil
+			},
+			createFunc: func(ctx context.Context, contact *domain.Contact) error {
+				createdCalled = true
+				return nil
+			},
+		}
+
+		uc := NewContactUseCase(contactRepo, nil, subRepo, nil)
+		inboundContact := &domain.Contact{
+			TenantID:     tenantID,
+			FirstName:    "New Sender",
+			Channel:      "whatsapp",
+			RoutingValue: "+2348000000000",
+			Source:       "inbound_webhook",
+		}
+
+		err := uc.RegisterInboundContact(context.Background(), inboundContact)
+		if err != nil {
+			t.Fatalf("unexpected error recording an inbound-first contact at the cap: %v", err)
+		}
+		if !createdCalled {
+			t.Fatal("expected the inbound sender to be recorded even though the plan is full")
+		}
+
+		// The same workspace still refuses an operator-driven bulk add.
+		manual := &domain.Contact{
+			TenantID:     tenantID,
+			FirstName:    "Manual Add",
+			Channel:      "whatsapp",
+			RoutingValue: "+2348111111111",
+		}
+		if err := uc.RegisterContact(context.Background(), manual); !errors.Is(err, domain.ErrQuotaExceeded) {
+			t.Fatalf("expected ErrQuotaExceeded for a manual add at the cap, got: %v", err)
+		}
+	})
 }
 
 // TestMessageQuota_Enforcement tests monthly message limits when triggering broadcast dispatches

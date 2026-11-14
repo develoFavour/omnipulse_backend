@@ -238,7 +238,7 @@ func (h *WebhookHandler) HandleTelegram(w http.ResponseWriter, r *http.Request) 
 		Status:       "active",
 	}
 
-	if err := h.contactUC.RegisterContact(r.Context(), contact); err != nil {
+	if err := h.contactUC.RegisterInboundContact(r.Context(), contact); err != nil {
 		log.Printf("[Webhook/Telegram] Failed to save inbound contact %s for tenant %s: %v\n", chatIDStr, tenantID, err)
 	} else {
 		log.Printf("[Webhook/Telegram] Synced inbound contact %s (%s) for tenant %s\n", chatIDStr, firstName, tenantID)
@@ -396,7 +396,7 @@ func (h *WebhookHandler) HandleWhatsApp(w http.ResponseWriter, r *http.Request) 
 					Status:       "active",
 				}
 
-				if err := h.contactUC.RegisterContact(r.Context(), contact); err != nil {
+				if err := h.contactUC.RegisterInboundContact(r.Context(), contact); err != nil {
 					log.Printf("[Webhook/WhatsApp] Failed to save contact %s for tenant %s: %v\n", waID, tenantID, err)
 				} else {
 					log.Printf("[Webhook/WhatsApp] Synced inbound contact %s (%s) for tenant %s\n", waID, name, tenantID)

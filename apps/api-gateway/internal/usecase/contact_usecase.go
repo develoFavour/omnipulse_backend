@@ -64,6 +64,18 @@ func (u *ContactUseCase) GetContactByRoutingValue(ctx context.Context, tenantID,
 
 // RegisterContact enforces data validation invariants and plan capacity limits before saving a user profile
 func (u *ContactUseCase) RegisterContact(ctx context.Context, c *domain.Contact) error {
+	return u.register(ctx, c, true)
+}
+
+// RegisterInboundContact saves a recipient who contacted the workspace first.
+// The plan cap does not apply: a workspace at its limit still has to be able to
+// receive a new conversation, and the resulting overflow is visible as an
+// over-capacity workspace rather than a silently dropped message.
+func (u *ContactUseCase) RegisterInboundContact(ctx context.Context, c *domain.Contact) error {
+	return u.register(ctx, c, false)
+}
+
+func (u *ContactUseCase) register(ctx context.Context, c *domain.Contact, enforceCapacity bool) error {
 	c.FirstName = strings.TrimSpace(c.FirstName)
 	if c.FirstName == "" {
 		return fmt.Errorf("%w: first name is a mandatory field", domain.ErrInvalidContact)
@@ -83,7 +95,7 @@ func (u *ContactUseCase) RegisterContact(ctx context.Context, c *domain.Contact)
 	existing, _ := u.repo.GetByRoutingValue(ctx, c.TenantID, c.Channel, c.RoutingValue)
 	if existing != nil {
 		c.ID = existing.ID
-	} else if u.subRepo != nil && c.TenantID != "" {
+	} else if enforceCapacity && u.subRepo != nil && c.TenantID != "" {
 		// Enforce Plan Contact Limit only for brand new contacts
 		sub, err := u.subRepo.GetByTenantID(ctx, c.TenantID)
 		if err == nil && sub != nil && sub.ContactsLimit != -1 {
