@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"omnipulse/apps/broadcast-worker/internal/config"
 	"omnipulse/apps/broadcast-worker/internal/worker"
@@ -30,6 +31,13 @@ func main() {
 		logger.Fatalf("Failed to initialize database connection: %v", err)
 	}
 	defer db.Close()
+
+	// Delivery is serial, and the free Postgres plan's 20 connections are
+	// mostly held by the gateway.
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(30 * time.Minute)
+	db.SetConnMaxIdleTime(5 * time.Minute)
 	if err := db.Ping(); err != nil {
 		logger.Fatalf("Database ping failed: %v", err)
 	}

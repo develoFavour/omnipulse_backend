@@ -56,6 +56,13 @@ func main() {
 	}
 	defer db.Close()
 
+	// Free-tier Postgres allows only 20 connections (six of them reserved for
+	// platform management), and Go's default ceiling is unlimited.
+	db.SetMaxOpenConns(8)
+	db.SetMaxIdleConns(2)
+	db.SetConnMaxLifetime(30 * time.Minute)
+	db.SetConnMaxIdleTime(5 * time.Minute)
+
 	if err := db.Ping(); err != nil {
 		logger.Fatalf("Database cluster unreachable: %v", err)
 	}
@@ -952,6 +959,25 @@ func main() {
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		utils.WriteJSON(w, http.StatusOK, map[string]string{"status": "healthy", "service": "api-gateway"})
+	})
+
+	// /health/ready — readiness probe: Postgres answers within the deadline.
+	// Render keeps using /health for liveness so a slow database cannot trigger
+	// a restart loop.
+	mux.HandleFunc("GET /health/ready", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := db.PingContext(ctx); err != nil {
+			utils.WriteJSON(w, http.StatusServiceUnavailable, map[string]string{
+				"status":   "unavailable",
+				"database": "unreachable",
+			})
+			return
+		}
+		utils.WriteJSON(w, http.StatusOK, map[string]string{
+			"status":   "ready",
+			"database": "ok",
+		})
 	})
 
 	// /health/workers — live NATS consumer health check
