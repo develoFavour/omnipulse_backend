@@ -961,6 +961,25 @@ func main() {
 		utils.WriteJSON(w, http.StatusOK, map[string]string{"status": "healthy", "service": "api-gateway"})
 	})
 
+	// /health/ready — readiness probe: Postgres answers within the deadline.
+	// Render keeps using /health for liveness so a slow database cannot trigger
+	// a restart loop.
+	mux.HandleFunc("GET /health/ready", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := db.PingContext(ctx); err != nil {
+			utils.WriteJSON(w, http.StatusServiceUnavailable, map[string]string{
+				"status":   "unavailable",
+				"database": "unreachable",
+			})
+			return
+		}
+		utils.WriteJSON(w, http.StatusOK, map[string]string{
+			"status":   "ready",
+			"database": "ok",
+		})
+	})
+
 	// /health/workers — live NATS consumer health check
 	// Queries JetStream directly to count active consumers on the CAMPAIGNS stream.
 	// A consumer count of 0 means no worker is subscribed and broadcasts will queue silently.
