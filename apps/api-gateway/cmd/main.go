@@ -56,6 +56,13 @@ func main() {
 	}
 	defer db.Close()
 
+	// Free-tier Postgres allows only 20 connections (six of them reserved for
+	// platform management), and Go's default ceiling is unlimited.
+	db.SetMaxOpenConns(8)
+	db.SetMaxIdleConns(2)
+	db.SetConnMaxLifetime(30 * time.Minute)
+	db.SetConnMaxIdleTime(5 * time.Minute)
+
 	if err := db.Ping(); err != nil {
 		logger.Fatalf("Database cluster unreachable: %v", err)
 	}
