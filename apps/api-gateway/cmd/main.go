@@ -709,6 +709,25 @@ func main() {
 		logger.Println("[DB-MIGRATE] Successfully ensured payment_transactions table exists.")
 	}
 
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS canned_replies (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+			shortcut VARCHAR(50) NOT NULL,
+			title VARCHAR(150) NOT NULL,
+			body TEXT NOT NULL,
+			created_by VARCHAR(255) NOT NULL DEFAULT '',
+			created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE INDEX IF NOT EXISTS idx_canned_replies_tenant ON canned_replies(tenant_id);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_canned_replies_shortcut ON canned_replies(tenant_id, shortcut);
+	`); err != nil {
+		logger.Printf("[DB-MIGRATE] canned_replies migration: %v\n", err)
+	} else {
+		logger.Println("[DB-MIGRATE] ✅ canned_replies table ensured.")
+	}
+
 	// Ensure pgvector extension and embedding column exist if supported by the host
 	if _, err := db.Exec(`CREATE EXTENSION IF NOT EXISTS vector;`); err != nil {
 		logger.Printf("[DB-MIGRATE] ℹ️ pgvector extension not available on this Postgres host (%v); continuing with GIN full-text search fallback.\n", err)
@@ -774,6 +793,9 @@ func main() {
 
 	tagHandler := handler.NewTagHandler(tagUseCase)
 	templateHandler := handler.NewTemplateHandler(templateUseCase)
+	cannedReplyRepo := repository.NewPostgresCannedReplyRepository(db)
+	cannedReplyUseCase := usecase.NewCannedReplyUseCase(cannedReplyRepo)
+	cannedReplyHandler := handler.NewCannedReplyHandler(cannedReplyUseCase)
 	contactHandler := handler.NewContactHandler(contactUseCase, subRepo)
 	campaignHandler := handler.NewCampaignHandler(campaignUseCase, subRepo)
 	reviewHandler := handler.NewReviewHandler(reviewUseCase)
@@ -1142,6 +1164,12 @@ func main() {
 	mux.HandleFunc("GET /api/v1/templates/{id}", templateHandler.GetTemplate)
 	mux.HandleFunc("PUT /api/v1/templates/{id}", templateHandler.UpdateTemplate)
 	mux.Handle("DELETE /api/v1/templates/{id}", handler.RequireRole("owner", "admin")(http.HandlerFunc(templateHandler.DeleteTemplate)))
+
+	// Canned / Quick Replies Endpoints
+	mux.HandleFunc("GET /api/v1/canned-replies", cannedReplyHandler.List)
+	mux.Handle("POST /api/v1/canned-replies", handler.RequireRole("owner", "admin")(http.HandlerFunc(cannedReplyHandler.Create)))
+	mux.Handle("PUT /api/v1/canned-replies/{id}", handler.RequireRole("owner", "admin")(http.HandlerFunc(cannedReplyHandler.Update)))
+	mux.Handle("DELETE /api/v1/canned-replies/{id}", handler.RequireRole("owner", "admin")(http.HandlerFunc(cannedReplyHandler.Delete)))
 
 	// Campaign Execution Subsystem Endpoints
 	mux.HandleFunc("POST /api/v1/campaigns", campaignHandler.CreateCampaign)
