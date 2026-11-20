@@ -19,6 +19,7 @@ type mockCampaignRepo struct {
 	listByTenantFunc              func(ctx context.Context, tenantID, status string, limit, offset int) ([]*domain.Campaign, error)
 	updateStatusFunc              func(ctx context.Context, tenantID, id, status string) error
 	setDispatchingFunc            func(ctx context.Context, tenantID, id string, totalTargets int) error
+	setSimulatedDispatchFunc      func(ctx context.Context, tenantID, id string, totalTargets int) error
 	setScheduledFunc              func(ctx context.Context, tenantID, id string, scheduledAt time.Time) error
 	pauseCampaignFunc             func(ctx context.Context, tenantID, id string) error
 	resumeCampaignFunc            func(ctx context.Context, tenantID, id string) error
@@ -75,6 +76,12 @@ func (m *mockCampaignRepo) UpdateStatus(ctx context.Context, tenantID, id, statu
 func (m *mockCampaignRepo) SetDispatching(ctx context.Context, tenantID, id string, totalTargets int) error {
 	if m.setDispatchingFunc != nil {
 		return m.setDispatchingFunc(ctx, tenantID, id, totalTargets)
+	}
+	return nil
+}
+func (m *mockCampaignRepo) SetSimulatedDispatch(ctx context.Context, tenantID, id string, totalTargets int) error {
+	if m.setSimulatedDispatchFunc != nil {
+		return m.setSimulatedDispatchFunc(ctx, tenantID, id, totalTargets)
 	}
 	return nil
 }
@@ -1077,5 +1084,75 @@ func TestUpdateCampaignSucceedsWhenBrandEmailFails(t *testing.T) {
 	}
 	if updated.BrandRevisionNotified {
 		t.Fatal("the response must not claim the brand was emailed")
+	}
+}
+
+func TestSimulateDispatch(t *testing.T) {
+	campaign := &domain.Campaign{
+		ID:               "camp-sim-1",
+		TenantID:         "tenant-sim",
+		Status:           "draft",
+		SelectedChannels: `["whatsapp"]`,
+	}
+
+	simulatedSet := false
+	deliveryResults := []*contracts.TargetDeliveryResult{}
+	publishedTasks := 0
+
+	repo := &mockCampaignRepo{
+		getByIDFunc: func(ctx context.Context, tenantID, id string) (*domain.Campaign, error) {
+			return campaign, nil
+		},
+		setSimulatedDispatchFunc: func(ctx context.Context, tenantID, id string, totalTargets int) error {
+			simulatedSet = true
+			if totalTargets != 2 {
+				t.Fatalf("expected 2 targets, got %d", totalTargets)
+			}
+			return nil
+		},
+		recordDeliveryResultFunc: func(ctx context.Context, res *contracts.TargetDeliveryResult) error {
+			deliveryResults = append(deliveryResults, res)
+			return nil
+		},
+	}
+
+	contactRepo := &mockContactRepo{
+		listByTenantFunc: func(ctx context.Context, tenantID, status string, limit, offset int) ([]*domain.Contact, error) {
+			return []*domain.Contact{
+				{ID: "c-1", TenantID: tenantID, FirstName: "Ada", Channel: "whatsapp", RoutingValue: "+2348000000001", Status: "active"},
+				{ID: "c-2", TenantID: tenantID, FirstName: "Kofi", Channel: "whatsapp", RoutingValue: "+233200000002", Status: "active"},
+			}, nil
+		},
+	}
+
+	pub := &mockPublisher{
+		publishFunc: func(ctx context.Context, task *contracts.TargetDispatchTask) error {
+			publishedTasks++
+			return nil
+		},
+	}
+
+	uc := NewCampaignUseCase(repo, contactRepo, nil, pub, nil)
+
+	result, err := uc.SimulateDispatch(context.Background(), "tenant-sim", "camp-sim-1")
+	if err != nil {
+		t.Fatalf("unexpected error during simulation: %v", err)
+	}
+
+	if !result.IsSimulated {
+		t.Fatalf("expected result to be marked as simulated")
+	}
+	if result.Delivered != 2 {
+		t.Fatalf("expected 2 delivered, got %d", result.Delivered)
+	}
+	if !simulatedSet {
+		t.Fatalf("expected SetSimulatedDispatch to have been called")
+	}
+	if len(deliveryResults) != 2 {
+		t.Fatalf("expected 2 delivery results recorded, got %d", len(deliveryResults))
+	}
+	// Crucial invariant: zero NATS tasks emitted
+	if publishedTasks != 0 {
+		t.Fatalf("expected 0 NATS tasks emitted, got %d", publishedTasks)
 	}
 }

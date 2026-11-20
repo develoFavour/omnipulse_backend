@@ -308,6 +308,16 @@ func (r *PostgresCampaignRepository) SetDispatching(ctx context.Context, tenantI
 	return err
 }
 
+func (r *PostgresCampaignRepository) SetSimulatedDispatch(ctx context.Context, tenantID, id string, totalTargets int) error {
+	query := `
+		UPDATE campaigns
+		SET status = 'processing', delivery_type = 'simulation', total_targets = $1, processed_targets = 0, updated_at = CURRENT_TIMESTAMP
+		WHERE tenant_id = $2 AND id = $3;
+	`
+	_, err := r.db.ExecContext(ctx, query, totalTargets, tenantID, id)
+	return err
+}
+
 func (r *PostgresCampaignRepository) RecordDeliveryResult(ctx context.Context, res *contracts.TargetDeliveryResult) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -748,7 +758,7 @@ func (r *PostgresCampaignRepository) CountDeliveriesSince(ctx context.Context, t
 		SELECT count(*)
 		FROM campaign_deliveries d
 		JOIN campaigns c ON d.campaign_id = c.id
-		WHERE c.tenant_id = $1 AND d.created_at >= $2
+		WHERE c.tenant_id = $1 AND d.created_at >= $2 AND (c.delivery_type IS NULL OR c.delivery_type != 'simulation')
 	`
 	var count sql.NullInt64
 	err := r.db.QueryRowContext(ctx, query, tenantID, since).Scan(&count)

@@ -154,6 +154,21 @@ func (h *CampaignHandler) DispatchCampaign(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	if r.URL.Query().Get("simulate") == "true" {
+		log.Printf("[DISPATCH-TRACE] 🧪 Received simulated dispatch request: tenant=%s campaign=%s\n", tenantID, campaignID)
+		res, err := h.useCase.SimulateDispatch(r.Context(), tenantID, campaignID)
+		if err != nil {
+			if errors.Is(err, repository.ErrCampaignNotFound) {
+				utils.WriteError(w, http.StatusNotFound, "Campaign not found")
+				return
+			}
+			utils.WriteError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		utils.WriteJSON(w, http.StatusOK, res)
+		return
+	}
+
 	log.Printf("[DISPATCH-TRACE] 📨 Received dispatch request: tenant=%s campaign=%s\n", tenantID, campaignID)
 
 	err := h.useCase.TriggerDispatch(r.Context(), tenantID, campaignID)
@@ -176,6 +191,33 @@ func (h *CampaignHandler) DispatchCampaign(w http.ResponseWriter, r *http.Reques
 		"message":     "Campaign processing cycle successfully initialized",
 		"campaign_id": campaignID,
 	})
+}
+
+// SimulateDispatch handles: POST /api/v1/campaigns/{id}/simulate
+func (h *CampaignHandler) SimulateDispatch(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := r.Context().Value(TenantIDKey).(string)
+	if !ok {
+		utils.WriteError(w, http.StatusUnauthorized, "Missing tenant context")
+		return
+	}
+
+	campaignID := r.PathValue("id")
+	if campaignID == "" {
+		utils.WriteError(w, http.StatusBadRequest, "Missing campaign ID")
+		return
+	}
+
+	res, err := h.useCase.SimulateDispatch(r.Context(), tenantID, campaignID)
+	if err != nil {
+		if errors.Is(err, repository.ErrCampaignNotFound) {
+			utils.WriteError(w, http.StatusNotFound, "Campaign not found")
+			return
+		}
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, res)
 }
 
 func (h *CampaignHandler) PauseCampaign(w http.ResponseWriter, r *http.Request) {
