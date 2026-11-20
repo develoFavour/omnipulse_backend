@@ -53,7 +53,7 @@ func TestCannedReplyUseCase(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Create with leading slash should normalize
-	r, err := uc.Create(ctx, "t-1", "/payment", "Payment Request", "Please pay here: {{link}}", "u-1")
+	r, err := uc.Create(ctx, "t-1", "/payment", "Payment Request", "Please pay here: {link}", "u-1")
 	if err != nil {
 		t.Fatalf("unexpected error creating canned reply: %v", err)
 	}
