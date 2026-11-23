@@ -136,6 +136,15 @@ type CampaignRepository interface {
 	ApproveCampaign(ctx context.Context, tenantID, id, approvedBy string) error
 	RejectCampaign(ctx context.Context, tenantID, id, reason string) error
 	GetApprovalSetting(ctx context.Context, tenantID string) (bool, error)
+	SetSimulatedDispatch(ctx context.Context, tenantID, id string, totalTargets int) error
+}
+
+type SimulationResult struct {
+	CampaignID   string `json:"campaign_id"`
+	TotalTargets int    `json:"total_targets"`
+	Delivered    int    `json:"delivered"`
+	Status       string `json:"status"`
+	IsSimulated  bool   `json:"is_simulated"`
 }
 
 // CampaignReport aggregates executive data for one-click agency reports
