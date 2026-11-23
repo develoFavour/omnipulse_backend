@@ -443,6 +443,20 @@ func (m *WhatsAppManager) setupEventHandler(sess *tenantSession, tenantID string
 				log.Printf("[WhatsAppManager] Error persisting paired channel to DB: %v\n", err)
 			} else {
 				m.updateChannelHealth(context.Background(), tenantID, "healthy", "", true)
+
+				// Staged background sync sweeps on pair success to capture history chunks as they arrive from phone
+				go func() {
+					delays := []time.Duration{3 * time.Second, 10 * time.Second, 25 * time.Second, 60 * time.Second}
+					for _, delay := range delays {
+						time.Sleep(delay)
+						syncCtx, syncCancel := context.WithTimeout(context.Background(), 30*time.Second)
+						res, syncErr := m.SyncContacts(syncCtx, tenantID)
+						syncCancel()
+						if syncErr == nil {
+							log.Printf("[WhatsAppManager] 🔄 Post-pair sync sweep (+%v) for tenant %s: %d contacts in DB (new: %d)\n", delay, tenantID, res.Total, res.Created)
+						}
+					}
+				}()
 			}
 
 		case *events.HistorySync:
