@@ -65,7 +65,7 @@ func NewTemplateUseCase(repo domain.TemplateRepository) domain.TemplateUseCase {
 	return &templateUseCase{repo: repo}
 }
 
-var varRegex = regexp.MustCompile(`\{\{([a-zA-Z0-9_]+)\}\}`)
+var varRegex = regexp.MustCompile(`\{+([a-zA-Z0-9_]+)\}+`)
 
 func extractVariables(body string, existing []string) []string {
 	varMap := make(map[string]bool)
@@ -141,18 +141,7 @@ func (u *templateUseCase) CreateTemplate(
 }
 
 func (u *templateUseCase) ListTemplates(ctx context.Context, tenantID, category string) ([]*domain.Template, error) {
-	templates, err := u.repo.ListByTenant(ctx, tenantID, category)
-	if err != nil {
-		return nil, err
-	}
-
-	// Auto-seed: If the tenant has no templates at all, seed starter templates automatically
-	if len(templates) == 0 && category == "" {
-		_ = u.SeedDefaultTemplates(ctx, tenantID)
-		return u.repo.ListByTenant(ctx, tenantID, category)
-	}
-
-	return templates, nil
+	return u.repo.ListByTenant(ctx, tenantID, category)
 }
 
 func (u *templateUseCase) GetTemplate(ctx context.Context, tenantID, id string) (*domain.Template, error) {
