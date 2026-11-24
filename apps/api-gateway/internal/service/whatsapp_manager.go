@@ -1062,7 +1062,7 @@ func (m *WhatsAppManager) saveContact(tenantID, rawPhone, name, source string) (
 	}
 
 	name = strings.TrimSpace(name)
-	if name == "" {
+	if name == "" || strings.Trim(name, "? .-_") == "" {
 		name = "WhatsApp User"
 	}
 	parts := strings.SplitN(name, " ", 2)
@@ -1082,7 +1082,7 @@ func (m *WhatsAppManager) saveContact(tenantID, rawPhone, name, source string) (
 		VALUES ($1, $2, $3, 'whatsapp', $4, $5, 'active', NOW(), NOW())
 		ON CONFLICT (tenant_id, channel, routing_value)
 		DO UPDATE SET
-			first_name = CASE WHEN contacts.first_name IN ('WhatsApp User', 'WhatsApp Contact') AND EXCLUDED.first_name NOT IN ('WhatsApp User', 'WhatsApp Contact') THEN EXCLUDED.first_name ELSE contacts.first_name END,
+			first_name = CASE WHEN contacts.first_name IN ('WhatsApp User', 'WhatsApp Contact', '???') AND EXCLUDED.first_name NOT IN ('WhatsApp User', 'WhatsApp Contact', '???') THEN EXCLUDED.first_name ELSE contacts.first_name END,
 			last_name = CASE WHEN contacts.last_name = '' AND EXCLUDED.last_name != '' THEN EXCLUDED.last_name ELSE contacts.last_name END,
 			updated_at = NOW()
 		RETURNING id, (xmax = 0);
