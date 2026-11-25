@@ -1,4 +1,4 @@
-# OmniPulse: Compliance-First Distributed Notification Engine
+# MessageRail: Compliance-First Distributed Notification Engine
 
 <p align="center">
   <img src="https://img.shields.io/badge/Go-1.25-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go Version" />
